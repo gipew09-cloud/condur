@@ -15,19 +15,36 @@ class OwnerRegistration(StatesGroup):
 
 
 class AddDriver(StatesGroup):
-    """Владелец добавляет водителя: имя → телефон → тип ЗП → ставка."""
+    """Владелец добавляет водителя: имя → телефон → ЗП → время старта смены."""
     waiting_for_name = State()
     waiting_for_phone = State()
     waiting_for_salary_type = State()
     waiting_for_salary_rate = State()
+    waiting_for_shift_start = State()
 
 
 class AddVehicle(StatesGroup):
-    """Владелец добавляет машину: номер → марка → тип → норма расхода."""
+    """Владелец добавляет машину: номер → марка → тип → расход → доки."""
     waiting_for_plate = State()
     waiting_for_brand = State()
     waiting_for_type = State()
     waiting_for_fuel_norm = State()
+    waiting_for_osago = State()
+    waiting_for_inspection = State()
+    waiting_for_tacho = State()
+
+
+class AddRouteTemplate(StatesGroup):
+    """Владелец добавляет шаблон маршрута."""
+    waiting_for_name = State()
+    waiting_for_origin = State()
+    waiting_for_destination = State()
+    waiting_for_cargo = State()
+
+
+class SetTripRevenue(StatesGroup):
+    """Владелец вводит выручку завершённого рейса."""
+    waiting_for_amount = State()
 
 
 # ========== ВОДИТЕЛЬ ==========
@@ -56,10 +73,14 @@ class UploadWaybill(StatesGroup):
     waiting_for_photo = State()
 
 
-class EndTrip(StatesGroup):
-    """Завершение рейса: выручка → расход топлива в литрах."""
-    waiting_for_revenue = State()
-    waiting_for_fuel_liters = State()
+class EndTripLocation(StatesGroup):
+    """Перед завершением рейса спрашиваем геопозицию."""
+    waiting_for_location = State()
+
+
+class UnloadingLocation(StatesGroup):
+    """Перед переходом в статус 'выгрузка' спрашиваем геопозицию."""
+    waiting_for_location = State()
 
 
 class NewExpense(StatesGroup):
@@ -67,3 +88,9 @@ class NewExpense(StatesGroup):
     selecting_category = State()
     waiting_for_amount = State()
     waiting_for_receipt = State()
+
+
+class HandedCash(StatesGroup):
+    """Водитель сообщает что отдал нал владельцу."""
+    waiting_for_amount = State()
+    waiting_for_photo = State()

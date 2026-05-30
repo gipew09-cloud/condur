@@ -9,7 +9,12 @@ Reply-клавиатура водителя меняется под текуще
 у нас есть driver_keyboard_for_state(), которая возвращает правильный
 набор кнопок.
 """
-from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import (
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 from app.services.expense_service import CATEGORY_LABELS
@@ -18,18 +23,22 @@ from app.services.expense_service import CATEGORY_LABELS
 # =========================================================================
 # Тексты reply-кнопок водителя — собраны вместе, чтобы хендлеры могли
 # матчить по точному совпадению.
+# Короткие подписи, чтобы быстро жать с трассы.
 # =========================================================================
-BTN_START_SHIFT = "🚀 Начать смену"
-BTN_END_SHIFT = "🏁 Завершить смену"
-BTN_NEW_TRIP = "🛣 Новый рейс"
-BTN_TRIP_DEPART = "🚛 Выехал"
-BTN_TRIP_UNLOADING = "📦 На выгрузке"
-BTN_END_TRIP = "✅ Завершить рейс"
-BTN_UPLOAD_WAYBILL = "📄 Загрузить ТТН"
-BTN_EXPENSE = "💸 Расход"
+BTN_START_SHIFT = "🟢 Начать смену"
+BTN_END_SHIFT = "🔴 Конец смены"
+BTN_NEW_TRIP = "🚛 Новый рейс"
+BTN_TRIP_DEPART = "🚦 Выехал"
+BTN_TRIP_UNLOADING = "📦 Выгрузка"
+BTN_END_TRIP = "✅ Сдал груз"
+BTN_UPLOAD_WAYBILL = "📄 Документ"
+BTN_EXPENSE = "💳 Расход"
 BTN_SOS = "🆘 SOS"
 BTN_STATUS = "📋 Статус"
-BTN_SKIP = "⏭ Пропустить фото"
+BTN_DOWNTIME = "⏸ Простой"
+BTN_HANDED_CASH = "💵 Сдал деньги"
+BTN_SKIP = "⏭ Пропустить"
+BTN_SEND_LOCATION = "📍 Отправить геопозицию"
 
 
 # =========================================================================
@@ -39,6 +48,7 @@ def owner_main_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="👥 Мои водители", callback_data="owner:drivers")
     kb.button(text="🚚 Мои машины", callback_data="owner:vehicles")
+    kb.button(text="🗺 Шаблоны маршрутов", callback_data="owner:routes")
     kb.button(text="📊 Статистика", callback_data="owner:stats")
     kb.adjust(1)
     return kb.as_markup()
@@ -121,7 +131,11 @@ def _kb(*rows: list[str]) -> ReplyKeyboardMarkup:
 
 
 def driver_no_shift_kb() -> ReplyKeyboardMarkup:
-    return _kb([BTN_START_SHIFT], [BTN_STATUS])
+    return _kb(
+        [BTN_START_SHIFT],
+        [BTN_DOWNTIME, BTN_HANDED_CASH],
+        [BTN_STATUS],
+    )
 
 
 def driver_shift_no_trip_kb() -> ReplyKeyboardMarkup:
@@ -215,5 +229,107 @@ def sos_confirm_keyboard() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🆘 Да, нужна помощь", callback_data="sos:confirm")
     kb.button(text="Отмена", callback_data="sos:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================================================================
+# ВОДИТЕЛЬ — запрос геопозиции (reply, временно подменяет state-клавиатуру)
+# =========================================================================
+def location_request_keyboard() -> ReplyKeyboardMarkup:
+    """
+    request_location=True заставит Telegram запросить геопозицию
+    при нажатии. «Пропустить» — обычная кнопка, дальше идём без координат.
+    """
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=BTN_SEND_LOCATION, request_location=True))
+    builder.row(KeyboardButton(text=BTN_SKIP))
+    return builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
+
+
+# =========================================================================
+# ВОДИТЕЛЬ — выбор причины простоя
+# =========================================================================
+DOWNTIME_REASONS = {
+    "breakdown": "🔧 Поломка",
+    "no_orders": "📭 Нет заказов",
+    "sick": "🤒 Болезнь",
+    "other": "❓ Другое",
+}
+
+
+def downtime_reason_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for code, label in DOWNTIME_REASONS.items():
+        kb.button(text=label, callback_data=f"dt:{code}")
+    kb.button(text="✖️ Отмена", callback_data="dt:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================================================================
+# ВЛАДЕЛЕЦ — указать выручку рейса (inline под уведомлением о завершении)
+# =========================================================================
+def trip_revenue_keyboard(trip_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💰 Указать выручку", callback_data=f"trip:revenue:{trip_id}")
+    return kb.as_markup()
+
+
+# =========================================================================
+# ВЛАДЕЛЕЦ — подтверждение что водитель сдал нал
+# =========================================================================
+def cash_decision_keyboard(entry_token: str) -> InlineKeyboardMarkup:
+    """entry_token = uuid, по которому в FSM data найдём детали (так как сумма
+    в callback_data не помещается осмысленно). Хранится во временном хранилище."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Подтвердить", callback_data=f"cash:ok:{entry_token}")
+    kb.button(text="❌ Оспорить", callback_data=f"cash:bad:{entry_token}")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+# =========================================================================
+# ВОДИТЕЛЬ — выбор маршрута при создании рейса
+# =========================================================================
+def route_template_keyboard(templates) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for t in templates:
+        kb.button(text=f"🗺 {t.name}", callback_data=f"rt:pick:{t.id}")
+    kb.button(text="✏️ Другой маршрут", callback_data="rt:manual")
+    kb.button(text="✖️ Отмена", callback_data="rt:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================================================================
+# ВЛАДЕЛЕЦ — меню шаблонов маршрутов
+# =========================================================================
+def routes_list_keyboard(templates) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for t in templates:
+        kb.button(text=f"🗺 {t.name}", callback_data=f"route:view:{t.id}")
+    kb.button(text="➕ Добавить шаблон", callback_data="route:add")
+    kb.button(text="« Назад", callback_data="owner:menu")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def route_view_keyboard(template_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Удалить шаблон", callback_data=f"route:del:{template_id}")
+    kb.button(text="« К списку", callback_data="owner:routes")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================================================================
+# Универсальные «пропустить» / «отмена»
+# =========================================================================
+def skip_or_cancel_inline(skip_data: str, cancel_data: str | None = None) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text=BTN_SKIP, callback_data=skip_data)
+    if cancel_data:
+        kb.button(text="✖️ Отмена", callback_data=cancel_data)
     kb.adjust(1)
     return kb.as_markup()

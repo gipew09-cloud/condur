@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     # HTTP-порт для FastAPI. Railway пробрасывает свой через переменную PORT.
     port: int = 8000
+    # дефолтная таймзона: подставляется новым владельцам при регистрации
+    default_timezone: str = "Europe/Moscow"
 
     model_config = SettingsConfigDict(
         env_file=".env",

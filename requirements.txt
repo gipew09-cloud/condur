@@ -13,7 +13,9 @@ python-multipart==0.0.9   # для form-data в FastAPI
 PyJWT==2.8.0              # JWT в httpOnly cookie
 openpyxl==3.1.2           # Excel-экспорт финансов
 
+# --- Планировщик задач (сводки, проверки документов, late-start алерты) ---
+APScheduler==3.10.4
+
 # --- Понадобится позже ---
 # aioboto3==13.1.1          # загрузка фото в S3 (Yandex Object Storage)
-# APScheduler==3.10.4       # сводка в 21:00 и детектор тишины
 # Pillow==10.4.0            # сжатие фото

@@ -27,19 +27,29 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bots import keyboards as kb
 from app.bots import messages as msg
 from app.bots.keyboards import (
     back_to_menu_keyboard,
     driver_salary_type_keyboard,
     drivers_list_keyboard,
     owner_main_menu,
+    routes_list_keyboard,
+    route_view_keyboard,
     vehicle_type_keyboard,
     vehicles_list_keyboard,
 )
 from app.bots.notifications import notify_driver
-from app.bots.states import AddDriver, AddVehicle, OwnerRegistration
-from app.models import Driver, Owner, Shift, Vehicle
-from app.services import auth_service, expense_service
+from app.bots.states import (
+    AddDriver,
+    AddRouteTemplate,
+    AddVehicle,
+    OwnerRegistration,
+    SetTripRevenue,
+)
+from app.models import Driver, ManualEntry, Owner, RouteTemplate, Shift, Trip, Vehicle
+from app.services import auth_service, expense_service, trip_service
+from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
 
 logger = logging.getLogger(__name__)
@@ -260,16 +270,40 @@ async def add_driver_rate(
         await state.clear()
         return
 
+    await state.update_data(salary_rate=str(rate))
+    await state.set_state(AddDriver.waiting_for_shift_start)
+    await message.answer(
+        msg.ADD_DRIVER_SHIFT_START,
+        reply_markup=kb.skip_or_cancel_inline("driver:skip_shift_time"),
+    )
+
+
+_SHIFT_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+async def _finalize_driver(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    driver_bot: Bot,
+    shift_start_time: str | None,
+) -> None:
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await message.answer(msg.SOMETHING_WRONG)
+        await state.clear()
+        return
+
     data = await state.get_data()
     invite_token = uuid.uuid4().hex
-
     driver = Driver(
         owner_id=owner.id,
         full_name=data["full_name"],
         phone=data["phone"],
         salary_type=data["salary_type"],
-        salary_rate=rate,
+        salary_rate=Decimal(data["salary_rate"]),
         invite_token=invite_token,
+        shift_start_time=shift_start_time,
     )
     session.add(driver)
     await session.commit()
@@ -281,6 +315,28 @@ async def add_driver_rate(
     owner_refreshed = await _get_owner(session, message.from_user.id)
     if owner_refreshed is not None:
         await _show_main_menu(message, owner_refreshed)
+
+
+@owner_router.message(AddDriver.waiting_for_shift_start)
+async def add_driver_shift_start(
+    message: Message, state: FSMContext, session: AsyncSession, driver_bot: Bot
+) -> None:
+    text = (message.text or "").strip()
+    if not _SHIFT_TIME_RE.match(text):
+        await message.answer(msg.ADD_DRIVER_SHIFT_TIME_INVALID)
+        return
+    await _finalize_driver(message, state, session, driver_bot, shift_start_time=text)
+
+
+@owner_router.callback_query(
+    AddDriver.waiting_for_shift_start, F.data == "driver:skip_shift_time"
+)
+async def cb_add_driver_skip_shift_time(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, driver_bot: Bot
+) -> None:
+    await call.message.delete()
+    await _finalize_driver(call.message, state, session, driver_bot, shift_start_time=None)
+    await call.answer()
 
 
 # =========================================================================
@@ -384,7 +440,7 @@ async def add_vehicle_type(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @owner_router.message(AddVehicle.waiting_for_fuel_norm)
-async def add_vehicle_fuel(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def add_vehicle_fuel(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip().replace(",", ".")
     try:
         norm = Decimal(raw)
@@ -394,19 +450,115 @@ async def add_vehicle_fuel(message: Message, state: FSMContext, session: AsyncSe
         await message.answer(msg.ADD_VEHICLE_INVALID_NORM)
         return
 
+    await state.update_data(fuel_norm=str(norm))
+    await state.set_state(AddVehicle.waiting_for_osago)
+    await message.answer(
+        msg.ADD_VEHICLE_OSAGO,
+        reply_markup=kb.skip_or_cancel_inline("vehicle:skip_osago"),
+    )
+
+
+_DATE_RE = re.compile(r"^(\d{2})\.(\d{2})\.(\d{4})$")
+
+
+def _parse_dot_date(text: str):
+    m = _DATE_RE.match(text.strip())
+    if not m:
+        return None
+    from datetime import date
+    try:
+        return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
+async def _advance_vehicle_doc(
+    message_or_call,
+    state: FSMContext,
+    next_state,
+    next_prompt: str,
+    skip_callback: str,
+) -> None:
+    """Сжатый helper: переход на следующий шаг ввода дат документов."""
+    await state.set_state(next_state)
+    target = message_or_call if isinstance(message_or_call, Message) else message_or_call
+    await target.answer(
+        next_prompt,
+        reply_markup=kb.skip_or_cancel_inline(skip_callback),
+    )
+
+
+@owner_router.message(AddVehicle.waiting_for_osago)
+async def add_vehicle_osago(message: Message, state: FSMContext) -> None:
+    parsed = _parse_dot_date(message.text or "")
+    if parsed is None:
+        await message.answer(msg.ADD_VEHICLE_DATE_INVALID)
+        return
+    await state.update_data(osago=parsed.isoformat())
+    await _advance_vehicle_doc(
+        message, state, AddVehicle.waiting_for_inspection,
+        msg.ADD_VEHICLE_INSPECTION, "vehicle:skip_inspection",
+    )
+
+
+@owner_router.callback_query(AddVehicle.waiting_for_osago, F.data == "vehicle:skip_osago")
+async def cb_add_vehicle_skip_osago(call: CallbackQuery, state: FSMContext) -> None:
+    await call.message.delete()
+    await _advance_vehicle_doc(
+        call.message, state, AddVehicle.waiting_for_inspection,
+        msg.ADD_VEHICLE_INSPECTION, "vehicle:skip_inspection",
+    )
+    await call.answer()
+
+
+@owner_router.message(AddVehicle.waiting_for_inspection)
+async def add_vehicle_inspection(message: Message, state: FSMContext) -> None:
+    parsed = _parse_dot_date(message.text or "")
+    if parsed is None:
+        await message.answer(msg.ADD_VEHICLE_DATE_INVALID)
+        return
+    await state.update_data(inspection=parsed.isoformat())
+    await _advance_vehicle_doc(
+        message, state, AddVehicle.waiting_for_tacho,
+        msg.ADD_VEHICLE_TACHO, "vehicle:skip_tacho",
+    )
+
+
+@owner_router.callback_query(
+    AddVehicle.waiting_for_inspection, F.data == "vehicle:skip_inspection"
+)
+async def cb_add_vehicle_skip_inspection(call: CallbackQuery, state: FSMContext) -> None:
+    await call.message.delete()
+    await _advance_vehicle_doc(
+        call.message, state, AddVehicle.waiting_for_tacho,
+        msg.ADD_VEHICLE_TACHO, "vehicle:skip_tacho",
+    )
+    await call.answer()
+
+
+async def _finalize_vehicle(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    tacho_date: str | None,
+) -> None:
     owner = await _get_owner(session, message.from_user.id)
     if owner is None:
         await message.answer(msg.SOMETHING_WRONG)
         await state.clear()
         return
 
+    from datetime import date as _date
     data = await state.get_data()
     vehicle = Vehicle(
         owner_id=owner.id,
         license_plate=data["license_plate"],
         brand=data["brand"],
         type=data["type"],
-        fuel_norm_per_100km=norm,
+        fuel_norm_per_100km=Decimal(data["fuel_norm"]),
+        osago_expires=_date.fromisoformat(data["osago"]) if data.get("osago") else None,
+        inspection_expires=_date.fromisoformat(data["inspection"]) if data.get("inspection") else None,
+        tacho_expires=_date.fromisoformat(tacho_date) if tacho_date else None,
     )
     session.add(vehicle)
     try:
@@ -422,6 +574,318 @@ async def add_vehicle_fuel(message: Message, state: FSMContext, session: AsyncSe
     owner_refreshed = await _get_owner(session, message.from_user.id)
     if owner_refreshed is not None:
         await _show_main_menu(message, owner_refreshed)
+
+
+@owner_router.message(AddVehicle.waiting_for_tacho)
+async def add_vehicle_tacho(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    parsed = _parse_dot_date(message.text or "")
+    if parsed is None:
+        await message.answer(msg.ADD_VEHICLE_DATE_INVALID)
+        return
+    await _finalize_vehicle(message, state, session, tacho_date=parsed.isoformat())
+
+
+@owner_router.callback_query(AddVehicle.waiting_for_tacho, F.data == "vehicle:skip_tacho")
+async def cb_add_vehicle_skip_tacho(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    await call.message.delete()
+    await _finalize_vehicle(call.message, state, session, tacho_date=None)
+    await call.answer()
+
+
+# =========================================================================
+# Шаблоны маршрутов
+# =========================================================================
+@owner_router.callback_query(F.data == "owner:routes")
+async def cb_routes(call: CallbackQuery, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    res = await session.execute(
+        select(RouteTemplate)
+        .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
+        .order_by(RouteTemplate.name)
+    )
+    templates = list(res.scalars().all())
+    header = msg.ROUTES_LIST_HEADER if templates else msg.ROUTES_EMPTY
+    if templates:
+        lines = [msg.ROUTES_LIST_HEADER, ""]
+        for t in templates:
+            lines.append(f"• <b>{t.name}</b> — {t.origin} → {t.destination}")
+        header = "\n".join(lines)
+    await call.message.edit_text(header, reply_markup=routes_list_keyboard(templates))
+    await call.answer()
+
+
+@owner_router.callback_query(F.data == "route:add")
+async def cb_route_add(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddRouteTemplate.waiting_for_name)
+    await call.message.edit_text(msg.ROUTE_ADD_NAME)
+    await call.answer()
+
+
+@owner_router.message(AddRouteTemplate.waiting_for_name)
+async def route_add_name(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer(msg.ROUTE_ADD_NAME)
+        return
+    await state.update_data(name=name)
+    await state.set_state(AddRouteTemplate.waiting_for_origin)
+    await message.answer(msg.ROUTE_ADD_ORIGIN)
+
+
+@owner_router.message(AddRouteTemplate.waiting_for_origin)
+async def route_add_origin(message: Message, state: FSMContext) -> None:
+    origin = (message.text or "").strip()
+    if not origin:
+        await message.answer(msg.ROUTE_ADD_ORIGIN)
+        return
+    await state.update_data(origin=origin)
+    await state.set_state(AddRouteTemplate.waiting_for_destination)
+    await message.answer(msg.ROUTE_ADD_DESTINATION)
+
+
+@owner_router.message(AddRouteTemplate.waiting_for_destination)
+async def route_add_destination(message: Message, state: FSMContext) -> None:
+    destination = (message.text or "").strip()
+    if not destination:
+        await message.answer(msg.ROUTE_ADD_DESTINATION)
+        return
+    await state.update_data(destination=destination)
+    await state.set_state(AddRouteTemplate.waiting_for_cargo)
+    await message.answer(
+        msg.ROUTE_ADD_CARGO, reply_markup=kb.skip_or_cancel_inline("route:skip_cargo")
+    )
+
+
+async def _finalize_route(
+    reply_target: Message, state: FSMContext, session: AsyncSession, cargo: str | None
+) -> None:
+    owner = await _get_owner(session, reply_target.chat.id) if isinstance(reply_target, Message) else None
+    # reply_target.chat.id может относиться не к owner-у; используем from_user был выше — здесь
+    # надёжнее: возьмём owner из state.update_data (мы сохранили его id неявно — нет).
+    # Поэтому ищем через update.from_user — но это callback/message. Берём из data.
+    # На самом деле в state у нас нет owner_id. Возьмём через chat:
+    # для owner-бота private chat == owner.telegram_id, что мы и используем в _get_owner.
+    if owner is None:
+        await reply_target.answer(msg.SOMETHING_WRONG)
+        await state.clear()
+        return
+    data = await state.get_data()
+    template = RouteTemplate(
+        owner_id=owner.id,
+        name=data["name"], origin=data["origin"], destination=data["destination"],
+        default_cargo=cargo,
+    )
+    session.add(template)
+    await session.commit()
+    await state.clear()
+    await reply_target.answer(msg.ROUTE_SAVED)
+    await _show_main_menu(reply_target, owner)
+
+
+@owner_router.message(AddRouteTemplate.waiting_for_cargo)
+async def route_add_cargo(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    cargo = (message.text or "").strip() or None
+    await _finalize_route(message, state, session, cargo)
+
+
+@owner_router.callback_query(
+    AddRouteTemplate.waiting_for_cargo, F.data == "route:skip_cargo"
+)
+async def cb_route_skip_cargo(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    await call.message.delete()
+    await _finalize_route(call.message, state, session, cargo=None)
+    await call.answer()
+
+
+@owner_router.callback_query(F.data.startswith("route:view:"))
+async def cb_route_view(call: CallbackQuery, session: AsyncSession) -> None:
+    template_id = int(call.data.split(":")[2])
+    template = await session.get(RouteTemplate, template_id)
+    owner = await _get_owner(session, call.from_user.id)
+    if template is None or owner is None or template.owner_id != owner.id:
+        await call.answer("Шаблон не найден", show_alert=True)
+        return
+    await call.message.edit_text(
+        msg.ROUTE_VIEW.format(
+            name=template.name, origin=template.origin,
+            destination=template.destination,
+            cargo=template.default_cargo or "—",
+        ),
+        reply_markup=route_view_keyboard(template.id),
+    )
+    await call.answer()
+
+
+@owner_router.callback_query(F.data.startswith("route:del:"))
+async def cb_route_delete(call: CallbackQuery, session: AsyncSession) -> None:
+    template_id = int(call.data.split(":")[2])
+    template = await session.get(RouteTemplate, template_id)
+    owner = await _get_owner(session, call.from_user.id)
+    if template is None or owner is None or template.owner_id != owner.id:
+        await call.answer("Шаблон не найден", show_alert=True)
+        return
+    template.is_active = False
+    await session.commit()
+    await call.answer(msg.ROUTE_DELETED)
+    # вернуться к списку
+    res = await session.execute(
+        select(RouteTemplate)
+        .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
+        .order_by(RouteTemplate.name)
+    )
+    templates = list(res.scalars().all())
+    header = msg.ROUTES_LIST_HEADER if templates else msg.ROUTES_EMPTY
+    if templates:
+        lines = [msg.ROUTES_LIST_HEADER, ""]
+        for t in templates:
+            lines.append(f"• <b>{t.name}</b> — {t.origin} → {t.destination}")
+        header = "\n".join(lines)
+    await call.message.edit_text(header, reply_markup=routes_list_keyboard(templates))
+
+
+# =========================================================================
+# Указать выручку рейса (callback из уведомления о завершении)
+# =========================================================================
+@owner_router.callback_query(F.data.startswith("trip:revenue:"))
+async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        trip_id = int(call.data.split(":")[2])
+    except (IndexError, ValueError):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+    await state.set_state(SetTripRevenue.waiting_for_amount)
+    await state.update_data(trip_id=trip_id)
+    await call.answer()
+    await call.message.answer("Введите выручку по рейсу в рублях:")
+
+
+@owner_router.message(SetTripRevenue.waiting_for_amount)
+async def set_trip_revenue(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    driver_bot: Bot,
+) -> None:
+    raw = (message.text or "").strip().replace(",", ".").replace(" ", "")
+    try:
+        revenue = Decimal(raw)
+        if revenue < 0:
+            raise InvalidOperation
+    except (InvalidOperation, ValueError):
+        await message.answer(msg.TRIP_REVENUE_INVALID)
+        return
+
+    data = await state.get_data()
+    trip = await session.get(Trip, data["trip_id"])
+    owner = await _get_owner(session, message.from_user.id)
+    if trip is None or owner is None or trip.owner_id != owner.id:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+
+    await trip_service.set_trip_revenue(session, trip=trip, revenue_rub=revenue)
+    await log_event(
+        session, owner_id=owner.id, driver_id=trip.driver_id,
+        shift_id=trip.shift_id, trip_id=trip.id,
+        event_type="trip_revenue_set", payload={"revenue": str(revenue)},
+    )
+    await session.flush()
+    await session.refresh(trip)
+    await session.commit()
+    await state.clear()
+
+    await message.answer(
+        msg.TRIP_REVENUE_SAVED.format(
+            revenue=f"{revenue:.0f}", profit=f"{Decimal(trip.profit_rub or 0):.0f}"
+        )
+    )
+    # уведомить водителя
+    driver = await session.get(Driver, trip.driver_id)
+    if driver is not None:
+        await notify_driver(
+            driver_bot, session, driver.telegram_id,
+            f"💰 Владелец указал выручку рейса {trip.origin} → {trip.destination}: "
+            f"{revenue:.0f} ₽. Прибыль: {Decimal(trip.profit_rub or 0):.0f} ₽.",
+        )
+
+
+# =========================================================================
+# Cash callbacks — подтвердить/оспорить сдачу нала
+# =========================================================================
+@owner_router.callback_query(F.data.startswith("cash:ok:"))
+async def cb_cash_ok(call: CallbackQuery, session: AsyncSession, driver_bot: Bot) -> None:
+    await _decide_cash(call, session, driver_bot, ok=True)
+
+
+@owner_router.callback_query(F.data.startswith("cash:bad:"))
+async def cb_cash_bad(call: CallbackQuery, session: AsyncSession, driver_bot: Bot) -> None:
+    await _decide_cash(call, session, driver_bot, ok=False)
+
+
+async def _decide_cash(
+    call: CallbackQuery, session: AsyncSession, driver_bot: Bot, ok: bool
+) -> None:
+    token = call.data.split(":")[2]
+    info = CASH_PENDING.pop(token, None)
+    if info is None:
+        await call.answer("Запрос устарел", show_alert=True)
+        return
+
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None or owner.id != info["owner_id"]:
+        await call.answer("Доступ запрещён", show_alert=True)
+        return
+
+    driver = await session.get(Driver, info["driver_id"])
+    amount = Decimal(info["amount"])
+
+    if ok:
+        from datetime import date as _date
+        entry = ManualEntry(
+            owner_id=owner.id,
+            type="income",
+            category="нал от водителя",
+            amount_rub=amount,
+            description=f"Сдал {driver.full_name if driver else ''}",
+            entry_date=_date.today(),
+        )
+        session.add(entry)
+
+    await log_event(
+        session, owner_id=owner.id,
+        driver_id=info["driver_id"],
+        event_type="cash_confirmed" if ok else "cash_disputed",
+        payload={"amount": str(amount)},
+    )
+    await session.commit()
+
+    suffix = f"\n\n<b>{msg.CASH_CONFIRMED_OWNER if ok else msg.CASH_DISPUTED_OWNER}</b>"
+    try:
+        if call.message.caption is not None:
+            await call.message.edit_caption(
+                caption=call.message.caption + suffix, reply_markup=None
+            )
+        else:
+            await call.message.edit_text(
+                text=(call.message.text or "") + suffix, reply_markup=None
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to edit cash decision message: %s", exc)
+
+    if driver is not None and driver.telegram_id is not None:
+        template = msg.CASH_CONFIRMED_DRIVER if ok else msg.CASH_DISPUTED_DRIVER
+        await notify_driver(
+            driver_bot, session, driver.telegram_id,
+            template.format(amount=f"{amount:.0f}"),
+        )
+    await call.answer()
 
 
 # =========================================================================

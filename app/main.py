@@ -22,12 +22,18 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.bots.driver_bot import driver_router
 from app.bots.middlewares import CrossBotMiddleware, DbSessionMiddleware
 from app.bots.owner_bot import owner_router
 from app.config import settings
 from app.database import async_session
+from app.services.scheduler_jobs import (
+    daily_summary_job,
+    doc_expiry_job,
+    late_start_job,
+)
 from app.web.router import app as web_app
 
 logging.basicConfig(
@@ -69,7 +75,16 @@ async def main() -> None:
     )
     uv_server = uvicorn.Server(uv_config)
 
-    logging.info("Боты и веб-кабинет запущены. Порт: %s. Ctrl+C для остановки.", port)
+    # Планировщик: дневная сводка, документы, late-start.
+    # Все три задачи проверяют локальное время каждого владельца внутри себя,
+    # поэтому крутим их с UTC-cron-триггера.
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(daily_summary_job, "cron", minute="*/30", args=[owner_bot])
+    scheduler.add_job(doc_expiry_job, "cron", minute="*/30", args=[owner_bot])
+    scheduler.add_job(late_start_job, "cron", minute="*/15", args=[owner_bot])
+    scheduler.start()
+
+    logging.info("Боты, веб-кабинет и планировщик запущены. Порт: %s. Ctrl+C для остановки.", port)
     try:
         await asyncio.gather(
             owner_dp.start_polling(owner_bot),
@@ -77,6 +92,7 @@ async def main() -> None:
             uv_server.serve(),
         )
     finally:
+        scheduler.shutdown(wait=False)
         await owner_bot.session.close()
         await driver_bot.session.close()
 

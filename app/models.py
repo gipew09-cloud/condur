@@ -54,6 +54,10 @@ class Driver(Base):
     salary_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     per_diem_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
 
+    # ожидаемое время начала смены, формат "HH:MM" в TZ владельца.
+    # Используется APScheduler-ом, чтобы алёртить если водитель не начал.
+    shift_start_time: Mapped[str | None] = mapped_column(String(5))
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -71,6 +75,12 @@ class Vehicle(Base):
     brand: Mapped[str | None] = mapped_column(String(100))
     type: Mapped[str | None] = mapped_column(String(50))
     fuel_norm_per_100km: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+    # документы — для алертов APScheduler за 30 дней до истечения
+    osago_expires: Mapped[date | None] = mapped_column(Date)
+    inspection_expires: Mapped[date | None] = mapped_column(Date)
+    tacho_expires: Mapped[date | None] = mapped_column(Date)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -175,6 +185,24 @@ class Event(Base):
     trip_id: Mapped[int | None] = mapped_column(ForeignKey("trips.id"))
     event_type: Mapped[str] = mapped_column(String(50))
     payload: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ========== ШАБЛОНЫ МАРШРУТОВ ==========
+class RouteTemplate(Base):
+    """
+    Предзаданные маршруты владельца. Водитель при создании рейса
+    может выбрать один из шаблонов вместо ручного ввода городов и груза.
+    """
+    __tablename__ = "route_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    origin: Mapped[str] = mapped_column(Text)
+    destination: Mapped[str] = mapped_column(Text)
+    default_cargo: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

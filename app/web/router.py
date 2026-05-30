@@ -23,6 +23,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -660,65 +662,9 @@ async def finances_export(
     df, dt = _parse_period(period_from, period_to)
     summary = await _finance_summary(session, owner.id, df, dt)
 
-    wb = Workbook()
-    ws_summary = wb.active
-    ws_summary.title = "Итог"
-    ws_summary.append(["Период", f"{df.isoformat()} — {dt.isoformat()}"])
-    ws_summary.append([])
-    ws_summary.append(["Показатель", "Сумма, ₽"])
-    ws_summary.append(["Выручка по рейсам", float(summary["trip_revenue"])])
-    ws_summary.append(["Ручной доход", float(summary["manual_income"])])
-    ws_summary.append(["Топливо по рейсам", float(summary["fuel"])])
-    ws_summary.append(["Одобренные расходы водителей", float(summary["driver_expenses"])])
-    ws_summary.append(["Ручной расход", float(summary["manual_expense"])])
-    ws_summary.append(["Итого выручка", float(summary["total_income"])])
-    ws_summary.append(["Итого расход", float(summary["total_expense"])])
-    ws_summary.append(["Прибыль", float(summary["profit"])])
-
-    ws_entries = wb.create_sheet("Ручные записи")
-    ws_entries.append(["Дата", "Тип", "Категория", "Сумма, ₽", "Описание"])
-    entries_res = await session.execute(
-        select(ManualEntry)
-        .where(
-            ManualEntry.owner_id == owner.id,
-            ManualEntry.entry_date >= df,
-            ManualEntry.entry_date <= dt,
-        )
-        .order_by(ManualEntry.entry_date)
-    )
-    for e in entries_res.scalars().all():
-        ws_entries.append([
-            e.entry_date.isoformat(),
-            "Доход" if e.type == "income" else "Расход",
-            e.category or "",
-            float(e.amount_rub),
-            e.description or "",
-        ])
-
-    ws_trips = wb.create_sheet("Рейсы")
-    ws_trips.append(["Дата", "Маршрут", "Водитель", "Машина", "Выручка", "Топливо", "Прибыль"])
-    trips_res = await session.execute(
-        select(Trip, Driver.full_name, Vehicle.license_plate)
-        .join(Driver, Driver.id == Trip.driver_id)
-        .join(Vehicle, Vehicle.id == Trip.vehicle_id)
-        .where(
-            Trip.owner_id == owner.id,
-            Trip.status == "completed",
-            func.date(Trip.completed_at) >= df,
-            func.date(Trip.completed_at) <= dt,
-        )
-        .order_by(Trip.completed_at)
-    )
-    for trip, driver_name, plate in trips_res.all():
-        ws_trips.append([
-            trip.completed_at.date().isoformat() if trip.completed_at else "",
-            f"{trip.origin or ''} → {trip.destination or ''}",
-            driver_name,
-            plate,
-            float(trip.revenue_rub or 0),
-            float(trip.fuel_cost_rub or 0),
-            float(trip.profit_rub or 0),
-        ])
+    wb = _build_finance_workbook(summary, df, dt)
+    await _fill_entries_sheet(wb, session, owner.id, df, dt)
+    await _fill_trips_sheet(wb, session, owner.id, df, dt)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -729,6 +675,130 @@ async def finances_export(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# --------- Excel formatting helpers ---------
+_HEADER_FILL = PatternFill("solid", fgColor="305496")
+_HEADER_FONT = Font(bold=True, color="FFFFFF")
+_MONEY_FMT = "#,##0 ₽"
+_DATE_FMT = "DD.MM.YYYY"
+
+
+def _style_header(ws, ncols: int) -> None:
+    for col_idx in range(1, ncols + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.freeze_panes = "A2"
+
+
+def _autosize(ws) -> None:
+    for col_idx, col in enumerate(ws.columns, start=1):
+        max_len = 0
+        for cell in col:
+            value = cell.value
+            if value is None:
+                continue
+            text = str(value)
+            if len(text) > max_len:
+                max_len = len(text)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 10), 50)
+
+
+def _build_finance_workbook(summary: dict, df: date, dt: date) -> Workbook:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Итог"
+    ws.append(["Показатель", "Сумма"])
+    rows = [
+        ("Период", f"{df.strftime('%d.%m.%Y')} — {dt.strftime('%d.%m.%Y')}"),
+        ("Выручка по рейсам", float(summary["trip_revenue"])),
+        ("Ручной доход", float(summary["manual_income"])),
+        ("Топливо по рейсам", float(summary["fuel"])),
+        ("Одобренные расходы водителей", float(summary["driver_expenses"])),
+        ("Ручной расход", float(summary["manual_expense"])),
+        ("Итого выручка", float(summary["total_income"])),
+        ("Итого расход", float(summary["total_expense"])),
+        ("Прибыль", float(summary["profit"])),
+    ]
+    for label, value in rows:
+        ws.append([label, value])
+    _style_header(ws, 2)
+    for row_idx in range(2, ws.max_row + 1):
+        cell = ws.cell(row=row_idx, column=2)
+        if isinstance(cell.value, (int, float)):
+            cell.number_format = _MONEY_FMT
+            cell.alignment = Alignment(horizontal="right")
+    # выделим строку «Прибыль»
+    ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=2).font = Font(bold=True)
+    _autosize(ws)
+    return wb
+
+
+async def _fill_entries_sheet(wb: Workbook, session, owner_id: int, df: date, dt: date) -> None:
+    ws = wb.create_sheet("Ручные записи")
+    ws.append(["Дата", "Тип", "Категория", "Сумма", "Описание"])
+    entries_res = await session.execute(
+        select(ManualEntry)
+        .where(
+            ManualEntry.owner_id == owner_id,
+            ManualEntry.entry_date >= df,
+            ManualEntry.entry_date <= dt,
+        )
+        .order_by(ManualEntry.entry_date)
+    )
+    for e in entries_res.scalars().all():
+        ws.append([
+            e.entry_date,
+            "Доход" if e.type == "income" else "Расход",
+            e.category or "",
+            float(e.amount_rub),
+            e.description or "",
+        ])
+    _style_header(ws, 5)
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=1).number_format = _DATE_FMT
+        amount_cell = ws.cell(row=row_idx, column=4)
+        amount_cell.number_format = _MONEY_FMT
+        amount_cell.alignment = Alignment(horizontal="right")
+    _autosize(ws)
+
+
+async def _fill_trips_sheet(wb: Workbook, session, owner_id: int, df: date, dt: date) -> None:
+    ws = wb.create_sheet("Рейсы")
+    ws.append(["Дата", "Маршрут", "Водитель", "Машина", "Выручка", "Топливо", "Прибыль"])
+    trips_res = await session.execute(
+        select(Trip, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Trip.driver_id)
+        .join(Vehicle, Vehicle.id == Trip.vehicle_id)
+        .where(
+            Trip.owner_id == owner_id,
+            Trip.status == "completed",
+            func.date(Trip.completed_at) >= df,
+            func.date(Trip.completed_at) <= dt,
+        )
+        .order_by(Trip.completed_at)
+    )
+    for trip, driver_name, plate in trips_res.all():
+        ws.append([
+            trip.completed_at.date() if trip.completed_at else None,
+            f"{trip.origin or ''} → {trip.destination or ''}",
+            driver_name,
+            plate,
+            float(trip.revenue_rub or 0),
+            float(trip.fuel_cost_rub or 0),
+            float(trip.profit_rub or 0),
+        ])
+    _style_header(ws, 7)
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=1).number_format = _DATE_FMT
+        for col_idx in (5, 6, 7):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.number_format = _MONEY_FMT
+            cell.alignment = Alignment(horizontal="right")
+    _autosize(ws)
 
 
 def _parse_period(period_from: str | None, period_to: str | None) -> tuple[date, date]:

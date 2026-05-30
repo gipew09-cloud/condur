@@ -10,11 +10,15 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Shift, Trip
+from app.models import Expense, Shift, Trip
 
 # средняя цена литра 92-го по РФ на момент MVP, используется,
 # если водитель не уточнил собственную цену
 DEFAULT_FUEL_PRICE_RUB_PER_LITER = Decimal("68")
+
+
+def liters_from_rub(amount_rub: Decimal) -> Decimal:
+    return (amount_rub / DEFAULT_FUEL_PRICE_RUB_PER_LITER).quantize(Decimal("0.1"))
 
 
 async def get_active_trip(session: AsyncSession, shift_id: int) -> Trip | None:
@@ -70,13 +74,28 @@ async def complete_trip(
     session: AsyncSession,
     *,
     trip: Trip,
-    revenue_rub: Decimal,
-    fuel_liters: Decimal,
-    fuel_price: Decimal = DEFAULT_FUEL_PRICE_RUB_PER_LITER,
 ) -> Trip:
-    trip.revenue_rub = revenue_rub
-    trip.fuel_cost_rub = (fuel_liters * fuel_price).quantize(Decimal("0.01"))
+    """
+    Завершаем рейс без вопроса литров/выручки.
+    fuel_cost_rub считается из расходов категории 'fuel', привязанных
+    к этому рейсу (включая pending — потому что водитель может ещё ждать
+    одобрения, а P&L уже хочется видеть). Выручку владелец укажет позже
+    отдельным callback'ом.
+    """
+    fuel_total = await session.execute(
+        select(Expense.amount_rub).where(
+            Expense.trip_id == trip.id, Expense.category == "fuel"
+        )
+    )
+    fuel_sum = sum((row[0] or Decimal(0)) for row in fuel_total.all()) or Decimal(0)
+    trip.fuel_cost_rub = Decimal(fuel_sum).quantize(Decimal("0.01"))
     trip.status = "completed"
     trip.completed_at = datetime.now(timezone.utc)
-    # profit_rub считает Postgres через Computed column после flush/commit
+    return trip
+
+
+async def set_trip_revenue(
+    session: AsyncSession, *, trip: Trip, revenue_rub: Decimal
+) -> Trip:
+    trip.revenue_rub = revenue_rub.quantize(Decimal("0.01"))
     return trip
