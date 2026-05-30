@@ -540,6 +540,16 @@ async def _maybe_fuel_overrun_alert(
     if actual_per_100 <= norm * Decimal("1.10"):
         return
     pct = ((actual_per_100 / norm) - Decimal(1)) * Decimal(100)
+    # сколько примерно «лишних» рублей потрачено на топливо
+    expected_liters = (norm * Decimal(shift.distance_km) / Decimal(100))
+    excess_liters = liters - expected_liters
+    excess_rub = (excess_liters * trip_service.DEFAULT_FUEL_PRICE_RUB_PER_LITER).quantize(Decimal("0.01"))
+    await log_event(
+        session, owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+        event_type="fuel_overrun_alert",
+        payload={"percent": float(pct), "excess_rub": str(excess_rub)},
+    )
+    await session.commit()
     await notify_owner(
         owner_bot, session, owner,
         msg.ALERT_FUEL_OVERRUN.format(
