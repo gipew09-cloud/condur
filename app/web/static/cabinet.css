@@ -1,0 +1,240 @@
+/*
+  Дизайн кабинета. Подключается ПОСЛЕ pico.min.css и ПЕРЕД mobile.css.
+
+  Принципы:
+    - белый фон, тёмный текст
+    - один акцентный цвет — синий (#2563eb)
+    - карточки с тонкой рамкой и лёгкой тенью
+    - убрали избыточные отступы Pico
+    - моноширинные цифры в финансовых ячейках
+*/
+
+:root {
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --success-bg: #ecfdf5;
+  --success-text: #047857;
+  --danger-bg:  #fef2f2;
+  --danger-text: #b91c1c;
+  --warn-bg: #fffbeb;
+  --warn-text: #92400e;
+}
+
+/* ============ глобальные переменные Pico (override light theme) ============ */
+[data-theme="light"], :root:not([data-theme="dark"]) {
+  --pico-primary:                 var(--accent);
+  --pico-primary-hover:           var(--accent-hover);
+  --pico-primary-focus:           rgba(37, 99, 235, .25);
+  --pico-primary-inverse:         #ffffff;
+  --pico-background-color:        var(--bg);
+  --pico-card-background-color:   var(--surface);
+  --pico-card-border-color:       var(--border);
+  --pico-card-sectionning-background-color: var(--surface);
+  --pico-color:                   var(--text);
+  --pico-h1-color:                var(--text);
+  --pico-h2-color:                var(--text);
+  --pico-h3-color:                var(--text);
+  --pico-muted-color:             var(--text-muted);
+  --pico-muted-border-color:      var(--border);
+  --pico-form-element-background-color: var(--surface);
+  --pico-form-element-border-color:     var(--border);
+  --pico-table-border-color:      var(--border);
+  --pico-table-row-stripped-background-color: #f8fafc;
+}
+
+body { background: var(--bg); }
+
+/* ============ верхняя навигация ============ */
+header.container {
+  padding-top: 1rem;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+nav.topbar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: .6rem 1rem;
+  margin-bottom: 1.25rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+}
+nav.topbar ul { margin: 0; }
+nav.topbar ul:first-child strong { font-size: 1.1rem; color: var(--text); }
+nav.topbar a {
+  text-decoration: none;
+  color: var(--text-muted);
+  padding: .25rem .5rem;
+  border-radius: 6px;
+  transition: color .15s, background .15s;
+}
+nav.topbar a:hover { color: var(--accent); }
+nav.topbar a[aria-current="page"] {
+  color: var(--accent);
+  background: rgba(37, 99, 235, .08);
+  font-weight: 600;
+}
+
+/* ============ заголовки страниц ============ */
+main.container h2 {
+  font-size: 1.5rem;
+  margin: 0 0 1rem;
+  font-weight: 700;
+  letter-spacing: -.01em;
+}
+main.container h3 {
+  font-size: 1.05rem;
+  margin: 1.25rem 0 .75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+/* ============ KPI карточки ============ */
+.kpi-grid { gap: .75rem; }
+.kpi {
+  padding: .9rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+}
+.kpi small {
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+}
+.kpi strong {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ============ финансовая матрица 3×3 ============ */
+.finance-matrix {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 0 0 1rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+}
+.finance-matrix th,
+.finance-matrix td {
+  padding: .75rem 1rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.finance-matrix thead th {
+  background: #f1f5f9;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: .8rem;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.finance-matrix tbody th {
+  text-align: left;
+  font-weight: 600;
+  width: 20%;
+}
+.finance-matrix tbody tr:last-child th,
+.finance-matrix tbody tr:last-child td { border-bottom: none; }
+.finance-matrix .row-income td { color: var(--success-text); font-weight: 600; }
+.finance-matrix .row-expense td { color: var(--danger-text); }
+.finance-matrix .row-profit-total {
+  background: #f8fafc;
+}
+.finance-matrix .row-profit-total th,
+.finance-matrix .row-profit-total td {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+/* ============ обычные таблицы ============ */
+table {
+  background: var(--surface);
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+}
+table thead th {
+  background: #f8fafc;
+  font-weight: 600;
+  font-size: .85rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+table tbody tr:hover { background: #f8fafc; }
+
+/* цветные строки рейсов перебивают hover */
+.row-profit { background-color: #ecfdf5 !important; }
+.row-thin   { background-color: #fffbeb !important; }
+.row-loss   { background-color: #fef2f2 !important; }
+
+/* ============ кнопки ============ */
+button[type="submit"],
+.button-primary,
+[role="button"]:not(.outline):not(.secondary):not(.contrast) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+button[type="submit"]:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+[role="button"].secondary.outline {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: transparent;
+}
+[role="button"].contrast.outline {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+  background: transparent;
+}
+
+/* ============ pill (статус) ============ */
+.pill {
+  background: #eff6ff;
+  color: var(--accent);
+  font-weight: 600;
+  padding: .15rem .55rem;
+  border-radius: 999px;
+  font-size: .8em;
+}
+
+/* ============ замечания ============ */
+.insights {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: .75rem 1rem .75rem 2rem;
+  margin: 0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+}
+.insights li { margin: .35rem 0; }
+
+/* ============ inline-форма редактирования (внутри строки таблицы) ============ */
+@media (min-width: 769px) {
+  .edit-form {
+    background: #f8fafc;
+    padding: .75rem;
+    border-radius: 8px;
+  }
+}
+
+/* ============ ссылки ============ */
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }

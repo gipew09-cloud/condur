@@ -2,21 +2,49 @@
 {% block title %}Главная{% endblock %}
 
 {% block content %}
-<h2>Дашборд</h2>
+<h2>Главная</h2>
 
-<h3 style="margin-top: 1rem;">Выручка</h3>
-<section class="kpi-grid">
-  <div class="kpi"><small>Сегодня</small><strong>{{ "{:,.0f}".format(kpi.revenue_today).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Этот месяц</small><strong>{{ "{:,.0f}".format(kpi.revenue_month).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Этот год</small><strong>{{ "{:,.0f}".format(kpi.revenue_year).replace(',', ' ') }} ₽</strong></div>
+{% macro money(value) -%}
+{{ "{:,.0f}".format(value).replace(',', ' ') }} ₽
+{%- endmacro %}
+
+<section class="finance-grid">
+  <table class="finance-matrix">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Сегодня</th>
+        <th>Этот месяц</th>
+        <th>Этот год</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="row-income">
+        <th>💰 Доход</th>
+        <td>{{ money(finance.today.income) }}</td>
+        <td>{{ money(finance.month.income) }}</td>
+        <td>{{ money(finance.year.income) }}</td>
+      </tr>
+      <tr class="row-expense">
+        <th>💳 Расход</th>
+        <td>{{ money(finance.today.expense) }}</td>
+        <td>{{ money(finance.month.expense) }}</td>
+        <td>{{ money(finance.year.expense) }}</td>
+      </tr>
+      <tr class="row-profit-total">
+        <th>📈 Прибыль</th>
+        <td>{{ money(finance.today.profit) }}</td>
+        <td>{{ money(finance.month.profit) }}</td>
+        <td>{{ money(finance.year.profit) }}</td>
+      </tr>
+    </tbody>
+  </table>
 </section>
 
-<h3 style="margin-top: 1.5rem;">Операции и P&L</h3>
+<h3 style="margin-top: 1.5rem;">Операции сегодня</h3>
 <section class="kpi-grid">
   <div class="kpi"><small>Рейсов сегодня</small><strong>{{ kpi.trips_today }}</strong></div>
   <div class="kpi"><small>Километров сегодня</small><strong>{{ kpi.km_today }}</strong></div>
-  <div class="kpi"><small>Расходы за месяц</small><strong>{{ "{:,.0f}".format(kpi.expenses_month).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Чистая прибыль за месяц</small><strong>{{ "{:,.0f}".format(kpi.profit_month).replace(',', ' ') }} ₽</strong></div>
 </section>
 
 <section style="margin-top: 2rem;">

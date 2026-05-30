@@ -883,7 +883,7 @@ async def btn_upload_waybill(
         await _refresh_ui(message, session, driver, msg.SHIFT_NO_ACTIVE)
         return
     trip = await trip_service.get_active_trip(session, shift.id)
-    if trip is None or trip.status == "created":
+    if trip is None:
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
         return
 

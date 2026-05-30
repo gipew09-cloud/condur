@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -129,6 +130,65 @@ def _today_window() -> tuple[datetime, datetime]:
     return start, now
 
 
+async def _period_totals(
+    session: AsyncSession, owner_id: int, dt_from: datetime, date_from: date
+) -> dict:
+    """
+    Считает доход / расход / прибыль за период.
+      доход = SUM(trips.revenue_rub completed) + SUM(manual_entries income)
+      расход = SUM(expenses.amount_rub approved) + SUM(manual_entries expense)
+              fuel_cost_rub из trips НЕ суммируем — топливо уже в expenses
+              (по нашему flow «Расход → Топливо»), иначе двойной счёт.
+    """
+    trip_revenue = (
+        await session.execute(
+            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
+                Trip.owner_id == owner_id,
+                Trip.status == "completed",
+                Trip.completed_at >= dt_from,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
+    manual_income = (
+        await session.execute(
+            select(func.coalesce(func.sum(ManualEntry.amount_rub), 0)).where(
+                ManualEntry.owner_id == owner_id,
+                ManualEntry.type == "income",
+                ManualEntry.entry_date >= date_from,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
+    approved_expenses = (
+        await session.execute(
+            select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
+                Expense.owner_id == owner_id,
+                Expense.status == "approved",
+                Expense.created_at >= dt_from,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
+    manual_expense = (
+        await session.execute(
+            select(func.coalesce(func.sum(ManualEntry.amount_rub), 0)).where(
+                ManualEntry.owner_id == owner_id,
+                ManualEntry.type == "expense",
+                ManualEntry.entry_date >= date_from,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
+    income = Decimal(trip_revenue) + Decimal(manual_income)
+    expense = Decimal(approved_expenses) + Decimal(manual_expense)
+    return {
+        "income": income,
+        "expense": expense,
+        "profit": income - expense,
+    }
+
+
 # =========================================================================
 # /login
 # =========================================================================
@@ -195,7 +255,6 @@ async def dashboard(
 ):
     today_start, today_end = _today_window()
     month_start, month_end = _month_window()
-
     year_start = datetime(today_end.year, 1, 1, tzinfo=timezone.utc)
 
     trips_today = (
@@ -218,81 +277,15 @@ async def dashboard(
         )
     ).scalar_one() or 0
 
-    revenue_today = (
-        await session.execute(
-            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
-                Trip.owner_id == owner.id,
-                Trip.status == "completed",
-                Trip.completed_at >= today_start,
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    revenue_month = (
-        await session.execute(
-            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
-                Trip.owner_id == owner.id,
-                Trip.status == "completed",
-                Trip.completed_at >= month_start,
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    revenue_year = (
-        await session.execute(
-            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
-                Trip.owner_id == owner.id,
-                Trip.status == "completed",
-                Trip.completed_at >= year_start,
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    expenses_month_approved = (
-        await session.execute(
-            select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
-                Expense.owner_id == owner.id,
-                Expense.status == "approved",
-                Expense.created_at >= month_start,
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    fuel_month = (
-        await session.execute(
-            select(func.coalesce(func.sum(Trip.fuel_cost_rub), 0)).where(
-                Trip.owner_id == owner.id,
-                Trip.status == "completed",
-                Trip.completed_at >= month_start,
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    manual_income_month = (
-        await session.execute(
-            select(func.coalesce(func.sum(ManualEntry.amount_rub), 0)).where(
-                ManualEntry.owner_id == owner.id,
-                ManualEntry.type == "income",
-                ManualEntry.entry_date >= month_start.date(),
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    manual_expense_month = (
-        await session.execute(
-            select(func.coalesce(func.sum(ManualEntry.amount_rub), 0)).where(
-                ManualEntry.owner_id == owner.id,
-                ManualEntry.type == "expense",
-                ManualEntry.entry_date >= month_start.date(),
-            )
-        )
-    ).scalar_one() or Decimal(0)
-
-    total_revenue = Decimal(revenue_month) + Decimal(manual_income_month)
-    total_expenses = (
-        Decimal(expenses_month_approved) + Decimal(fuel_month) + Decimal(manual_expense_month)
-    )
-    profit_month = total_revenue - total_expenses
+    # три периода × доход/расход/прибыль.
+    # доход = выручка рейсов + ручные доходы
+    # расход = одобренные expenses (любых категорий, включая fuel) + ручные расходы
+    #         НЕ суммируем trips.fuel_cost_rub отдельно — это вызывало двойной счёт
+    finance = {
+        "today": await _period_totals(session, owner.id, today_start, today_start.date()),
+        "month": await _period_totals(session, owner.id, month_start, month_start.date()),
+        "year": await _period_totals(session, owner.id, year_start, year_start.date()),
+    }
 
     # последние 10 рейсов
     last_trips_res = await session.execute(
@@ -318,12 +311,8 @@ async def dashboard(
             "kpi": {
                 "trips_today": trips_today,
                 "km_today": km_today,
-                "revenue_today": Decimal(revenue_today),
-                "revenue_month": Decimal(revenue_month),
-                "revenue_year": Decimal(revenue_year),
-                "expenses_month": total_expenses,
-                "profit_month": profit_month,
             },
+            "finance": finance,
             "last_trips": last_trips,
             "chart": chart,
             "insights": insights,
@@ -462,7 +451,9 @@ async def drivers_page(
 async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
     month_start, _ = _month_window()
     drivers_res = await session.execute(
-        select(Driver).where(Driver.owner_id == owner_id).order_by(Driver.full_name)
+        select(Driver)
+        .where(Driver.owner_id == owner_id, Driver.is_active.is_(True))
+        .order_by(Driver.full_name)
     )
     drivers = list(drivers_res.scalars().all())
 
@@ -502,21 +493,29 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
     return rows
 
 
-@app.post("/drivers/{driver_id}/salary", response_class=HTMLResponse)
-async def update_driver_salary(
+_SHIFT_TIME_RE_WEB = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+@app.post("/drivers/{driver_id}", response_class=HTMLResponse)
+async def update_driver(
     request: Request,
     driver_id: int,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    full_name: Annotated[str, Form()],
     salary_type: Annotated[str, Form()],
     salary_rate: Annotated[str, Form()],
+    phone: Annotated[str, Form()] = "",
     per_diem_rub: Annotated[str, Form()] = "0",
+    shift_start_time: Annotated[str, Form()] = "",
 ):
     driver = await session.get(Driver, driver_id)
     if driver is None or driver.owner_id != owner.id:
         raise HTTPException(status_code=404, detail="Driver not found")
     if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift"):
         raise HTTPException(status_code=400, detail="Bad salary_type")
+    if len(full_name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Bad name")
     try:
         rate = Decimal(salary_rate.replace(",", "."))
         per_diem = Decimal(per_diem_rub.replace(",", "."))
@@ -525,17 +524,38 @@ async def update_driver_salary(
     except InvalidOperation:
         raise HTTPException(status_code=400, detail="Bad numeric values")
 
+    sst = shift_start_time.strip()
+    if sst and not _SHIFT_TIME_RE_WEB.match(sst):
+        raise HTTPException(status_code=400, detail="Bad shift_start_time")
+
+    driver.full_name = full_name.strip()
+    driver.phone = phone.strip() or None
     driver.salary_type = salary_type
     driver.salary_rate = rate
     driver.per_diem_rub = per_diem
+    driver.shift_start_time = sst or None
     await session.commit()
 
-    # HTMX-парциал: одна строка таблицы
     rows = await _drivers_stats(session, owner.id)
     row = next((r for r in rows if r["driver"].id == driver.id), None)
     return templates.TemplateResponse(
         "_driver_row.html", {"request": request, "row": row, "edit": False}
     )
+
+
+@app.delete("/drivers/{driver_id}", response_class=HTMLResponse)
+async def delete_driver(
+    driver_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Мягкое удаление — is_active=False, чтобы FK на смены/рейсы не ломались."""
+    driver = await session.get(Driver, driver_id)
+    if driver is None or driver.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    driver.is_active = False
+    await session.commit()
+    return HTMLResponse("")
 
 
 @app.get("/drivers/{driver_id}/edit", response_class=HTMLResponse)
@@ -1058,7 +1078,9 @@ async def _finance_summary(
     ).scalar_one() or Decimal(0)
 
     total_income = Decimal(trip_revenue) + Decimal(manual_income)
-    total_expense = Decimal(fuel) + Decimal(driver_expenses) + Decimal(manual_expense)
+    # Топливо не суммируем отдельно — оно уже учтено в одобренных expenses
+    # (категория fuel). Иначе получаем двойной счёт.
+    total_expense = Decimal(driver_expenses) + Decimal(manual_expense)
     return {
         "trip_revenue": Decimal(trip_revenue),
         "fuel": Decimal(fuel),

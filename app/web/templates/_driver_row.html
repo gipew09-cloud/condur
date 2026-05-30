@@ -7,9 +7,16 @@
 } %}
 {% if edit %}
 <tr id="driver-row-{{ d.id }}">
-  <td>{{ d.full_name }}</td>
-  <td colspan="7">
-    <form hx-post="/drivers/{{ d.id }}/salary" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="edit-form">
+  <td colspan="8">
+    <form hx-post="/drivers/{{ d.id }}" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="edit-form">
+      <label>
+        ФИО
+        <input type="text" name="full_name" value="{{ d.full_name }}" required>
+      </label>
+      <label>
+        Телефон
+        <input type="text" name="phone" value="{{ d.phone or '' }}" placeholder="+7XXXXXXXXXX">
+      </label>
       <label>
         Тип ЗП
         <select name="salary_type">
@@ -27,20 +34,27 @@
         Суточные, ₽
         <input type="text" name="per_diem_rub" value="{{ d.per_diem_rub }}">
       </label>
+      <label>
+        Старт смены
+        <input type="text" name="shift_start_time" value="{{ d.shift_start_time or '' }}" placeholder="08:00">
+      </label>
       <button type="submit">Сохранить</button>
       <a href="#" hx-get="/drivers/{{ d.id }}/cancel" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
+      <a href="#" hx-delete="/drivers/{{ d.id }}" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML"
+         hx-confirm="Удалить водителя {{ d.full_name }}? История смен сохранится."
+         role="button" class="contrast outline">🗑 Удалить</a>
     </form>
   </td>
 </tr>
 {% else %}
 <tr id="driver-row-{{ d.id }}">
-  <td>{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill">не активирован</span>{% endif %}</td>
-  <td>{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}</td>
-  <td class="num">{{ row.shifts }}</td>
-  <td class="num">{{ row.trips }}</td>
-  <td class="num">{{ row.km }}</td>
-  <td class="num">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }}</td>
-  <td class="num">{{ "{:,.0f}".format(row.fuel_cost).replace(',', ' ') }}</td>
+  <td data-label="Водитель">{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill">не активирован</span>{% endif %}</td>
+  <td data-label="Тип / ставка">{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}</td>
+  <td data-label="Смен" class="num">{{ row.shifts }}</td>
+  <td data-label="Рейсов" class="num">{{ row.trips }}</td>
+  <td data-label="Пробег, км" class="num">{{ row.km }}</td>
+  <td data-label="Выручка" class="num">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }}</td>
+  <td data-label="Топливо" class="num">{{ "{:,.0f}".format(row.fuel_cost).replace(',', ' ') }}</td>
   <td>
     <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">✎ Изменить</a>
   </td>

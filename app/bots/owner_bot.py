@@ -213,15 +213,31 @@ async def onb_driver_phone(message: Message, state: FSMContext) -> None:
     await state.update_data(driver_phone=phone)
     await state.set_state(Onboarding.route_from)
     await message.answer(
-        "<b>Шаг 5/5.</b> Создадим первый шаблон маршрута.\n\nОткуда (город):"
+        "<b>Шаг 5/5.</b> Можно сразу создать первый шаблон маршрута — "
+        "тогда водителю не придётся каждый раз вбивать города руками.\n\n"
+        "Откуда (город) — или нажмите «Пропустить»:",
+        reply_markup=kb.skip_or_cancel_inline("onb:skip_route"),
     )
+
+
+@owner_router.callback_query(
+    Onboarding.route_from, F.data == "onb:skip_route"
+)
+async def cb_onb_skip_route(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, driver_bot: Bot
+) -> None:
+    await call.message.delete()
+    # сразу завершаем без шаблона
+    await state.update_data(route_from=None)
+    await _onboarding_complete(call.message, state, session, driver_bot, destination=None)
+    await call.answer()
 
 
 @owner_router.message(Onboarding.route_from)
 async def onb_route_from(message: Message, state: FSMContext) -> None:
     origin = (message.text or "").strip()
     if not origin:
-        await message.answer("Введите город отправления.")
+        await message.answer("Введите город или нажмите «Пропустить».")
         return
     await state.update_data(route_from=origin)
     await state.set_state(Onboarding.route_to)
@@ -236,12 +252,22 @@ async def onb_finalize(
     if not destination:
         await message.answer("Введите город назначения.")
         return
+    await _onboarding_complete(message, state, session, driver_bot, destination=destination)
+
+
+async def _onboarding_complete(
+    reply_target: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    driver_bot: Bot,
+    destination: str | None,
+) -> None:
     data = await state.get_data()
 
     # 1. Owner
     owner = Owner(
-        telegram_id=message.from_user.id,
-        full_name=message.from_user.full_name,
+        telegram_id=reply_target.chat.id,
+        full_name=reply_target.chat.full_name,
         company_name=data["company"],
         phone=data["phone"],
     )
@@ -250,14 +276,14 @@ async def onb_finalize(
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        existing = await _get_owner(session, message.from_user.id)
+        existing = await _get_owner(session, reply_target.chat.id)
         if existing is not None:
             await state.clear()
-            await _show_main_menu(message, existing)
+            await _show_main_menu(reply_target, existing)
             return
         logger.exception("Onboarding owner create failed")
         await state.clear()
-        await message.answer(msg.SOMETHING_WRONG)
+        await reply_target.answer(msg.SOMETHING_WRONG)
         return
 
     # 2. Free subscription
@@ -288,32 +314,34 @@ async def onb_finalize(
     )
     session.add(driver)
 
-    # 5. Route template
-    session.add(RouteTemplate(
-        owner_id=owner.id,
-        name=f"{data['route_from']} → {destination}",
-        origin=data["route_from"],
-        destination=destination,
-        default_cargo=None,
-    ))
+    # 5. Route template — только если указали оба города
+    route_line = ""
+    if data.get("route_from") and destination:
+        session.add(RouteTemplate(
+            owner_id=owner.id,
+            name=f"{data['route_from']} → {destination}",
+            origin=data["route_from"],
+            destination=destination,
+        ))
+        route_line = f"Маршрут: <b>{data['route_from']} → {destination}</b>\n"
 
     await session.commit()
     await state.clear()
 
     me = await driver_bot.get_me()
     link = f"https://t.me/{me.username}?start={invite_token}"
-    await message.answer(
+    await reply_target.answer(
         "🎉 <b>Готово!</b>\n\n"
         f"Компания: <b>{owner.company_name}</b>\n"
         f"Машина: <b>{vehicle.license_plate}</b> ({vehicle.brand})\n"
         f"Водитель: <b>{driver.full_name}</b>\n"
-        f"Маршрут: <b>{data['route_from']} → {destination}</b>\n"
+        f"{route_line}"
         f"Тариф: <b>FREE</b> (до 2 машин)\n\n"
         "Отправьте водителю ссылку для подключения:\n"
         f"<code>{link}</code>\n\n"
         "Дальше: /tariffs · /calc · /login (вход в веб-кабинет)"
     )
-    await _show_main_menu(message, owner)
+    await _show_main_menu(reply_target, owner)
 
 
 # =========================================================================

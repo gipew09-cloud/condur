@@ -150,6 +150,7 @@ def driver_shift_no_trip_kb() -> ReplyKeyboardMarkup:
 def driver_trip_created_kb() -> ReplyKeyboardMarkup:
     return _kb(
         [BTN_TRIP_DEPART],
+        [BTN_UPLOAD_WAYBILL],
         [BTN_EXPENSE, BTN_SOS],
         [BTN_STATUS],
     )
