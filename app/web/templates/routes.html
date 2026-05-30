@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Направления{% endblock %}
+
+{% block content %}
+<h2>Прибыль по направлениям</h2>
+<p><small>Группировка завершённых рейсов с указанной выручкой. Отсортировано от самых прибыльных к убыточным.</small></p>
+
+{% if not rows %}
+  <p>Завершённых рейсов с указанной выручкой пока нет.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Направление</th>
+        <th class="num">Рейсов</th>
+        <th class="num">Ср. выручка</th>
+        <th class="num">Ср. прибыль</th>
+        <th class="num">Ср. маржа</th>
+        <th class="num">Итого прибыль</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {% set cls = 'row-loss' if row.avg_profit < 0 else 'row-profit' if row.avg_margin >= 20 else 'row-thin' %}
+      <tr class="{{ cls }}">
+        <td data-label="Направление"><b>{{ row.origin }} → {{ row.destination }}</b></td>
+        <td data-label="Рейсов" class="num">{{ row.trips_count }}</td>
+        <td data-label="Ср. выручка" class="num">{{ "{:,.0f}".format(row.avg_revenue).replace(',', ' ') }}</td>
+        <td data-label="Ср. прибыль" class="num">{{ "{:,.0f}".format(row.avg_profit).replace(',', ' ') }}</td>
+        <td data-label="Ср. маржа" class="num">{{ "{:.0f}".format(row.avg_margin) }}%</td>
+        <td data-label="Итого прибыль" class="num"><b>{{ "{:,.0f}".format(row.total_profit).replace(',', ' ') }}</b></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

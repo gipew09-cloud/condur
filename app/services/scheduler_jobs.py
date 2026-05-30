@@ -13,7 +13,7 @@
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot
 from sqlalchemy import func, select
@@ -310,3 +310,236 @@ async def silence_detector_job(owner_bot: Bot) -> None:
                 payload={"hours_silent": round(hours, 1)},
             )
         await session.commit()
+
+
+# =========================================================================
+# Еженедельный разбор — воскресенье 20:00 локального времени владельца
+# =========================================================================
+async def weekly_review_job(owner_bot: Bot) -> None:
+    async with async_session() as session:
+        owners_res = await session.execute(select(Owner))
+        for owner in owners_res.scalars().all():
+            local = now_in_tz(owner.timezone)
+            # воскресенье = weekday() == 6, окно 20:00..20:30
+            if local.weekday() != 6 or local.hour != 20 or local.minute >= 30:
+                continue
+            # уже отправляли сегодня?
+            already = await session.execute(
+                select(Event.id).where(
+                    Event.owner_id == owner.id,
+                    Event.event_type == "weekly_review_sent",
+                    Event.created_at >= datetime.combine(
+                        local.date(), datetime.min.time()
+                    ).replace(tzinfo=owner_tz(owner.timezone)),
+                )
+            )
+            if already.scalar_one_or_none() is not None:
+                continue
+            await _send_weekly_review(session, owner_bot, owner, local)
+
+
+async def _send_weekly_review(
+    session, owner_bot: Bot, owner: Owner, local_now: datetime
+) -> None:
+    """
+    Период «неделя» = последние 7 дней (включая сегодня).
+    Сравнение с предыдущей неделей: 7..13 дней назад.
+    """
+    tz = owner_tz(owner.timezone)
+    week_end = local_now
+    week_start = (week_end - timedelta(days=7)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    prev_week_end = week_start
+    prev_week_start = week_start - timedelta(days=7)
+
+    def _utc(dt):
+        return dt.astimezone(timezone.utc)
+
+    # Прибыль текущей и прошлой недели
+    cur_profit = await _sum_profit(session, owner.id, _utc(week_start), _utc(week_end))
+    prev_profit = await _sum_profit(session, owner.id, _utc(prev_week_start), _utc(prev_week_end))
+
+    # Топ-3 прибыльных и убыточных рейса за неделю
+    trips_res = await session.execute(
+        select(Trip, Driver.full_name)
+        .join(Driver, Driver.id == Trip.driver_id)
+        .where(
+            Trip.owner_id == owner.id,
+            Trip.status == "completed",
+            Trip.completed_at >= _utc(week_start),
+            Trip.completed_at <= _utc(week_end),
+            Trip.revenue_rub.is_not(None),
+        )
+    )
+    trips_with_profit = []
+    for trip, driver_name in trips_res.all():
+        if trip.profit_rub is None:
+            continue
+        trips_with_profit.append((trip, driver_name, Decimal(trip.profit_rub)))
+    trips_with_profit.sort(key=lambda x: x[2], reverse=True)
+    top_profitable = trips_with_profit[:3]
+    top_loss = sorted(trips_with_profit, key=lambda x: x[2])[:3]
+
+    # Водитель с самым высоким расходом топлива
+    fuel_res = await session.execute(
+        select(
+            Driver.full_name,
+            func.coalesce(func.sum(Expense.amount_rub), 0).label("fuel_sum"),
+        )
+        .select_from(Expense)
+        .join(Driver, Driver.id == Expense.driver_id)
+        .where(
+            Expense.owner_id == owner.id,
+            Expense.category == "fuel",
+            Expense.status == "approved",
+            Expense.created_at >= _utc(week_start),
+            Expense.created_at <= _utc(week_end),
+        )
+        .group_by(Driver.full_name)
+        .order_by(func.sum(Expense.amount_rub).desc())
+        .limit(1)
+    )
+    fuel_winner = fuel_res.first()
+
+    lines = ["📅 <b>Итоги недели</b>\n"]
+    lines.append(
+        f"Прибыль: <b>{cur_profit:,.0f} ₽</b>".replace(",", " ") +
+        (
+            f" ({'↑' if cur_profit > prev_profit else '↓'} {abs(cur_profit - prev_profit):,.0f} ₽ vs прошлая)".replace(",", " ")
+            if prev_profit != 0 or cur_profit != 0 else ""
+        )
+    )
+    if top_profitable:
+        lines.append("\n🏆 <b>Самые прибыльные:</b>")
+        for t, name, profit in top_profitable:
+            lines.append(f"  • {t.origin} → {t.destination} ({name}) — {profit:,.0f} ₽".replace(",", " "))
+    if top_loss and top_loss[0][2] < 0:
+        lines.append("\n📉 <b>Убыточные:</b>")
+        for t, name, profit in top_loss:
+            if profit >= 0:
+                break
+            lines.append(f"  • {t.origin} → {t.destination} ({name}) — {profit:,.0f} ₽".replace(",", " "))
+    if fuel_winner:
+        fuel_name, fuel_sum = fuel_winner
+        lines.append(f"\n⛽️ Больше всего на топливо: <b>{fuel_name}</b> ({Decimal(fuel_sum):,.0f} ₽)".replace(",", " "))
+
+    await log_event(
+        session, owner_id=owner.id, event_type="weekly_review_sent",
+        payload={"profit": str(cur_profit)},
+    )
+    await session.commit()
+    await notify_owner(owner_bot, session, owner, "\n".join(lines))
+
+
+async def _sum_profit(session, owner_id: int, dt_from, dt_to) -> Decimal:
+    """Прибыль за период = выручка рейсов − одобренные расходы."""
+    revenue = (
+        await session.execute(
+            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
+                Trip.owner_id == owner_id,
+                Trip.status == "completed",
+                Trip.completed_at >= dt_from,
+                Trip.completed_at <= dt_to,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+    expenses = (
+        await session.execute(
+            select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
+                Expense.owner_id == owner_id,
+                Expense.status == "approved",
+                Expense.created_at >= dt_from,
+                Expense.created_at <= dt_to,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+    return Decimal(revenue) - Decimal(expenses)
+
+
+# =========================================================================
+# Экономометр — 1 числа каждого месяца, 10:00 локально
+# Считает «сколько денег система помогла увидеть» за прошлый месяц:
+#   - сумма перерасходов топлива из event 'fuel_overrun_alert'
+#   - сумма отклонённых расходов
+#   - прибыль за месяц
+# =========================================================================
+async def monthly_econometer_job(owner_bot: Bot) -> None:
+    async with async_session() as session:
+        owners_res = await session.execute(select(Owner))
+        for owner in owners_res.scalars().all():
+            local = now_in_tz(owner.timezone)
+            if local.day != 1 or local.hour != 10 or local.minute >= 30:
+                continue
+            already = await session.execute(
+                select(Event.id).where(
+                    Event.owner_id == owner.id,
+                    Event.event_type == "econometer_sent",
+                    Event.created_at >= datetime.combine(
+                        local.date(), datetime.min.time()
+                    ).replace(tzinfo=owner_tz(owner.timezone)),
+                )
+            )
+            if already.scalar_one_or_none() is not None:
+                continue
+            await _send_econometer(session, owner_bot, owner, local)
+
+
+async def _send_econometer(session, owner_bot: Bot, owner: Owner, local_now: datetime) -> None:
+    tz = owner_tz(owner.timezone)
+    # прошлый месяц
+    first_of_this = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_of_prev = first_of_this - timedelta(seconds=1)
+    first_of_prev = last_of_prev.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    def _utc(d):
+        return d.astimezone(timezone.utc)
+
+    # 1. Перерасходы топлива
+    overruns_res = await session.execute(
+        select(Event.payload).where(
+            Event.owner_id == owner.id,
+            Event.event_type == "fuel_overrun_alert",
+            Event.created_at >= _utc(first_of_prev),
+            Event.created_at <= _utc(last_of_prev),
+        )
+    )
+    overrun_total = Decimal(0)
+    for (payload,) in overruns_res.all():
+        if payload and "excess_rub" in payload:
+            try:
+                overrun_total += Decimal(payload["excess_rub"])
+            except (InvalidOperation, TypeError):
+                pass
+
+    # 2. Отклонённые расходы
+    rejected = (
+        await session.execute(
+            select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
+                Expense.owner_id == owner.id,
+                Expense.status == "rejected",
+                Expense.decided_at >= _utc(first_of_prev),
+                Expense.decided_at <= _utc(last_of_prev),
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
+    # 3. Прибыль за прошлый месяц
+    profit = await _sum_profit(session, owner.id, _utc(first_of_prev), _utc(last_of_prev))
+
+    saved = overrun_total + Decimal(rejected)
+    month_label = last_of_prev.strftime("%B %Y").lower()
+    text = (
+        f"📈 <b>Итоги {month_label}</b>\n\n"
+        f"Прибыль за месяц: <b>{profit:,.0f} ₽</b>\n\n".replace(",", " ") +
+        f"Система помогла увидеть ~<b>{saved:,.0f} ₽</b>:".replace(",", " ") + "\n"
+        f"• Перерасход топлива: {overrun_total:,.0f} ₽\n".replace(",", " ") +
+        f"• Отклонённые расходы: {Decimal(rejected):,.0f} ₽\n".replace(",", " ") +
+        "\n<i>Это сумма, которую вы успели проконтролировать благодаря автоматическим алертам и проверкам.</i>"
+    )
+    await log_event(
+        session, owner_id=owner.id, event_type="econometer_sent",
+        payload={"saved": str(saved), "profit": str(profit)},
+    )
+    await session.commit()
+    await notify_owner(owner_bot, session, owner, text)

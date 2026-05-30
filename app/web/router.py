@@ -597,7 +597,7 @@ async def driver_cancel_edit(
 # /vehicles
 # =========================================================================
 async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start) -> dict:
-    """Считаем месячные показатели по одной машине."""
+    """Считаем месячные показатели по одной машине: пробег, рейсы, выручка, расходы, прибыль."""
     km = (
         await session.execute(
             select(func.coalesce(func.sum(Shift.distance_km), 0)).where(
@@ -607,25 +607,48 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
             )
         )
     ).scalar_one() or 0
-    fuel = (
+    trips_agg = await session.execute(
+        select(
+            func.count(Trip.id),
+            func.coalesce(func.sum(Trip.revenue_rub), 0),
+            func.coalesce(func.sum(Trip.fuel_cost_rub), 0),
+        ).where(
+            Trip.vehicle_id == vehicle.id,
+            Trip.status == "completed",
+            Trip.completed_at >= month_start,
+        )
+    )
+    trips_count, revenue, fuel = trips_agg.one()
+    # одобренные расходы водителей по сменам этой машины за период
+    approved = (
         await session.execute(
-            select(func.coalesce(func.sum(Trip.fuel_cost_rub), 0)).where(
-                Trip.vehicle_id == vehicle.id,
-                Trip.status == "completed",
-                Trip.completed_at >= month_start,
+            select(func.coalesce(func.sum(Expense.amount_rub), 0))
+            .select_from(Expense)
+            .join(Shift, Shift.id == Expense.shift_id)
+            .where(
+                Shift.vehicle_id == vehicle.id,
+                Expense.status == "approved",
+                Expense.created_at >= month_start,
             )
         )
     ).scalar_one() or Decimal(0)
-    trips_count = (
-        await session.execute(
-            select(func.count(Trip.id)).where(
-                Trip.vehicle_id == vehicle.id,
-                Trip.status == "completed",
-                Trip.completed_at >= month_start,
-            )
-        )
-    ).scalar_one() or 0
-    return {"vehicle": vehicle, "km": km, "fuel": Decimal(fuel), "trips": trips_count}
+    revenue = Decimal(revenue or 0)
+    fuel = Decimal(fuel or 0)
+    approved = Decimal(approved)
+    # топливо уже в одобренных expenses (если водитель его одобрил), но
+    # часть может быть pending — суммируем только approved + не дублируем fuel
+    total_expense = approved
+    profit = revenue - total_expense
+    margin = (profit / revenue * Decimal(100)) if revenue > 0 else Decimal(0)
+    return {
+        "vehicle": vehicle,
+        "km": km, "fuel": fuel,
+        "trips": trips_count or 0,
+        "revenue": revenue,
+        "expense": total_expense,
+        "profit": profit,
+        "margin": margin,
+    }
 
 
 @app.get("/vehicles", response_class=HTMLResponse)
@@ -642,9 +665,13 @@ async def vehicles_page(
     )
     vehicles = list(vehicles_res.scalars().all())
     rows = [await _vehicle_row_dict(session, v, month_start) for v in vehicles]
+    in_minus = sum(1 for r in rows if r["profit"] < 0)
     return templates.TemplateResponse(
         "vehicles.html",
-        {"request": request, "owner": owner, "rows": rows, "active_page": "vehicles"},
+        {
+            "request": request, "owner": owner, "rows": rows,
+            "active_page": "vehicles", "in_minus": in_minus,
+        },
     )
 
 
@@ -1094,6 +1121,57 @@ async def _finance_summary(
 
 
 # =========================================================================
+# /routes — прибыль по направлениям (группировка по origin → destination)
+# =========================================================================
+@app.get("/routes", response_class=HTMLResponse)
+async def routes_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    # Один запрос: GROUP BY origin, destination для completed рейсов с заполненной выручкой
+    rows_res = await session.execute(
+        select(
+            Trip.origin,
+            Trip.destination,
+            func.count(Trip.id).label("trips_count"),
+            func.coalesce(func.avg(Trip.revenue_rub), 0).label("avg_revenue"),
+            func.coalesce(func.avg(Trip.profit_rub), 0).label("avg_profit"),
+            func.coalesce(func.sum(Trip.revenue_rub), 0).label("total_revenue"),
+            func.coalesce(func.sum(Trip.profit_rub), 0).label("total_profit"),
+        )
+        .where(
+            Trip.owner_id == owner.id,
+            Trip.status == "completed",
+            Trip.revenue_rub.is_not(None),
+            Trip.origin.is_not(None),
+            Trip.destination.is_not(None),
+        )
+        .group_by(Trip.origin, Trip.destination)
+    )
+    rows = []
+    for origin, destination, trips_count, avg_revenue, avg_profit, total_revenue, total_profit in rows_res.all():
+        avg_revenue = Decimal(avg_revenue or 0)
+        avg_profit = Decimal(avg_profit or 0)
+        margin = (avg_profit / avg_revenue * Decimal(100)) if avg_revenue > 0 else Decimal(0)
+        rows.append({
+            "origin": origin, "destination": destination,
+            "trips_count": trips_count,
+            "avg_revenue": avg_revenue,
+            "avg_profit": avg_profit,
+            "avg_margin": margin,
+            "total_revenue": Decimal(total_revenue or 0),
+            "total_profit": Decimal(total_profit or 0),
+        })
+    # сортировка: от самых прибыльных к убыточным
+    rows.sort(key=lambda r: r["avg_profit"], reverse=True)
+    return templates.TemplateResponse(
+        "routes.html",
+        {"request": request, "owner": owner, "rows": rows, "active_page": "routes"},
+    )
+
+
+# =========================================================================
 # /map — карта водителей с последними координатами
 # =========================================================================
 @app.get("/map", response_class=HTMLResponse)
@@ -1156,6 +1234,234 @@ async def api_drivers_locations(
             "updated_at": row["created_at"].isoformat() if row["created_at"] else None,
         })
     return {"drivers": result}
+
+
+# =========================================================================
+# /api/photo/{file_id} — прокси для просмотра фото из Telegram в кабинете
+# =========================================================================
+async def _owner_owns_photo(session: AsyncSession, owner_id: int, file_id: str) -> bool:
+    """Проверяем что фото принадлежит владельцу (есть в trips/expenses/shifts)."""
+    in_trips = await session.execute(
+        select(func.count(Trip.id)).where(
+            Trip.owner_id == owner_id, Trip.waybill_photo_url == file_id
+        )
+    )
+    if (in_trips.scalar_one() or 0) > 0:
+        return True
+    in_expenses = await session.execute(
+        select(func.count(Expense.id)).where(
+            Expense.owner_id == owner_id, Expense.receipt_photo_url == file_id
+        )
+    )
+    if (in_expenses.scalar_one() or 0) > 0:
+        return True
+    in_shifts = await session.execute(
+        select(func.count(Shift.id)).where(
+            Shift.owner_id == owner_id,
+            (Shift.odometer_start_photo_url == file_id)
+            | (Shift.odometer_end_photo_url == file_id),
+        )
+    )
+    return (in_shifts.scalar_one() or 0) > 0
+
+
+@app.get("/api/photo/{file_id}")
+async def api_photo(
+    request: Request,
+    file_id: str,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    if not await _owner_owns_photo(session, owner.id, file_id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    driver_bot = request.app.state.driver_bot
+    try:
+        buf = await driver_bot.download(file_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Not found")
+    if buf is None:
+        raise HTTPException(status_code=404)
+    return Response(content=buf.read(), media_type="image/jpeg")
+
+
+# =========================================================================
+# /trips/{id} — детали рейса с фото ТТН и связанными расходами
+# =========================================================================
+@app.get("/trips/{trip_id}", response_class=HTMLResponse)
+async def trip_detail(
+    request: Request,
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    driver = await session.get(Driver, trip.driver_id)
+    vehicle = await session.get(Vehicle, trip.vehicle_id)
+    expenses_res = await session.execute(
+        select(Expense).where(Expense.trip_id == trip.id).order_by(Expense.created_at)
+    )
+    expenses = list(expenses_res.scalars().all())
+    return templates.TemplateResponse(
+        "trip_detail.html",
+        {
+            "request": request, "owner": owner,
+            "trip": trip, "driver": driver, "vehicle": vehicle,
+            "expenses": expenses, "active_page": "trips",
+        },
+    )
+
+
+# =========================================================================
+# /shifts — список смен с фото одометров
+# =========================================================================
+@app.get("/shifts", response_class=HTMLResponse)
+async def shifts_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    rows_res = await session.execute(
+        select(Shift, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Shift.driver_id)
+        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .where(Shift.owner_id == owner.id)
+        .order_by(desc(Shift.started_at))
+        .limit(200)
+    )
+    rows = list(rows_res.all())
+    return templates.TemplateResponse(
+        "shifts.html",
+        {"request": request, "owner": owner, "rows": rows, "active_page": "trips"},
+    )
+
+
+@app.get("/shifts/{shift_id}", response_class=HTMLResponse)
+async def shift_detail(
+    request: Request,
+    shift_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    shift = await session.get(Shift, shift_id)
+    if shift is None or shift.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    driver = await session.get(Driver, shift.driver_id)
+    vehicle = await session.get(Vehicle, shift.vehicle_id)
+    trips_res = await session.execute(
+        select(Trip).where(Trip.shift_id == shift.id).order_by(Trip.created_at)
+    )
+    trips = list(trips_res.scalars().all())
+    expenses_res = await session.execute(
+        select(Expense).where(Expense.shift_id == shift.id).order_by(Expense.created_at)
+    )
+    expenses = list(expenses_res.scalars().all())
+    return templates.TemplateResponse(
+        "shift_detail.html",
+        {
+            "request": request, "owner": owner,
+            "shift": shift, "driver": driver, "vehicle": vehicle,
+            "trips": trips, "expenses": expenses,
+            "active_page": "trips",
+        },
+    )
+
+
+# =========================================================================
+# /expenses — все расходы любых категорий с фото чеков и фильтром
+# =========================================================================
+_EXPENSE_CATEGORIES = ("fuel", "repair", "parking", "fine", "toll", "other")
+
+
+@app.get("/expenses", response_class=HTMLResponse)
+async def expenses_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    category: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+):
+    conditions = [Expense.owner_id == owner.id]
+    if category and category in _EXPENSE_CATEGORIES:
+        conditions.append(Expense.category == category)
+    if status and status in ("pending", "approved", "rejected"):
+        conditions.append(Expense.status == status)
+    rows_res = await session.execute(
+        select(Expense, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Expense.driver_id)
+        .join(Shift, Shift.id == Expense.shift_id)
+        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .where(and_(*conditions))
+        .order_by(desc(Expense.created_at))
+        .limit(300)
+    )
+    rows = list(rows_res.all())
+    return templates.TemplateResponse(
+        "expenses.html",
+        {
+            "request": request, "owner": owner, "rows": rows,
+            "filter_category": category or "",
+            "filter_status": status or "",
+            "categories": _EXPENSE_CATEGORIES,
+            "active_page": "trips",
+        },
+    )
+
+
+# =========================================================================
+# /fuel-history — все заправки с фото чеков
+# =========================================================================
+@app.get("/fuel-history", response_class=HTMLResponse)
+async def fuel_history(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    rows_res = await session.execute(
+        select(Expense, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Expense.driver_id)
+        .join(Shift, Shift.id == Expense.shift_id)
+        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .where(
+            Expense.owner_id == owner.id,
+            Expense.category == "fuel",
+        )
+        .order_by(desc(Expense.created_at))
+        .limit(200)
+    )
+    rows = list(rows_res.all())
+    return templates.TemplateResponse(
+        "fuel_history.html",
+        {"request": request, "owner": owner, "rows": rows, "active_page": "trips"},
+    )
+
+
+# =========================================================================
+# /documents — фото ТТН по рейсам
+# =========================================================================
+@app.get("/documents", response_class=HTMLResponse)
+async def documents_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    rows_res = await session.execute(
+        select(Trip, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Trip.driver_id)
+        .join(Vehicle, Vehicle.id == Trip.vehicle_id)
+        .where(
+            Trip.owner_id == owner.id,
+            Trip.waybill_photo_url.is_not(None),
+        )
+        .order_by(desc(Trip.created_at))
+        .limit(200)
+    )
+    rows = list(rows_res.all())
+    return templates.TemplateResponse(
+        "documents.html",
+        {"request": request, "owner": owner, "rows": rows, "active_page": "trips"},
+    )
 
 
 # =========================================================================

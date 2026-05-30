@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Смены{% endblock %}
+{% set history_section = 'shifts' %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<h2>🧭 История смен</h2>
+<p><small>Последние 200. Клик по строке — фото одометров, рейсы, расходы.</small></p>
+
+{% if not rows %}
+  <p>Смен ещё не было.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>Начата</th>
+      <th>Завершена</th>
+      <th>Водитель</th>
+      <th>Машина</th>
+      <th class="num">Пробег, км</th>
+      <th>Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for shift, driver_name, plate in rows %}
+    <tr onclick="location.href='/shifts/{{ shift.id }}'" style="cursor:pointer;">
+      <td data-label="Начата">{{ shift.started_at.strftime('%d.%m %H:%M') if shift.started_at else '—' }}</td>
+      <td data-label="Завершена">{{ shift.ended_at.strftime('%d.%m %H:%M') if shift.ended_at else '—' }}</td>
+      <td data-label="Водитель">{{ driver_name }}</td>
+      <td data-label="Машина">{{ plate }}</td>
+      <td data-label="Пробег" class="num">{{ shift.distance_km or '—' }}</td>
+      <td data-label="Статус"><span class="pill">{{ shift.status }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

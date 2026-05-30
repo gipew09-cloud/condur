@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Документы (ТТН){% endblock %}
+{% set history_section = 'documents' %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<h2>📄 Документы рейсов</h2>
+<p><small>Все рейсы с приложенным фото ТТН.</small></p>
+
+{% if not rows %}
+  <p>Документы ещё не загружались.</p>
+{% else %}
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;">
+  {% for trip, driver_name, plate in rows %}
+  <a href="/trips/{{ trip.id }}" style="text-decoration:none; color:inherit;">
+    <div class="kpi" style="padding: .5rem;">
+      <img src="/api/photo/{{ trip.waybill_photo_url }}"
+           style="width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:6px; background:#eee;">
+      <div style="margin-top:.5rem;">
+        <small>{{ trip.created_at.strftime('%d.%m.%Y') if trip.created_at else '—' }}</small>
+        <strong style="font-size:.95rem; display:block;">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</strong>
+        <small>{{ driver_name }} · {{ plate }}</small>
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

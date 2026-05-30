@@ -1,0 +1,8 @@
+{# Общая навигация между разделами «истории/архива». Включается на каждой странице. #}
+<nav class="history-nav" style="margin-bottom:1rem; display:flex; flex-wrap:wrap; gap:.5rem; font-size:.9rem;">
+  <a href="/trips" {% if history_section == 'trips' %}aria-current="page"{% endif %}>🚛 Рейсы</a>
+  <a href="/shifts" {% if history_section == 'shifts' %}aria-current="page"{% endif %}>🧭 Смены</a>
+  <a href="/expenses" {% if history_section == 'expenses' %}aria-current="page"{% endif %}>💳 Все расходы</a>
+  <a href="/fuel-history" {% if history_section == 'fuel' %}aria-current="page"{% endif %}>⛽️ Заправки</a>
+  <a href="/documents" {% if history_section == 'documents' %}aria-current="page"{% endif %}>📄 Документы</a>
+</nav>

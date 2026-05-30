@@ -3,7 +3,13 @@
 
 {% block content %}
 <h2>Машины</h2>
-<p><small>Показатели за текущий месяц.</small></p>
+<p><small>P&L и пробег за текущий месяц.</small></p>
+
+{% if in_minus %}
+  <p style="color: var(--danger-text); font-weight: 600;">
+    ⚠️ Машин в минусе: {{ in_minus }}
+  </p>
+{% endif %}
 
 {% if not rows %}
   <p>Машин нет. Добавьте через бот владельца.</p>
@@ -13,11 +19,12 @@
       <tr>
         <th>Гос. номер</th>
         <th>Марка</th>
-        <th>Тип</th>
-        <th class="num">Норма, л/100км</th>
         <th class="num">Пробег, км</th>
         <th class="num">Рейсов</th>
-        <th class="num">Топливо, ₽</th>
+        <th class="num">Выручка</th>
+        <th class="num">Расходы</th>
+        <th class="num">Прибыль</th>
+        <th class="num">Маржа</th>
         <th></th>
       </tr>
     </thead>

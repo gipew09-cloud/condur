@@ -35,7 +35,9 @@ from app.services.scheduler_jobs import (
     daily_summary_job,
     doc_expiry_job,
     late_start_job,
+    monthly_econometer_job,
     silence_detector_job,
+    weekly_review_job,
 )
 from app.web.router import app as web_app
 
@@ -94,6 +96,11 @@ async def main() -> None:
     owner_dp.include_router(owner_router)
     driver_dp.include_router(driver_router)
 
+    # Пробрасываем bot-ы в FastAPI — нужно для прокси-эндпоинта фотографий
+    # (фото от водителя имеет file_id, привязанный к driver_bot).
+    web_app.state.driver_bot = driver_bot
+    web_app.state.owner_bot = owner_bot
+
     # На Railway порт приходит в PORT, локально берём из настроек
     port = int(os.environ.get("PORT") or settings.port)
     uv_config = uvicorn.Config(
@@ -111,6 +118,16 @@ async def main() -> None:
     scheduler.add_job(
         silence_detector_job, "cron", minute="*/30", args=[owner_bot],
         max_instances=1, misfire_grace_time=60,
+    )
+    # Еженедельный разбор: каждое воскресенье. Время локальное проверяется внутри.
+    scheduler.add_job(
+        weekly_review_job, "cron", minute="*/15", args=[owner_bot],
+        max_instances=1,
+    )
+    # Экономометр: каждый день 10:00..10:30 — внутри проверим что 1 число месяца.
+    scheduler.add_job(
+        monthly_econometer_job, "cron", minute="*/30", args=[owner_bot],
+        max_instances=1,
     )
     scheduler.start()
 

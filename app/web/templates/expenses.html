@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Все расходы{% endblock %}
+{% set history_section = 'expenses' %}
+
+{% set category_labels = {
+  'fuel': 'Топливо',
+  'repair': 'Ремонт',
+  'parking': 'Парковка',
+  'fine': 'Штраф',
+  'toll': 'Платная дорога',
+  'other': 'Прочее',
+} %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<h2>💳 Все расходы</h2>
+
+<form method="GET" action="/expenses">
+  <div class="grid">
+    <label>
+      Категория
+      <select name="category" onchange="this.form.submit()">
+        <option value="">— все —</option>
+        {% for c in categories %}
+          <option value="{{ c }}" {% if filter_category == c %}selected{% endif %}>{{ category_labels.get(c, c) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Статус
+      <select name="status" onchange="this.form.submit()">
+        <option value="">— любой —</option>
+        <option value="pending" {% if filter_status == 'pending' %}selected{% endif %}>Ждёт одобрения</option>
+        <option value="approved" {% if filter_status == 'approved' %}selected{% endif %}>Одобрен</option>
+        <option value="rejected" {% if filter_status == 'rejected' %}selected{% endif %}>Отклонён</option>
+      </select>
+    </label>
+  </div>
+</form>
+
+{% if not rows %}
+  <p>Расходов по фильтру нет.</p>
+{% else %}
+<table style="margin-top:1rem;">
+  <thead>
+    <tr>
+      <th>Дата</th>
+      <th>Водитель</th>
+      <th>Машина</th>
+      <th>Категория</th>
+      <th class="num">Сумма</th>
+      <th>Статус</th>
+      <th>Чек</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for expense, driver_name, plate in rows %}
+    <tr>
+      <td data-label="Дата">{{ expense.created_at.strftime('%d.%m %H:%M') if expense.created_at else '—' }}</td>
+      <td data-label="Водитель">{{ driver_name }}</td>
+      <td data-label="Машина">{{ plate }}</td>
+      <td data-label="Категория">{{ category_labels.get(expense.category, expense.category) }}</td>
+      <td data-label="Сумма" class="num">{{ "{:,.0f}".format(expense.amount_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="Статус"><span class="pill">{{ expense.status }}</span></td>
+      <td data-label="Чек">
+        {% if expense.receipt_photo_url %}
+          <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank">📷 Открыть</a>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Смена #{{ shift.id }}{% endblock %}
+{% set history_section = 'shifts' %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<p><a href="/shifts">← к списку смен</a></p>
+
+<h2>Смена #{{ shift.id }}</h2>
+<section class="kpi-grid">
+  <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
+  <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
+  <div class="kpi"><small>Начата</small><strong>{{ shift.started_at.strftime('%d.%m.%Y %H:%M') if shift.started_at else '—' }}</strong></div>
+  <div class="kpi"><small>Завершена</small><strong>{{ shift.ended_at.strftime('%d.%m.%Y %H:%M') if shift.ended_at else '—' }}</strong></div>
+  <div class="kpi"><small>Одометр начало</small><strong>{{ shift.odometer_start or '—' }} км</strong></div>
+  <div class="kpi"><small>Одометр конец</small><strong>{{ shift.odometer_end or '—' }} км</strong></div>
+  <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km or '—' }} км</strong></div>
+  <div class="kpi"><small>Статус</small><strong>{{ shift.status }}</strong></div>
+</section>
+
+<h3 style="margin-top:1.5rem;">📸 Фото одометров</h3>
+<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
+  {% if shift.odometer_start_photo_url %}
+  <div>
+    <small>Начало смены ({{ shift.odometer_start or '?' }} км)</small>
+    <a href="/api/photo/{{ shift.odometer_start_photo_url }}" target="_blank">
+      <img src="/api/photo/{{ shift.odometer_start_photo_url }}"
+           style="width:100%; border-radius:8px; border:1px solid var(--border);">
+    </a>
+  </div>
+  {% endif %}
+  {% if shift.odometer_end_photo_url %}
+  <div>
+    <small>Конец смены ({{ shift.odometer_end or '?' }} км)</small>
+    <a href="/api/photo/{{ shift.odometer_end_photo_url }}" target="_blank">
+      <img src="/api/photo/{{ shift.odometer_end_photo_url }}"
+           style="width:100%; border-radius:8px; border:1px solid var(--border);">
+    </a>
+  </div>
+  {% endif %}
+  {% if not shift.odometer_start_photo_url and not shift.odometer_end_photo_url %}
+  <p>Фото не загружены.</p>
+  {% endif %}
+</div>
+
+{% if trips %}
+<h3 style="margin-top:1.5rem;">Рейсы смены</h3>
+<table>
+  <thead><tr><th>Маршрут</th><th>Статус</th><th class="num">Выручка</th><th class="num">Прибыль</th><th>ТТН</th></tr></thead>
+  <tbody>
+    {% for t in trips %}
+    <tr onclick="location.href='/trips/{{ t.id }}'" style="cursor:pointer;">
+      <td data-label="Маршрут">{{ t.origin or '—' }} → {{ t.destination or '—' }}</td>
+      <td data-label="Статус"><span class="pill">{{ t.status | tstatus }}</span></td>
+      <td data-label="Выручка" class="num">{{ "{:,.0f}".format(t.revenue_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(t.profit_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="ТТН">{% if t.waybill_photo_url %}📷{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if expenses %}
+<h3 style="margin-top:1.5rem;">Расходы смены</h3>
+<table>
+  <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
+  <tbody>
+    {% for e in expenses %}
+    <tr>
+      <td data-label="Дата">{{ e.created_at.strftime('%d.%m %H:%M') if e.created_at else '—' }}</td>
+      <td data-label="Категория">{{ e.category }}</td>
+      <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="Статус"><span class="pill">{{ e.status }}</span></td>
+      <td data-label="Чек">
+        {% if e.receipt_photo_url %}
+          <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">📷</a>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

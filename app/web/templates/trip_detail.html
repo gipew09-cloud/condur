@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Рейс #{{ trip.id }}{% endblock %}
+{% set history_section = 'trips' %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<p><a href="/trips">← к списку рейсов</a></p>
+
+<h2>Рейс <b>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</b></h2>
+<p><small>Создан {{ trip.created_at.strftime('%d.%m.%Y %H:%M') if trip.created_at else '—' }} ·
+{% if trip.completed_at %}завершён {{ trip.completed_at.strftime('%d.%m.%Y %H:%M') }}{% else %}не завершён{% endif %}</small></p>
+
+<section class="kpi-grid">
+  <div class="kpi"><small>Статус</small><strong>{{ trip.status | tstatus }}</strong></div>
+  <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
+  <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
+  <div class="kpi"><small>Груз</small><strong>{{ trip.cargo_name or '—' }}</strong></div>
+</section>
+
+<h3 style="margin-top:1.5rem;">Финансы</h3>
+<section class="kpi-grid">
+  <div class="kpi"><small>Выручка</small><strong>{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Топливо</small><strong>{{ "{:,.0f}".format(trip.fuel_cost_rub or 0).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Прочее</small><strong>{{ "{:,.0f}".format(trip.other_costs_rub or 0).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(trip.profit_rub or 0).replace(',', ' ') }} ₽</strong></div>
+</section>
+
+{% if trip.waybill_photo_url %}
+<h3 style="margin-top:1.5rem;">📄 ТТН</h3>
+<a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
+  <img src="/api/photo/{{ trip.waybill_photo_url }}"
+       style="max-width: 100%; max-height: 600px; border-radius: 8px; border: 1px solid var(--border);">
+</a>
+{% endif %}
+
+{% if expenses %}
+<h3 style="margin-top:1.5rem;">Расходы рейса</h3>
+<table>
+  <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
+  <tbody>
+    {% for e in expenses %}
+    <tr>
+      <td data-label="Дата">{{ e.created_at.strftime('%d.%m %H:%M') if e.created_at else '—' }}</td>
+      <td data-label="Категория">{{ e.category }}</td>
+      <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="Статус"><span class="pill">{{ e.status }}</span></td>
+      <td data-label="Чек">
+        {% if e.receipt_photo_url %}
+          <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">📷</a>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

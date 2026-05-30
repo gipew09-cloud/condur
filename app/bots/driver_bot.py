@@ -1484,6 +1484,21 @@ async def cb_sos_confirm(
 # =========================================================================
 # Fallback
 # =========================================================================
+@driver_router.callback_query()
+async def fallback_callback(call: CallbackQuery) -> None:
+    """
+    Срабатывает на «устаревшие» inline-кнопки, которые больше не привязаны
+    к нужному FSM-состоянию (например, после рестарта процесса состояние
+    в памяти сбросилось, а кнопка в Telegram осталась). Без этого aiogram
+    просто не отвечает на callback, и Telegram через 10с показывает
+    дефолтный alert «Произошла ошибка».
+    """
+    await call.answer(
+        "Эта кнопка устарела. Нажмите /status или /start.",
+        show_alert=True,
+    )
+
+
 @driver_router.message()
 async def fallback(message: Message, session: AsyncSession) -> None:
     driver = await _driver_by_telegram(session, message.from_user.id)

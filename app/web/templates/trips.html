@@ -1,8 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Рейсы{% endblock %}
+{% set history_section = 'trips' %}
 
 {% block content %}
-<h2>Рейсы</h2>
+{% include "_history_nav.html" %}
+<h2>🚛 Рейсы</h2>
 
 <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
   <div class="grid">

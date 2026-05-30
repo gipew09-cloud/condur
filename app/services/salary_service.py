@@ -30,6 +30,38 @@ def _completed_trips(trips: list[Trip]) -> list[Trip]:
     return [t for t in trips if t.status == "completed"]
 
 
+def estimate_trip_salary(
+    driver: Driver,
+    trip: Trip,
+    shift_distance_km: int | None,
+    shift_completed_trips: int,
+) -> Decimal:
+    """
+    Оценка зарплаты водителя ЗА ОДИН РЕЙС. Используется в карточке рентабельности.
+
+    Точно посчитать «сколько именно водитель заработает на этом рейсе» нельзя:
+    ЗП считается за смену целиком. Здесь даём разумную оценку:
+      per_km          : пробег_смены / число_рейсов × ставка_км
+      per_trip        : ставка за рейс
+      percent         : выручка_рейса × процент / 100
+      fixed_per_shift : фикс / число_рейсов
+    """
+    rate = driver.salary_rate or Decimal(0)
+    trips_in_shift = max(1, shift_completed_trips)
+
+    if driver.salary_type == "per_km":
+        if shift_distance_km:
+            per_trip_km = Decimal(shift_distance_km) / Decimal(trips_in_shift)
+            return (per_trip_km * rate).quantize(Decimal("0.01"))
+        return Decimal(0)
+    if driver.salary_type == "per_trip":
+        return rate.quantize(Decimal("0.01"))
+    if driver.salary_type == "percent":
+        return ((trip.revenue_rub or Decimal(0)) * rate / Decimal(100)).quantize(Decimal("0.01"))
+    # fixed_per_shift
+    return (rate / Decimal(trips_in_shift)).quantize(Decimal("0.01"))
+
+
 def calculate_salary(driver: Driver, shift: Shift, trips: list[Trip]) -> Decimal:
     rate = driver.salary_rate or Decimal(0)
     completed = _completed_trips(trips)

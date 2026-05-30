@@ -23,7 +23,7 @@ from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,7 +52,7 @@ from app.bots.states import (
 from app.models import (
     Driver, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
 )
-from app.services import auth_service, billing, expense_service, trip_service
+from app.services import auth_service, billing, expense_service, salary_service, trip_service
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
 
@@ -987,6 +987,12 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext) -> None:
     except (IndexError, ValueError):
         await call.answer("Некорректный запрос", show_alert=True)
         return
+    # сразу убираем кнопку у сообщения, чтобы повторно не нажимали
+    # (иначе при втором клике запускается параллельный FSM и владелец вводит выручку дважды).
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001 — telegram капризен с edit, не валим callback
+        pass
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
@@ -998,7 +1004,6 @@ async def set_trip_revenue(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    driver_bot: Bot,
 ) -> None:
     raw = (message.text or "").strip().replace(",", ".").replace(" ", "")
     try:
@@ -1025,22 +1030,42 @@ async def set_trip_revenue(
     )
     await session.flush()
     await session.refresh(trip)
+
+    # Карточка рентабельности рейса. ЗП водителя — оценка (точно посчитать
+    # можно только в конце смены, когда известен пробег и число рейсов).
+    fuel = Decimal(trip.fuel_cost_rub or 0)
+    driver_obj = await session.get(Driver, trip.driver_id)
+    shift = await session.get(Shift, trip.shift_id)
+    completed_trips_in_shift = await session.execute(
+        select(func.count(Trip.id)).where(
+            Trip.shift_id == trip.shift_id, Trip.status == "completed"
+        )
+    )
+    trips_count = completed_trips_in_shift.scalar_one() or 1
+    salary = (
+        salary_service.estimate_trip_salary(
+            driver_obj, trip,
+            shift_distance_km=shift.distance_km if shift else None,
+            shift_completed_trips=trips_count,
+        )
+        if driver_obj is not None else Decimal(0)
+    )
+    profit_estimate = revenue - fuel - salary
+    margin_pct = (profit_estimate / revenue * Decimal(100)) if revenue > 0 else Decimal(0)
     await session.commit()
     await state.clear()
 
     await message.answer(
-        msg.TRIP_REVENUE_SAVED.format(
-            revenue=f"{revenue:.0f}", profit=f"{Decimal(trip.profit_rub or 0):.0f}"
+        msg.TRIP_PNL_CARD.format(
+            origin=trip.origin or "—",
+            destination=trip.destination or "—",
+            revenue=f"{revenue:,.0f}".replace(",", " "),
+            fuel=f"{fuel:,.0f}".replace(",", " "),
+            salary=f"{salary:,.0f}".replace(",", " "),
+            profit=f"{profit_estimate:,.0f}".replace(",", " "),
+            margin=f"{margin_pct:.0f}",
         )
     )
-    # уведомить водителя
-    driver = await session.get(Driver, trip.driver_id)
-    if driver is not None:
-        await notify_driver(
-            driver_bot, session, driver.telegram_id,
-            f"💰 Владелец указал выручку рейса {trip.origin} → {trip.destination}: "
-            f"{revenue:.0f} ₽. Прибыль: {Decimal(trip.profit_rub or 0):.0f} ₽.",
-        )
 
 
 # =========================================================================
@@ -1319,6 +1344,19 @@ async def cmd_cancel(message: Message, state: FSMContext, session: AsyncSession)
         await _show_main_menu(message, owner)
     else:
         await message.answer("Отменено. /start чтобы начать заново.")
+
+
+@owner_router.callback_query()
+async def fallback_callback(call: CallbackQuery) -> None:
+    """
+    Срабатывает на устаревшие inline-кнопки (например, после рестарта процесса
+    FSM-состояние пропало). Без этого Telegram через 10с показывает
+    дефолтный alert «Произошла ошибка».
+    """
+    await call.answer(
+        "Эта кнопка устарела. Нажмите /start чтобы открыть меню заново.",
+        show_alert=True,
+    )
 
 
 @owner_router.message()
