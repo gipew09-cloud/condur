@@ -2,13 +2,18 @@
 Настройки проекта. pydantic-settings сам читает переменные из файла .env
 (локально) или из окружения (на Railway) и проверяет, что они есть.
 
-Особенность Railway:
-  плагин Postgres отдаёт DATABASE_URL в формате
-      postgresql://user:pass@host:port/db
-  (или иногда postgres:// — наследие Heroku).
-  SQLAlchemy + asyncpg требуют префикс
-      postgresql+asyncpg://...
-  Поэтому в field_validator подменяем схему, если её ещё нет.
+Особенности Railway:
+  1) Плагин Postgres отдаёт DATABASE_URL в формате
+        postgresql://user:pass@host:port/db
+     (или иногда postgres:// — наследие Heroku).
+     SQLAlchemy + asyncpg требуют префикс
+        postgresql+asyncpg://...
+
+  2) Плагин Redis иногда отдаёт REDIS_URL без схемы — просто
+        default:password@host:port
+     aiogram RedisStorage требует префикс redis:// (или rediss://, unix://).
+
+  Оба случая чиним field-валидаторами ниже, не ломая локальный .env.
 """
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,6 +33,14 @@ class Settings(BaseSettings):
             v = "postgresql://" + v[len("postgres://"):]
         if v.startswith("postgresql://"):
             v = "postgresql+asyncpg://" + v[len("postgresql://"):]
+        return v
+
+    @field_validator("redis_url")
+    @classmethod
+    def _ensure_redis_scheme(cls, v: str) -> str:
+        # Railway иногда отдаёт REDIS_URL без префикса схемы — допишем сами
+        if not v.startswith(("redis://", "rediss://", "unix://")):
+            return f"redis://{v}"
         return v
 
     # Локально читаем из .env, на Railway переменные приходят из окружения
