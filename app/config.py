@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     owner_bot_token: str
     driver_bot_token: str
     database_url: str
-    redis_url: str
+    redis_url: str = ""  # необязателен пока используем MemoryStorage
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     @field_validator("redis_url")
     @classmethod
     def fix_redis_url(cls, v: str) -> str:
+        # Пустая строка допустима: значит используем MemoryStorage
+        if not v:
+            return v
         if not v.startswith(("redis://", "rediss://", "unix://")):
             return f"redis://{v}"
         return v

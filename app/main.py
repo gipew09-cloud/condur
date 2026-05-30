@@ -4,7 +4,9 @@
 Как это работает:
   - создаём два объекта Bot (по токену на каждого),
   - на каждого свой Dispatcher (он раздаёт входящие сообщения в обработчики),
-  - состояния (FSM) храним в Redis — чтобы при перезапуске диалоги не терялись,
+  - состояния (FSM) храним в памяти процесса (MemoryStorage). Это значит,
+    что при перезапуске процесса все незавершённые диалоги обнуляются.
+    Для MVP это допустимо; позже вернёмся к RedisStorage для устойчивости,
   - middleware прокидывает в хендлеры сессию БД и инстанс "соседнего" бота
     (чтобы driver_bot мог отправить уведомление через owner_bot, и наоборот),
   - asyncio.gather запускает опрос (polling) обоих ботов параллельно.
@@ -18,7 +20,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.bots.driver_bot import driver_router
 from app.bots.middlewares import CrossBotMiddleware, DbSessionMiddleware
@@ -33,7 +35,7 @@ logging.basicConfig(
 
 
 async def main() -> None:
-    storage = RedisStorage.from_url(settings.redis_url)
+    storage = MemoryStorage()
     default = DefaultBotProperties(parse_mode=ParseMode.HTML)
 
     owner_bot = Bot(token=settings.owner_bot_token, default=default)
