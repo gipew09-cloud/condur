@@ -47,6 +47,32 @@ from app.web.insights import generate_insights
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+# Локализация enum'ов из БД для отображения в шаблонах.
+_VEHICLE_TYPE_LABELS = {
+    "truck": "Грузовик",
+    "gazelle": "Газель / фургон",
+    "refrigerator": "Рефрижератор",
+}
+_TRIP_STATUS_LABELS = {
+    "created": "создан",
+    "in_transit": "в пути",
+    "unloading": "на выгрузке",
+    "completed": "завершён",
+    "cancelled": "отменён",
+}
+
+
+def _vehicle_type_label(code: str | None) -> str:
+    return _VEHICLE_TYPE_LABELS.get(code or "", code or "—")
+
+
+def _trip_status_label(code: str | None) -> str:
+    return _TRIP_STATUS_LABELS.get(code or "", code or "—")
+
+
+templates.env.filters["vtype"] = _vehicle_type_label
+templates.env.filters["tstatus"] = _trip_status_label
+
 app = FastAPI(title="TMS Cabinet")
 
 # static (минимум — favicon/css)
@@ -170,6 +196,8 @@ async def dashboard(
     today_start, today_end = _today_window()
     month_start, month_end = _month_window()
 
+    year_start = datetime(today_end.year, 1, 1, tzinfo=timezone.utc)
+
     trips_today = (
         await session.execute(
             select(func.count(Trip.id)).where(
@@ -190,12 +218,32 @@ async def dashboard(
         )
     ).scalar_one() or 0
 
+    revenue_today = (
+        await session.execute(
+            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
+                Trip.owner_id == owner.id,
+                Trip.status == "completed",
+                Trip.completed_at >= today_start,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
     revenue_month = (
         await session.execute(
             select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
                 Trip.owner_id == owner.id,
                 Trip.status == "completed",
                 Trip.completed_at >= month_start,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+
+    revenue_year = (
+        await session.execute(
+            select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
+                Trip.owner_id == owner.id,
+                Trip.status == "completed",
+                Trip.completed_at >= year_start,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -270,7 +318,9 @@ async def dashboard(
             "kpi": {
                 "trips_today": trips_today,
                 "km_today": km_today,
+                "revenue_today": Decimal(revenue_today),
                 "revenue_month": Decimal(revenue_month),
+                "revenue_year": Decimal(revenue_year),
                 "expenses_month": total_expenses,
                 "profit_month": profit_month,
             },
@@ -505,9 +555,59 @@ async def driver_edit_form(
     )
 
 
+@app.get("/drivers/{driver_id}/cancel", response_class=HTMLResponse)
+async def driver_cancel_edit(
+    request: Request,
+    driver_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """HTMX-эндпоинт: вернуть строку обратно в view-режим без сохранения."""
+    driver = await session.get(Driver, driver_id)
+    if driver is None or driver.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    rows = await _drivers_stats(session, owner.id)
+    row = next((r for r in rows if r["driver"].id == driver.id), None)
+    return templates.TemplateResponse(
+        "_driver_row.html", {"request": request, "row": row, "edit": False}
+    )
+
+
 # =========================================================================
 # /vehicles
 # =========================================================================
+async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start) -> dict:
+    """Считаем месячные показатели по одной машине."""
+    km = (
+        await session.execute(
+            select(func.coalesce(func.sum(Shift.distance_km), 0)).where(
+                Shift.vehicle_id == vehicle.id,
+                Shift.status == "completed",
+                Shift.ended_at >= month_start,
+            )
+        )
+    ).scalar_one() or 0
+    fuel = (
+        await session.execute(
+            select(func.coalesce(func.sum(Trip.fuel_cost_rub), 0)).where(
+                Trip.vehicle_id == vehicle.id,
+                Trip.status == "completed",
+                Trip.completed_at >= month_start,
+            )
+        )
+    ).scalar_one() or Decimal(0)
+    trips_count = (
+        await session.execute(
+            select(func.count(Trip.id)).where(
+                Trip.vehicle_id == vehicle.id,
+                Trip.status == "completed",
+                Trip.completed_at >= month_start,
+            )
+        )
+    ).scalar_one() or 0
+    return {"vehicle": vehicle, "km": km, "fuel": Decimal(fuel), "trips": trips_count}
+
+
 @app.get("/vehicles", response_class=HTMLResponse)
 async def vehicles_page(
     request: Request,
@@ -521,41 +621,122 @@ async def vehicles_page(
         .order_by(Vehicle.license_plate)
     )
     vehicles = list(vehicles_res.scalars().all())
-
-    rows = []
-    for v in vehicles:
-        agg = await session.execute(
-            select(func.coalesce(func.sum(Shift.distance_km), 0)).where(
-                Shift.vehicle_id == v.id,
-                Shift.status == "completed",
-                Shift.ended_at >= month_start,
-            )
-        )
-        km = agg.scalar_one() or 0
-        fuel = (
-            await session.execute(
-                select(func.coalesce(func.sum(Trip.fuel_cost_rub), 0)).where(
-                    Trip.vehicle_id == v.id,
-                    Trip.status == "completed",
-                    Trip.completed_at >= month_start,
-                )
-            )
-        ).scalar_one() or Decimal(0)
-        trips_count = (
-            await session.execute(
-                select(func.count(Trip.id)).where(
-                    Trip.vehicle_id == v.id,
-                    Trip.status == "completed",
-                    Trip.completed_at >= month_start,
-                )
-            )
-        ).scalar_one() or 0
-        rows.append({"vehicle": v, "km": km, "fuel": Decimal(fuel), "trips": trips_count})
-
+    rows = [await _vehicle_row_dict(session, v, month_start) for v in vehicles]
     return templates.TemplateResponse(
         "vehicles.html",
         {"request": request, "owner": owner, "rows": rows, "active_page": "vehicles"},
     )
+
+
+async def _load_vehicle_row(
+    session: AsyncSession, owner: Owner, vehicle_id: int
+) -> tuple[Vehicle, dict]:
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    month_start, _ = _month_window()
+    row = await _vehicle_row_dict(session, vehicle, month_start)
+    return vehicle, row
+
+
+@app.get("/vehicles/{vehicle_id}/edit", response_class=HTMLResponse)
+async def vehicle_edit_form(
+    request: Request,
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    _, row = await _load_vehicle_row(session, owner, vehicle_id)
+    return templates.TemplateResponse(
+        "_vehicle_row.html", {"request": request, "row": row, "edit": True}
+    )
+
+
+@app.get("/vehicles/{vehicle_id}/cancel", response_class=HTMLResponse)
+async def vehicle_cancel_edit(
+    request: Request,
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    _, row = await _load_vehicle_row(session, owner, vehicle_id)
+    return templates.TemplateResponse(
+        "_vehicle_row.html", {"request": request, "row": row, "edit": False}
+    )
+
+
+@app.post("/vehicles/{vehicle_id}", response_class=HTMLResponse)
+async def vehicle_update(
+    request: Request,
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    license_plate: Annotated[str, Form()],
+    brand: Annotated[str, Form()] = "",
+    type: Annotated[str, Form()] = "truck",
+    fuel_norm_per_100km: Annotated[str, Form()] = "",
+    osago_expires: Annotated[str, Form()] = "",
+    inspection_expires: Annotated[str, Form()] = "",
+    tacho_expires: Annotated[str, Form()] = "",
+):
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    if type not in ("truck", "gazelle", "refrigerator"):
+        raise HTTPException(status_code=400, detail="Bad type")
+
+    plate_clean = license_plate.strip().upper().replace(" ", "")
+    if len(plate_clean) < 4:
+        raise HTTPException(status_code=400, detail="Bad license_plate")
+    vehicle.license_plate = plate_clean
+    vehicle.brand = brand.strip() or None
+    vehicle.type = type
+    if fuel_norm_per_100km.strip():
+        try:
+            vehicle.fuel_norm_per_100km = Decimal(fuel_norm_per_100km.replace(",", "."))
+        except InvalidOperation:
+            raise HTTPException(status_code=400, detail="Bad fuel_norm")
+    else:
+        vehicle.fuel_norm_per_100km = None
+
+    def _parse_date(value: str) -> date | None:
+        if not value.strip():
+            return None
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+
+    vehicle.osago_expires = _parse_date(osago_expires)
+    vehicle.inspection_expires = _parse_date(inspection_expires)
+    vehicle.tacho_expires = _parse_date(tacho_expires)
+
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail="Plate уже занят")
+
+    _, row = await _load_vehicle_row(session, owner, vehicle_id)
+    return templates.TemplateResponse(
+        "_vehicle_row.html", {"request": request, "row": row, "edit": False}
+    )
+
+
+@app.delete("/vehicles/{vehicle_id}", response_class=HTMLResponse)
+async def vehicle_delete(
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Мягкое удаление — ставим is_active=False, чтобы история смен/рейсов
+    осталась с FK ссылками целой."""
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    vehicle.is_active = False
+    await session.commit()
+    return HTMLResponse("")  # hx-swap='outerHTML' уберёт строку
 
 
 # =========================================================================

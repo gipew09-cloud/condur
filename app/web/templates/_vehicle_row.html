@@ -1,0 +1,60 @@
+{% set v = row.vehicle %}
+{% if edit %}
+<tr id="vehicle-row-{{ v.id }}">
+  <td>{{ v.license_plate }}</td>
+  <td colspan="6">
+    <form hx-post="/vehicles/{{ v.id }}" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" class="edit-form">
+      <label>
+        Гос. номер
+        <input type="text" name="license_plate" value="{{ v.license_plate }}" required>
+      </label>
+      <label>
+        Марка
+        <input type="text" name="brand" value="{{ v.brand or '' }}">
+      </label>
+      <label>
+        Тип
+        <select name="type">
+          <option value="truck" {% if v.type == 'truck' %}selected{% endif %}>Грузовик</option>
+          <option value="gazelle" {% if v.type == 'gazelle' %}selected{% endif %}>Газель / фургон</option>
+          <option value="refrigerator" {% if v.type == 'refrigerator' %}selected{% endif %}>Рефрижератор</option>
+        </select>
+      </label>
+      <label>
+        Норма л/100км
+        <input type="text" name="fuel_norm_per_100km" value="{{ v.fuel_norm_per_100km or '' }}">
+      </label>
+      <label>
+        ОСАГО до
+        <input type="date" name="osago_expires" value="{{ v.osago_expires.isoformat() if v.osago_expires else '' }}">
+      </label>
+      <label>
+        ТО до
+        <input type="date" name="inspection_expires" value="{{ v.inspection_expires.isoformat() if v.inspection_expires else '' }}">
+      </label>
+      <label>
+        Тахограф до
+        <input type="date" name="tacho_expires" value="{{ v.tacho_expires.isoformat() if v.tacho_expires else '' }}">
+      </label>
+      <button type="submit">Сохранить</button>
+      <a href="#" hx-get="/vehicles/{{ v.id }}/cancel" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
+      <a href="#" hx-delete="/vehicles/{{ v.id }}" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML"
+         hx-confirm="Удалить машину {{ v.license_plate }}? История смен и рейсов сохранится."
+         role="button" class="contrast outline">🗑 Удалить</a>
+    </form>
+  </td>
+</tr>
+{% else %}
+<tr id="vehicle-row-{{ v.id }}">
+  <td data-label="Номер">{{ v.license_plate }}</td>
+  <td data-label="Марка">{{ v.brand or '—' }}</td>
+  <td data-label="Тип">{{ v.type | vtype }}</td>
+  <td data-label="Норма" class="num">{{ v.fuel_norm_per_100km or '—' }}</td>
+  <td data-label="Пробег" class="num">{{ row.km }}</td>
+  <td data-label="Рейсов" class="num">{{ row.trips }}</td>
+  <td data-label="Топливо" class="num">{{ "{:,.0f}".format(row.fuel).replace(',', ' ') }}</td>
+  <td>
+    <a href="#" hx-get="/vehicles/{{ v.id }}/edit" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML">✎ Изменить</a>
+  </td>
+</tr>
+{% endif %}

@@ -1253,6 +1253,11 @@ async def cb_vehicle_view(call: CallbackQuery) -> None:
     await call.answer("Профиль машины появится на Этапе 2", show_alert=True)
 
 
+@owner_router.message(Command("help"), StateFilter(any_state))
+async def cmd_help(message: Message) -> None:
+    await message.answer(msg.OWNER_HELP)
+
+
 @owner_router.message(Command("tariffs"), StateFilter(any_state))
 async def cmd_tariffs(message: Message, state: FSMContext, session: AsyncSession) -> None:
     """Показать тарифы. Кнопка «Написать для подключения» открывает чат с автором."""

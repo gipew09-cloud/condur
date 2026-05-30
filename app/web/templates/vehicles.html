@@ -18,20 +18,12 @@
         <th class="num">Пробег, км</th>
         <th class="num">Рейсов</th>
         <th class="num">Топливо, ₽</th>
+        <th></th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="vehicles-tbody">
     {% for row in rows %}
-      {% set v = row.vehicle %}
-      <tr>
-        <td data-label="Номер">{{ v.license_plate }}</td>
-        <td data-label="Марка">{{ v.brand or '—' }}</td>
-        <td data-label="Тип">{{ v.type or '—' }}</td>
-        <td data-label="Норма" class="num">{{ v.fuel_norm_per_100km or '—' }}</td>
-        <td data-label="Пробег" class="num">{{ row.km }}</td>
-        <td data-label="Рейсов" class="num">{{ row.trips }}</td>
-        <td data-label="Топливо" class="num">{{ "{:,.0f}".format(row.fuel).replace(',', ' ') }}</td>
-      </tr>
+      {% include "_vehicle_row.html" with context %}
     {% endfor %}
     </tbody>
   </table>

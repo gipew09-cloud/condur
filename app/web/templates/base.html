@@ -16,7 +16,19 @@
     .row-profit { background-color: #e8f5e9; }
     .row-thin   { background-color: #fff8e1; }
     .row-loss   { background-color: #ffebee; }
-    table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    /* десктоп: ячейки выравниваем по центру по вертикали, заголовки не переносим */
+    @media (min-width: 769px) {
+      table th { white-space: nowrap; }
+      table td { vertical-align: middle; }
+      table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      /* кнопка-ссылка «Изменить» и аналоги — в одну строку */
+      table td a[hx-get], table td a[hx-post] { white-space: nowrap; }
+      /* inline-форма редактирования занимает строку, лейблы видны */
+      .edit-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin: 0; }
+      .edit-form label { display: flex; flex-direction: column; font-size: .75rem; color: var(--pico-muted-color); margin: 0; min-width: 90px; }
+      .edit-form input, .edit-form select { margin: 0; }
+      .edit-form button { margin: 0; }
+    }
     nav.topbar ul { gap: 1rem; }
     .insights li { margin-bottom: .5rem; }
     .pill { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .85em; background: var(--pico-secondary-background); }

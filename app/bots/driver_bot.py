@@ -442,9 +442,16 @@ async def shift_end_odometer_value(
         await _refresh_ui(message, session, driver, msg.SHIFT_NO_ACTIVE)
         return
 
-    if value < (shift.odometer_start or 0):
+    start = shift.odometer_start or 0
+    if value < start:
         await message.answer(
-            msg.SHIFT_ODOMETER_BELOW_START.format(end=value, start=shift.odometer_start)
+            msg.SHIFT_ODOMETER_BELOW_START.format(end=value, start=start)
+        )
+        return
+    # защита от очевидных опечаток (типа 5621636 вместо 562163)
+    if value - start > 5000:
+        await message.answer(
+            msg.SHIFT_ODOMETER_TOO_FAR.format(diff=value - start, start=start)
         )
         return
 

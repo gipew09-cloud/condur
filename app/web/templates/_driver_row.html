@@ -8,21 +8,28 @@
 {% if edit %}
 <tr id="driver-row-{{ d.id }}">
   <td>{{ d.full_name }}</td>
-  <td colspan="6">
-    <form hx-post="/drivers/{{ d.id }}/salary" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="grid">
-      <select name="salary_type">
-        <option value="per_km" {% if d.salary_type == 'per_km' %}selected{% endif %}>За км</option>
-        <option value="per_trip" {% if d.salary_type == 'per_trip' %}selected{% endif %}>За рейс</option>
-        <option value="percent" {% if d.salary_type == 'percent' %}selected{% endif %}>Процент</option>
-        <option value="fixed_per_shift" {% if d.salary_type == 'fixed_per_shift' %}selected{% endif %}>Фикс/смена</option>
-      </select>
-      <input type="text" name="salary_rate" value="{{ d.salary_rate }}" placeholder="ставка">
-      <input type="text" name="per_diem_rub" value="{{ d.per_diem_rub }}" placeholder="суточные">
+  <td colspan="7">
+    <form hx-post="/drivers/{{ d.id }}/salary" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="edit-form">
+      <label>
+        Тип ЗП
+        <select name="salary_type">
+          <option value="per_km" {% if d.salary_type == 'per_km' %}selected{% endif %}>За км</option>
+          <option value="per_trip" {% if d.salary_type == 'per_trip' %}selected{% endif %}>За рейс</option>
+          <option value="percent" {% if d.salary_type == 'percent' %}selected{% endif %}>Процент</option>
+          <option value="fixed_per_shift" {% if d.salary_type == 'fixed_per_shift' %}selected{% endif %}>Фикс/смена</option>
+        </select>
+      </label>
+      <label>
+        Ставка
+        <input type="text" name="salary_rate" value="{{ d.salary_rate }}">
+      </label>
+      <label>
+        Суточные, ₽
+        <input type="text" name="per_diem_rub" value="{{ d.per_diem_rub }}">
+      </label>
       <button type="submit">Сохранить</button>
+      <a href="#" hx-get="/drivers/{{ d.id }}/cancel" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
     </form>
-  </td>
-  <td>
-    <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">Отмена</a>
   </td>
 </tr>
 {% else %}

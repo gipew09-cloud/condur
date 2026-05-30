@@ -4,10 +4,17 @@
 {% block content %}
 <h2>Дашборд</h2>
 
+<h3 style="margin-top: 1rem;">Выручка</h3>
+<section class="kpi-grid">
+  <div class="kpi"><small>Сегодня</small><strong>{{ "{:,.0f}".format(kpi.revenue_today).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Этот месяц</small><strong>{{ "{:,.0f}".format(kpi.revenue_month).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Этот год</small><strong>{{ "{:,.0f}".format(kpi.revenue_year).replace(',', ' ') }} ₽</strong></div>
+</section>
+
+<h3 style="margin-top: 1.5rem;">Операции и P&L</h3>
 <section class="kpi-grid">
   <div class="kpi"><small>Рейсов сегодня</small><strong>{{ kpi.trips_today }}</strong></div>
   <div class="kpi"><small>Километров сегодня</small><strong>{{ kpi.km_today }}</strong></div>
-  <div class="kpi"><small>Выручка за месяц</small><strong>{{ "{:,.0f}".format(kpi.revenue_month).replace(',', ' ') }} ₽</strong></div>
   <div class="kpi"><small>Расходы за месяц</small><strong>{{ "{:,.0f}".format(kpi.expenses_month).replace(',', ' ') }} ₽</strong></div>
   <div class="kpi"><small>Чистая прибыль за месяц</small><strong>{{ "{:,.0f}".format(kpi.profit_month).replace(',', ' ') }} ₽</strong></div>
 </section>
@@ -42,7 +49,7 @@
           <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
           <td>{{ driver_name }}</td>
           <td>{{ plate }}</td>
-          <td><span class="pill">{{ trip.status }}</span></td>
+          <td><span class="pill">{{ trip.status | tstatus }}</span></td>
           <td class="num">{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }}</td>
         </tr>
       {% endfor %}
