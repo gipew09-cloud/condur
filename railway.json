@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python create_db.py && python -m app.main",
+    "startCommand": "alembic upgrade head && python -m app.main",
     "restartPolicyType": "ON_FAILURE"
   }
 }

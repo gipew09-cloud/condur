@@ -21,7 +21,9 @@ import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.redis import RedisStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.bots.driver_bot import driver_router
@@ -43,8 +45,31 @@ logging.basicConfig(
 )
 
 
+def _build_storage() -> BaseStorage:
+    """
+    RedisStorage если задан REDIS_URL, иначе MemoryStorage с предупреждением.
+    Redis нужен чтобы FSM-диалоги (онбординг, добавление машины и т.п.)
+    переживали рестарт контейнера. На MemoryStorage всё, что было в процессе
+    диалога на момент рестарта, теряется — пользователь оказывается «в начале».
+    """
+    if settings.redis_url:
+        logging.info("FSM storage: Redis (%s)", _redact_url(settings.redis_url))
+        return RedisStorage.from_url(settings.redis_url)
+    logging.warning(
+        "REDIS_URL пустой — используем MemoryStorage. "
+        "Незавершённые диалоги будут теряться при рестарте."
+    )
+    return MemoryStorage()
+
+
+def _redact_url(url: str) -> str:
+    """Маскируем пароль в URL для логов: redis://default:SECRET@host -> redis://default:***@host"""
+    import re as _re
+    return _re.sub(r"(://[^:@/]+:)[^@/]+(@)", r"\1***\2", url)
+
+
 async def main() -> None:
-    storage = MemoryStorage()
+    storage = _build_storage()
     default = DefaultBotProperties(parse_mode=ParseMode.HTML)
 
     owner_bot = Bot(token=settings.owner_bot_token, default=default)
