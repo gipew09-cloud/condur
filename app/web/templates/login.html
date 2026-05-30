@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — TMS</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+</head>
+<body>
+<main class="container" style="max-width: 480px; margin-top: 4rem;">
+  <h2>Вход в кабинет</h2>
+  <p>Откройте бот владельца, отправьте <code>/login</code> — получите 6-значный код.</p>
+  {% if error %}
+    <p style="color: var(--pico-color-red-500);"><strong>{{ error }}</strong></p>
+  {% endif %}
+  <form method="POST" action="/login">
+    <label>
+      Telegram ID
+      <input type="text" name="telegram_id" inputmode="numeric" required autofocus>
+    </label>
+    <label>
+      Код (6 цифр)
+      <input type="text" name="code" inputmode="numeric" pattern="\d{6}" required>
+    </label>
+    <button type="submit">Войти</button>
+  </form>
+</main>
+</body>
+</html>

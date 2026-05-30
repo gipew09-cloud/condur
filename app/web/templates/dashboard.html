@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Главная{% endblock %}
+
+{% block content %}
+<h2>Дашборд</h2>
+
+<section class="kpi-grid">
+  <div class="kpi"><small>Рейсов сегодня</small><strong>{{ kpi.trips_today }}</strong></div>
+  <div class="kpi"><small>Километров сегодня</small><strong>{{ kpi.km_today }}</strong></div>
+  <div class="kpi"><small>Выручка за месяц</small><strong>{{ "{:,.0f}".format(kpi.revenue_month).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Расходы за месяц</small><strong>{{ "{:,.0f}".format(kpi.expenses_month).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Чистая прибыль за месяц</small><strong>{{ "{:,.0f}".format(kpi.profit_month).replace(',', ' ') }} ₽</strong></div>
+</section>
+
+<section style="margin-top: 2rem;">
+  <h3>Выручка и расходы за 7 дней</h3>
+  <canvas id="chart7d" height="100"></canvas>
+</section>
+
+<section style="margin-top: 2rem;">
+  <h3>Замечания</h3>
+  {% if insights %}
+    <ul class="insights">
+      {% for it in insights %}<li>{{ it | safe }}</li>{% endfor %}
+    </ul>
+  {% else %}
+    <p>Замечаний нет. Всё ровно.</p>
+  {% endif %}
+</section>
+
+<section style="margin-top: 2rem;">
+  <h3>Последние 10 рейсов</h3>
+  {% if last_trips %}
+    <table>
+      <thead><tr><th>Дата</th><th>Маршрут</th><th>Водитель</th><th>Машина</th><th>Статус</th><th class="num">Выручка</th></tr></thead>
+      <tbody>
+      {% for trip, driver_name, plate in last_trips %}
+        <tr>
+          <td>{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
+          <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
+          <td>{{ driver_name }}</td>
+          <td>{{ plate }}</td>
+          <td><span class="pill">{{ trip.status }}</span></td>
+          <td class="num">{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Рейсов пока нет.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const chartData = {{ chart | tojson }};
+  const ctx = document.getElementById('chart7d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: chartData.labels,
+      datasets: [
+        { label: 'Выручка', data: chartData.revenue, backgroundColor: 'rgba(46, 125, 50, 0.7)' },
+        { label: 'Расходы', data: chartData.expenses, backgroundColor: 'rgba(198, 40, 40, 0.7)' }
+      ]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'top' } } }
+  });
+</script>
+{% endblock %}

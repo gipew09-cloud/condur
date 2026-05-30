@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str = ""  # необязателен пока используем MemoryStorage
 
+    # секрет для подписи JWT в веб-кабинете. На Railway задайте через Variables.
+    jwt_secret: str = "change-me-in-production"
+    # HTTP-порт для FastAPI. Railway пробрасывает свой через переменную PORT.
+    port: int = 8000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

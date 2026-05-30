@@ -37,7 +37,10 @@ class Owner(Base):
 class Driver(Base):
     __tablename__ = "drivers"
     __table_args__ = (
-        CheckConstraint("salary_type IN ('per_km','percent','fixed_per_shift')", name="ck_driver_salary_type"),
+        CheckConstraint(
+            "salary_type IN ('per_km','per_trip','percent','fixed_per_shift')",
+            name="ck_driver_salary_type",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -172,6 +175,28 @@ class Event(Base):
     trip_id: Mapped[int | None] = mapped_column(ForeignKey("trips.id"))
     event_type: Mapped[str] = mapped_column(String(50))
     payload: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ========== РУЧНЫЕ ДОХОДЫ И РАСХОДЫ ВЛАДЕЛЬЦА ==========
+class ManualEntry(Base):
+    """
+    Произвольные финансовые записи владельца, не привязанные к рейсам:
+    например аренда офиса, лизинг, аванс водителю, нерейсовая выручка.
+    Используется на странице /finances.
+    """
+    __tablename__ = "manual_entries"
+    __table_args__ = (
+        CheckConstraint("type IN ('income','expense')", name="ck_manual_entry_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(10))
+    category: Mapped[str | None] = mapped_column(String(100))
+    amount_rub: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    description: Mapped[str | None] = mapped_column(Text)
+    entry_date: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

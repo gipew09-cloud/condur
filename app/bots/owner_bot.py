@@ -1,12 +1,13 @@
 """
 Бот ВЛАДЕЛЬЦА автопарка.
 
-Что умеет на Этапе 1:
+Этапы 1–2:
   - /start: регистрация или вход в главное меню
   - главное меню (inline): «Мои водители», «Мои машины», «Статистика»
   - добавить водителя через FSM → сгенерировать invite-ссылку
   - добавить машину через FSM
   - показать список водителей / машин с пометкой кто сейчас в смене
+  - inline-callback'и одобрения/отклонения расходов (Этап 2)
 
 Принцип: FSM — только подсказка для UI. Источник истины — БД.
 В начале каждого хендлера сначала смотрим, что в БД, потом ориентируемся
@@ -18,8 +19,9 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -34,8 +36,11 @@ from app.bots.keyboards import (
     vehicle_type_keyboard,
     vehicles_list_keyboard,
 )
+from app.bots.notifications import notify_driver
 from app.bots.states import AddDriver, AddVehicle, OwnerRegistration
 from app.models import Driver, Owner, Shift, Vehicle
+from app.services import auth_service, expense_service
+from app.services.event_service import log_event
 
 logger = logging.getLogger(__name__)
 owner_router = Router()
@@ -59,7 +64,7 @@ async def _show_main_menu(message: Message, owner: Owner) -> None:
 # =========================================================================
 # /start — регистрация или вход
 # =========================================================================
-@owner_router.message(CommandStart())
+@owner_router.message(CommandStart(), StateFilter(any_state))
 async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) -> None:
     await state.clear()
     owner = await _get_owner(session, message.from_user.id)
@@ -217,7 +222,7 @@ async def add_driver_phone(message: Message, state: FSMContext) -> None:
 @owner_router.callback_query(AddDriver.waiting_for_salary_type, F.data.startswith("salary:"))
 async def add_driver_salary_type(call: CallbackQuery, state: FSMContext) -> None:
     salary_type = call.data.split(":", 1)[1]
-    if salary_type not in ("per_km", "percent", "fixed_per_shift"):
+    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift"):
         await call.answer("Неизвестный тип", show_alert=True)
         return
     await state.update_data(salary_type=salary_type)
@@ -225,6 +230,7 @@ async def add_driver_salary_type(call: CallbackQuery, state: FSMContext) -> None
 
     prompt = {
         "per_km": msg.ADD_DRIVER_RATE_PER_KM,
+        "per_trip": msg.ADD_DRIVER_RATE_PER_TRIP,
         "percent": msg.ADD_DRIVER_RATE_PERCENT,
         "fixed_per_shift": msg.ADD_DRIVER_RATE_FIXED,
     }[salary_type]
@@ -419,6 +425,81 @@ async def add_vehicle_fuel(message: Message, state: FSMContext, session: AsyncSe
 
 
 # =========================================================================
+# Одобрение / отклонение расхода (callback из уведомления Этапа 2)
+# =========================================================================
+async def _decide_expense(call: CallbackQuery, session: AsyncSession, driver_bot: Bot, approve: bool) -> None:
+    try:
+        expense_id = int(call.data.split(":")[2])
+    except (IndexError, ValueError):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+
+    expense = await expense_service.decide_expense(
+        session, expense_id=expense_id, approve=approve
+    )
+    if expense is None:
+        await call.answer("Расход не найден", show_alert=True)
+        return
+    if expense.owner_id != owner.id:
+        # чужой расход — не позволим решать
+        await call.answer("Доступ запрещён", show_alert=True)
+        return
+
+    await log_event(
+        session,
+        owner_id=owner.id,
+        driver_id=expense.driver_id,
+        shift_id=expense.shift_id,
+        trip_id=expense.trip_id,
+        event_type="expense_approved" if approve else "expense_rejected",
+        payload={"expense_id": expense.id, "amount": str(expense.amount_rub)},
+    )
+    await session.commit()
+
+    # Убираем inline-кнопки и добавляем итог в caption/text
+    decision = "✅ Одобрено" if expense.status == "approved" else "❌ Отклонено"
+    category_label = expense_service.CATEGORY_LABELS.get(expense.category, expense.category)
+    summary_suffix = f"\n\n<b>{decision}</b>"
+    try:
+        if call.message.caption is not None:
+            await call.message.edit_caption(
+                caption=call.message.caption + summary_suffix, reply_markup=None
+            )
+        else:
+            await call.message.edit_text(
+                text=(call.message.text or "") + summary_suffix, reply_markup=None
+            )
+    except Exception as exc:  # noqa: BLE001 — telegram капризен с edit, не валим процесс
+        logger.warning("Failed to edit expense decision message: %s", exc)
+
+    # Уведомить водителя
+    driver = await session.get(Driver, expense.driver_id)
+    if driver is not None and driver.telegram_id is not None:
+        template = msg.EXPENSE_APPROVED_DRIVER if approve else msg.EXPENSE_REJECTED_DRIVER
+        await notify_driver(
+            driver_bot, session, driver.telegram_id,
+            template.format(category=category_label, amount=expense.amount_rub),
+        )
+
+    await call.answer("Готово")
+
+
+@owner_router.callback_query(F.data.startswith("expense:approve:"))
+async def cb_expense_approve(call: CallbackQuery, session: AsyncSession, driver_bot: Bot) -> None:
+    await _decide_expense(call, session, driver_bot, approve=True)
+
+
+@owner_router.callback_query(F.data.startswith("expense:reject:"))
+async def cb_expense_reject(call: CallbackQuery, session: AsyncSession, driver_bot: Bot) -> None:
+    await _decide_expense(call, session, driver_bot, approve=False)
+
+
+# =========================================================================
 # Заглушки для будущих действий + fallback
 # =========================================================================
 @owner_router.callback_query(F.data.startswith("driver:view:"))
@@ -431,7 +512,21 @@ async def cb_vehicle_view(call: CallbackQuery) -> None:
     await call.answer("Профиль машины появится на Этапе 2", show_alert=True)
 
 
-@owner_router.message(Command("cancel"))
+@owner_router.message(Command("login"), StateFilter(any_state))
+async def cmd_login(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    """Сгенерировать одноразовый код для входа в веб-кабинет."""
+    await state.clear()
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await message.answer("Сначала /start — нужно зарегистрироваться.")
+        return
+    code = auth_service.issue_code(message.from_user.id)
+    await message.answer(
+        msg.OWNER_LOGIN_CODE.format(code=code, telegram_id=message.from_user.id)
+    )
+
+
+@owner_router.message(Command("cancel"), StateFilter(any_state))
 async def cmd_cancel(message: Message, state: FSMContext, session: AsyncSession) -> None:
     await state.clear()
     owner = await _get_owner(session, message.from_user.id)

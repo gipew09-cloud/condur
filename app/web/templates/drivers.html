@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Водители{% endblock %}
+
+{% block content %}
+<h2>Водители</h2>
+<p><small>Показатели за текущий месяц.</small></p>
+
+{% if not rows %}
+  <p>Водителей нет. Добавьте через бот владельца.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Водитель</th>
+        <th>Тип / ставка</th>
+        <th class="num">Смен</th>
+        <th class="num">Рейсов</th>
+        <th class="num">Пробег, км</th>
+        <th class="num">Выручка</th>
+        <th class="num">Топливо</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="drivers-tbody">
+      {% for row in rows %}
+        {% include "_driver_row.html" with context %}
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

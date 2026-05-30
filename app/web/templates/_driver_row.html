@@ -1,0 +1,41 @@
+{% set d = row.driver %}
+{% set salary_labels = {
+    'per_km': 'За км',
+    'per_trip': 'За рейс',
+    'percent': 'Процент',
+    'fixed_per_shift': 'Фикс/смена'
+} %}
+{% if edit %}
+<tr id="driver-row-{{ d.id }}">
+  <td>{{ d.full_name }}</td>
+  <td colspan="6">
+    <form hx-post="/drivers/{{ d.id }}/salary" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="grid">
+      <select name="salary_type">
+        <option value="per_km" {% if d.salary_type == 'per_km' %}selected{% endif %}>За км</option>
+        <option value="per_trip" {% if d.salary_type == 'per_trip' %}selected{% endif %}>За рейс</option>
+        <option value="percent" {% if d.salary_type == 'percent' %}selected{% endif %}>Процент</option>
+        <option value="fixed_per_shift" {% if d.salary_type == 'fixed_per_shift' %}selected{% endif %}>Фикс/смена</option>
+      </select>
+      <input type="text" name="salary_rate" value="{{ d.salary_rate }}" placeholder="ставка">
+      <input type="text" name="per_diem_rub" value="{{ d.per_diem_rub }}" placeholder="суточные">
+      <button type="submit">Сохранить</button>
+    </form>
+  </td>
+  <td>
+    <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">Отмена</a>
+  </td>
+</tr>
+{% else %}
+<tr id="driver-row-{{ d.id }}">
+  <td>{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill">не активирован</span>{% endif %}</td>
+  <td>{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}</td>
+  <td class="num">{{ row.shifts }}</td>
+  <td class="num">{{ row.trips }}</td>
+  <td class="num">{{ row.km }}</td>
+  <td class="num">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }}</td>
+  <td class="num">{{ "{:,.0f}".format(row.fuel_cost).replace(',', ' ') }}</td>
+  <td>
+    <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">✎ Изменить</a>
+  </td>
+</tr>
+{% endif %}

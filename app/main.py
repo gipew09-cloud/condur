@@ -1,22 +1,23 @@
 """
-Точка входа. Запускает ОБА бота одновременно в одном процессе.
+Точка входа. Запускает в одном процессе:
+  - бот владельца (long-polling),
+  - бот водителя (long-polling),
+  - FastAPI веб-кабинет на uvicorn.
 
-Как это работает:
-  - создаём два объекта Bot (по токену на каждого),
-  - на каждого свой Dispatcher (он раздаёт входящие сообщения в обработчики),
-  - состояния (FSM) храним в памяти процесса (MemoryStorage). Это значит,
-    что при перезапуске процесса все незавершённые диалоги обнуляются.
-    Для MVP это допустимо; позже вернёмся к RedisStorage для устойчивости,
-  - middleware прокидывает в хендлеры сессию БД и инстанс "соседнего" бота
-    (чтобы driver_bot мог отправить уведомление через owner_bot, и наоборот),
-  - asyncio.gather запускает опрос (polling) обоих ботов параллельно.
+Всё через единый asyncio.gather. Если один из трёх упадёт — упадёт весь
+процесс, Railway пере запустит (restartPolicyType=ON_FAILURE).
 
-Запуск:  python -m app.main
-Остановка: Ctrl+C
+Состояние FSM держим в памяти (MemoryStorage). При рестарте незавершённые
+диалоги обнуляются — на MVP это приемлемо.
+
+Кросс-бот middleware прокидывает в хендлеры "соседнего" бота, чтобы
+driver_bot мог отправить уведомление через owner_bot, и наоборот.
 """
 import asyncio
 import logging
+import os
 
+import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -27,6 +28,7 @@ from app.bots.middlewares import CrossBotMiddleware, DbSessionMiddleware
 from app.bots.owner_bot import owner_router
 from app.config import settings
 from app.database import async_session
+from app.web.router import app as web_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,13 +46,11 @@ async def main() -> None:
     owner_dp = Dispatcher(storage=storage)
     driver_dp = Dispatcher(storage=storage)
 
-    # БД-сессия в каждый хендлер
     db_mw = DbSessionMiddleware(async_session)
     for dp in (owner_dp, driver_dp):
         dp.message.middleware(db_mw)
         dp.callback_query.middleware(db_mw)
 
-    # Прокидываем "соседнего" бота: owner_bot нужен в driver-хендлерах, и наоборот
     owner_side_cross = CrossBotMiddleware(driver_bot, key="driver_bot")
     owner_dp.message.middleware(owner_side_cross)
     owner_dp.callback_query.middleware(owner_side_cross)
@@ -62,11 +62,19 @@ async def main() -> None:
     owner_dp.include_router(owner_router)
     driver_dp.include_router(driver_router)
 
-    logging.info("Боты запущены. Ctrl+C для остановки.")
+    # На Railway порт приходит в PORT, локально берём из настроек
+    port = int(os.environ.get("PORT") or settings.port)
+    uv_config = uvicorn.Config(
+        web_app, host="0.0.0.0", port=port, log_level="info", access_log=False
+    )
+    uv_server = uvicorn.Server(uv_config)
+
+    logging.info("Боты и веб-кабинет запущены. Порт: %s. Ctrl+C для остановки.", port)
     try:
         await asyncio.gather(
             owner_dp.start_polling(owner_bot),
             driver_dp.start_polling(driver_bot),
+            uv_server.serve(),
         )
     finally:
         await owner_bot.session.close()

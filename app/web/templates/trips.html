@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Рейсы{% endblock %}
+
+{% block content %}
+<h2>Рейсы</h2>
+
+<form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
+  <div class="grid">
+    <label>
+      Водитель
+      <select name="driver_id">
+        <option value="">— все —</option>
+        {% for d in drivers %}
+          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>С даты<input type="date" name="date_from" value="{{ filter_date_from }}"></label>
+    <label>По дату<input type="date" name="date_to" value="{{ filter_date_to }}"></label>
+  </div>
+  <button type="submit">Применить</button>
+</form>
+
+<div id="trips-table" style="margin-top: 1rem;">
+  {% include "_trips_table.html" %}
+</div>
+{% endblock %}

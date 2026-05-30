@@ -1,0 +1,11 @@
+<tr id="entry-{{ entry.id }}">
+  <td>{{ entry.entry_date.strftime('%d.%m.%Y') }}</td>
+  <td>{% if entry.type == 'income' %}🟢 Доход{% else %}🔴 Расход{% endif %}</td>
+  <td>{{ entry.category or '—' }}</td>
+  <td class="num">{{ "{:,.0f}".format(entry.amount_rub).replace(',', ' ') }}</td>
+  <td>{{ entry.description or '' }}</td>
+  <td>
+    <a href="#" hx-post="/finances/delete/{{ entry.id }}" hx-target="#entry-{{ entry.id }}" hx-swap="outerHTML"
+       hx-confirm="Удалить запись?">✕</a>
+  </td>
+</tr>

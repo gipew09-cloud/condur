@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Финансы{% endblock %}
+
+{% block content %}
+<h2>Финансы</h2>
+
+<form method="GET" action="/finances">
+  <div class="grid">
+    <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
+    <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
+    <label>&nbsp;<button type="submit">Показать</button></label>
+    <label>&nbsp;<a role="button" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Скачать Excel</a></label>
+  </div>
+</form>
+
+<section class="kpi-grid" style="margin-top: 1rem;">
+  <div class="kpi"><small>Доход (рейсы + ручной)</small><strong>{{ "{:,.0f}".format(summary.total_income).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Расход (топливо + одобренные + ручной)</small><strong>{{ "{:,.0f}".format(summary.total_expense).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(summary.profit).replace(',', ' ') }} ₽</strong></div>
+</section>
+
+<h3 style="margin-top: 2rem;">Добавить запись вручную</h3>
+<form hx-post="/finances/add" hx-target="#entries-tbody" hx-swap="afterbegin" hx-on::after-request="this.reset()">
+  <div class="grid">
+    <label>Тип
+      <select name="type">
+        <option value="income">Доход</option>
+        <option value="expense">Расход</option>
+      </select>
+    </label>
+    <label>Категория <input type="text" name="category" placeholder="аренда / лизинг / прочее"></label>
+    <label>Сумма, ₽ <input type="text" name="amount_rub" required></label>
+    <label>Дата <input type="date" name="entry_date" value="{{ today }}" required></label>
+  </div>
+  <label>Описание <input type="text" name="description"></label>
+  <button type="submit">Добавить</button>
+</form>
+
+<h3 style="margin-top: 2rem;">Ручные записи за период</h3>
+{% if entries %}
+<table>
+  <thead><tr><th>Дата</th><th>Тип</th><th>Категория</th><th class="num">Сумма</th><th>Описание</th><th></th></tr></thead>
+  <tbody id="entries-tbody">
+    {% for entry in entries %}
+      {% include "_manual_entry_row.html" %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Записей нет.</p>
+<table style="display:none;"><tbody id="entries-tbody"></tbody></table>
+{% endif %}
+{% endblock %}

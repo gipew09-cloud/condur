@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Машины{% endblock %}
+
+{% block content %}
+<h2>Машины</h2>
+<p><small>Показатели за текущий месяц.</small></p>
+
+{% if not rows %}
+  <p>Машин нет. Добавьте через бот владельца.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Гос. номер</th>
+        <th>Марка</th>
+        <th>Тип</th>
+        <th class="num">Норма, л/100км</th>
+        <th class="num">Пробег, км</th>
+        <th class="num">Рейсов</th>
+        <th class="num">Топливо, ₽</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+      {% set v = row.vehicle %}
+      <tr>
+        <td>{{ v.license_plate }}</td>
+        <td>{{ v.brand or '—' }}</td>
+        <td>{{ v.type or '—' }}</td>
+        <td class="num">{{ v.fuel_norm_per_100km or '—' }}</td>
+        <td class="num">{{ row.km }}</td>
+        <td class="num">{{ row.trips }}</td>
+        <td class="num">{{ "{:,.0f}".format(row.fuel).replace(',', ' ') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

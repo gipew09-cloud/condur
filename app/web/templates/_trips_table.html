@@ -1,0 +1,37 @@
+{% if not rows %}
+  <p>По выбранным фильтрам рейсов не найдено.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Дата</th><th>Маршрут</th><th>Водитель</th><th>Машина</th>
+        <th class="num">Выручка</th><th class="num">Топливо</th><th class="num">Прибыль</th><th>Статус</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for trip, driver_name, plate in rows %}
+      {% set revenue = (trip.revenue_rub or 0) | float %}
+      {% set profit = (trip.profit_rub or 0) | float %}
+      {% set fuel = (trip.fuel_cost_rub or 0) | float %}
+      {% set margin = (profit / revenue * 100) if revenue > 0 else 0 %}
+      {% if profit < 0 %}
+        {% set cls = "row-loss" %}
+      {% elif margin < 20 %}
+        {% set cls = "row-thin" %}
+      {% else %}
+        {% set cls = "row-profit" %}
+      {% endif %}
+      <tr class="{{ cls }}">
+        <td>{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
+        <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
+        <td>{{ driver_name }}</td>
+        <td>{{ plate }}</td>
+        <td class="num">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</td>
+        <td class="num">{{ "{:,.0f}".format(fuel).replace(',', ' ') }}</td>
+        <td class="num">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</td>
+        <td><span class="pill">{{ trip.status }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
