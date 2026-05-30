@@ -1,7 +1,7 @@
 """
 Задачи APScheduler.
 
-Все три джоба написаны как ASYNC-функции, которые сами:
+Все четыре джоба написаны как ASYNC-функции, которые сами:
   - открывают свою сессию БД через async_session;
   - принимают только owner_bot (для отправки уведомлений).
 
@@ -21,11 +21,17 @@ from sqlalchemy import func, select
 from app.bots import messages as msg
 from app.bots.notifications import notify_owner
 from app.database import async_session
-from app.models import DailySummary, Driver, Expense, Owner, Shift, Trip, Vehicle
+from app.models import DailySummary, Driver, Event, Expense, Owner, Shift, Trip, Vehicle
 from app.services.event_service import log_event
 from app.services.timeutil import now_in_tz, owner_tz
 
 logger = logging.getLogger(__name__)
+
+# для детектора тишины: telegram_id водителя -> когда мы последний раз
+# алертили владельца. Чтобы не спамить — не чаще 1 раз в 2 часа.
+_SILENCE_LAST_ALERT: dict[int, datetime] = {}
+SILENCE_THRESHOLD_HOURS = 4
+SILENCE_DEDUP_HOURS = 2
 
 
 # =========================================================================
@@ -242,3 +248,65 @@ async def _check_late_starts(
                 driver=d.full_name, expected_time=d.shift_start_time
             ),
         )
+
+
+# =========================================================================
+# Детектор тишины — каждые 30 минут проверяет все активные смены.
+# Один SQL по всем водителям сразу, in-memory дедуп раз в 2ч на каждого.
+# =========================================================================
+async def silence_detector_job(owner_bot: Bot) -> None:
+    threshold = datetime.now(timezone.utc) - timedelta(hours=SILENCE_THRESHOLD_HOURS)
+    async with async_session() as session:
+        # для каждого активного смена-водителя: последний event этого водителя
+        result = await session.execute(
+            select(
+                Driver.id,
+                Driver.full_name,
+                Driver.owner_id,
+                Driver.telegram_id,
+                Shift.id.label("shift_id"),
+                Shift.started_at,
+                func.max(Event.created_at).label("last_event_at"),
+            )
+            .select_from(Shift)
+            .join(Driver, Driver.id == Shift.driver_id)
+            .outerjoin(Event, Event.driver_id == Driver.id)
+            .where(Shift.status == "started")
+            .group_by(
+                Driver.id, Driver.full_name, Driver.owner_id,
+                Driver.telegram_id, Shift.id, Shift.started_at,
+            )
+        )
+        rows = list(result.all())
+        if not rows:
+            return
+
+        owners_cache: dict[int, Owner] = {}
+        now = datetime.now(timezone.utc)
+        for driver_id, full_name, owner_id, _tid, shift_id, started_at, last_event_at in rows:
+            last_seen = last_event_at or started_at
+            if last_seen is None or last_seen > threshold:
+                continue
+            # дедуп
+            previous_alert = _SILENCE_LAST_ALERT.get(driver_id)
+            if previous_alert and (now - previous_alert) < timedelta(hours=SILENCE_DEDUP_HOURS):
+                continue
+            owner = owners_cache.get(owner_id)
+            if owner is None:
+                owner = await session.get(Owner, owner_id)
+                if owner is None:
+                    continue
+                owners_cache[owner_id] = owner
+            hours = (now - last_seen).total_seconds() / 3600
+            text = (
+                f"⚠️ <b>{full_name}</b> не выходит на связь {hours:.0f} ч.\n"
+                f"Смена открыта с {started_at.astimezone(owner_tz(owner.timezone)):%H:%M %d.%m}."
+            )
+            await notify_owner(owner_bot, session, owner, text)
+            _SILENCE_LAST_ALERT[driver_id] = now
+            await log_event(
+                session, owner_id=owner_id, driver_id=driver_id,
+                shift_id=shift_id, event_type="silence_alert",
+                payload={"hours_silent": round(hours, 1)},
+            )
+        await session.commit()

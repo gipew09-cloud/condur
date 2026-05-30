@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}TMS{% endblock %} — кабинет</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/static/mobile.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  {% block head %}{% endblock %}
   <style>
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
     .kpi { background: var(--pico-card-background-color); padding: 1rem; border-radius: 8px; border: 1px solid var(--pico-card-border-color); }
@@ -32,6 +34,7 @@
       <li><a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}>Рейсы</a></li>
       <li><a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}>Водители</a></li>
       <li><a href="/vehicles" {% if active_page == 'vehicles' %}aria-current="page"{% endif %}>Машины</a></li>
+      <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}>Карта</a></li>
       <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}>Финансы</a></li>
       <li><a href="/logout">Выйти</a></li>
     </ul>
@@ -40,6 +43,15 @@
 <main class="container">
   {% block content %}{% endblock %}
 </main>
+
+<nav class="bottom-nav">
+  <a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><span class="bn-icon">🏠</span>Главная</a>
+  <a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><span class="bn-icon">🚛</span>Рейсы</a>
+  <a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><span class="bn-icon">👥</span>Люди</a>
+  <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><span class="bn-icon">📍</span>Карта</a>
+  <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><span class="bn-icon">💰</span>Деньги</a>
+</nav>
+
 {% block scripts %}{% endblock %}
 </body>
 </html>

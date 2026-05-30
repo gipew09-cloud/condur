@@ -33,6 +33,7 @@ from app.services.scheduler_jobs import (
     daily_summary_job,
     doc_expiry_job,
     late_start_job,
+    silence_detector_job,
 )
 from app.web.router import app as web_app
 
@@ -82,6 +83,10 @@ async def main() -> None:
     scheduler.add_job(daily_summary_job, "cron", minute="*/30", args=[owner_bot])
     scheduler.add_job(doc_expiry_job, "cron", minute="*/30", args=[owner_bot])
     scheduler.add_job(late_start_job, "cron", minute="*/15", args=[owner_bot])
+    scheduler.add_job(
+        silence_detector_job, "cron", minute="*/30", args=[owner_bot],
+        max_instances=1, misfire_grace_time=60,
+    )
     scheduler.start()
 
     logging.info("Боты, веб-кабинет и планировщик запущены. Порт: %s. Ctrl+C для остановки.", port)

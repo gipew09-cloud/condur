@@ -44,11 +44,15 @@ from app.bots.states import (
     AddDriver,
     AddRouteTemplate,
     AddVehicle,
+    Onboarding,
     OwnerRegistration,
     SetTripRevenue,
+    TripCalc,
 )
-from app.models import Driver, ManualEntry, Owner, RouteTemplate, Shift, Trip, Vehicle
-from app.services import auth_service, expense_service, trip_service
+from app.models import (
+    Driver, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
+)
+from app.services import auth_service, billing, expense_service, trip_service
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
 
@@ -82,8 +86,15 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) 
         await _show_main_menu(message, owner)
         return
 
-    await state.set_state(OwnerRegistration.waiting_for_company)
-    await message.answer(msg.OWNER_WELCOME_NEW)
+    # новый владелец → 5-шаговый онбординг
+    await state.set_state(Onboarding.company)
+    await message.answer(
+        "🚛 <b>Добро пожаловать в Автопарк TMS!</b>\n\n"
+        "Помогу настроить за 5 минут. После этого сразу сможете "
+        "открыть первую смену.\n\n"
+        "<b>Шаг 1/5.</b> Как называется ваша компания или ИП?\n"
+        "<i>Например: ИП Иванов</i>"
+    )
 
 
 @owner_router.message(OwnerRegistration.waiting_for_company)
@@ -127,6 +138,181 @@ async def reg_phone(message: Message, state: FSMContext, session: AsyncSession) 
 
     await state.clear()
     await message.answer(msg.OWNER_REGISTERED)
+    await _show_main_menu(message, owner)
+
+
+# =========================================================================
+# Онбординг — 5 шагов
+# =========================================================================
+@owner_router.message(Onboarding.company)
+async def onb_company(message: Message, state: FSMContext) -> None:
+    company = (message.text or "").strip()
+    if len(company) < 2:
+        await message.answer("Слишком короткое название. Попробуйте ещё раз.")
+        return
+    await state.update_data(company=company)
+    await state.set_state(Onboarding.phone)
+    await message.answer(
+        f"✅ <b>{company}</b>.\n\n"
+        f"<b>Шаг 2/5.</b> Ваш телефон в формате +7XXXXXXXXXX:"
+    )
+
+
+@owner_router.message(Onboarding.phone)
+async def onb_phone(message: Message, state: FSMContext) -> None:
+    phone = (message.text or "").strip()
+    if not PHONE_RE.match(phone):
+        await message.answer(msg.OWNER_INVALID_PHONE)
+        return
+    await state.update_data(phone=phone)
+    await state.set_state(Onboarding.vehicle_plate)
+    await message.answer(
+        "<b>Шаг 3/5.</b> Госномер вашей первой машины (например, А123БВ777):"
+    )
+
+
+@owner_router.message(Onboarding.vehicle_plate)
+async def onb_vehicle_plate(message: Message, state: FSMContext) -> None:
+    plate = (message.text or "").strip().upper().replace(" ", "")
+    if len(plate) < 6:
+        await message.answer("Госномер слишком короткий. Введите ещё раз.")
+        return
+    await state.update_data(vehicle_plate=plate)
+    await state.set_state(Onboarding.vehicle_brand)
+    await message.answer("Марка машины (например, ГАЗель Next):")
+
+
+@owner_router.message(Onboarding.vehicle_brand)
+async def onb_vehicle_brand(message: Message, state: FSMContext) -> None:
+    brand = (message.text or "").strip()
+    if not brand:
+        await message.answer("Введите марку машины.")
+        return
+    await state.update_data(vehicle_brand=brand)
+    await state.set_state(Onboarding.driver_name)
+    await message.answer("<b>Шаг 4/5.</b> ФИО первого водителя:")
+
+
+@owner_router.message(Onboarding.driver_name)
+async def onb_driver_name(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if len(name) < 2:
+        await message.answer("Слишком коротко. Введите ФИО водителя.")
+        return
+    await state.update_data(driver_name=name)
+    await state.set_state(Onboarding.driver_phone)
+    await message.answer("Телефон водителя в формате +7XXXXXXXXXX:")
+
+
+@owner_router.message(Onboarding.driver_phone)
+async def onb_driver_phone(message: Message, state: FSMContext) -> None:
+    phone = (message.text or "").strip()
+    if not PHONE_RE.match(phone):
+        await message.answer(msg.OWNER_INVALID_PHONE)
+        return
+    await state.update_data(driver_phone=phone)
+    await state.set_state(Onboarding.route_from)
+    await message.answer(
+        "<b>Шаг 5/5.</b> Создадим первый шаблон маршрута.\n\nОткуда (город):"
+    )
+
+
+@owner_router.message(Onboarding.route_from)
+async def onb_route_from(message: Message, state: FSMContext) -> None:
+    origin = (message.text or "").strip()
+    if not origin:
+        await message.answer("Введите город отправления.")
+        return
+    await state.update_data(route_from=origin)
+    await state.set_state(Onboarding.route_to)
+    await message.answer("Куда:")
+
+
+@owner_router.message(Onboarding.route_to)
+async def onb_finalize(
+    message: Message, state: FSMContext, session: AsyncSession, driver_bot: Bot
+) -> None:
+    destination = (message.text or "").strip()
+    if not destination:
+        await message.answer("Введите город назначения.")
+        return
+    data = await state.get_data()
+
+    # 1. Owner
+    owner = Owner(
+        telegram_id=message.from_user.id,
+        full_name=message.from_user.full_name,
+        company_name=data["company"],
+        phone=data["phone"],
+    )
+    session.add(owner)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        existing = await _get_owner(session, message.from_user.id)
+        if existing is not None:
+            await state.clear()
+            await _show_main_menu(message, existing)
+            return
+        logger.exception("Onboarding owner create failed")
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+
+    # 2. Free subscription
+    session.add(Subscription(
+        owner_id=owner.id, plan="free",
+        vehicles_limit=billing.PLANS["free"].vehicles_limit,
+    ))
+
+    # 3. Vehicle
+    vehicle = Vehicle(
+        owner_id=owner.id,
+        license_plate=data["vehicle_plate"],
+        brand=data["vehicle_brand"],
+        type="truck",
+        fuel_norm_per_100km=Decimal("12"),
+    )
+    session.add(vehicle)
+
+    # 4. Driver с invite-токеном
+    invite_token = uuid.uuid4().hex
+    driver = Driver(
+        owner_id=owner.id,
+        full_name=data["driver_name"],
+        phone=data["driver_phone"],
+        salary_type="per_km",
+        salary_rate=Decimal("8"),
+        invite_token=invite_token,
+    )
+    session.add(driver)
+
+    # 5. Route template
+    session.add(RouteTemplate(
+        owner_id=owner.id,
+        name=f"{data['route_from']} → {destination}",
+        origin=data["route_from"],
+        destination=destination,
+        default_cargo=None,
+    ))
+
+    await session.commit()
+    await state.clear()
+
+    me = await driver_bot.get_me()
+    link = f"https://t.me/{me.username}?start={invite_token}"
+    await message.answer(
+        "🎉 <b>Готово!</b>\n\n"
+        f"Компания: <b>{owner.company_name}</b>\n"
+        f"Машина: <b>{vehicle.license_plate}</b> ({vehicle.brand})\n"
+        f"Водитель: <b>{driver.full_name}</b>\n"
+        f"Маршрут: <b>{data['route_from']} → {destination}</b>\n"
+        f"Тариф: <b>FREE</b> (до 2 машин)\n\n"
+        "Отправьте водителю ссылку для подключения:\n"
+        f"<code>{link}</code>\n\n"
+        "Дальше: /tariffs · /calc · /login (вход в веб-кабинет)"
+    )
     await _show_main_menu(message, owner)
 
 
@@ -385,7 +571,20 @@ async def cb_vehicles(call: CallbackQuery, session: AsyncSession) -> None:
 # Машины — добавление
 # =========================================================================
 @owner_router.callback_query(F.data == "vehicle:add")
-async def cb_add_vehicle(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_add_vehicle(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    can_add, count, limit = await billing.can_add_vehicle(session, owner.id)
+    if not can_add:
+        await call.message.edit_text(
+            f"⛔ На вашем тарифе максимум {limit} машин ({count}/{limit} занято).\n"
+            f"Расширить: /tariffs",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        await call.answer()
+        return
     await state.set_state(AddVehicle.waiting_for_plate)
     await call.message.edit_text(msg.ADD_VEHICLE_PLATE)
     await call.answer()
@@ -964,6 +1163,84 @@ async def cb_expense_reject(call: CallbackQuery, session: AsyncSession, driver_b
 
 
 # =========================================================================
+# /calc — калькулятор рейса (без записи в БД)
+# =========================================================================
+DEFAULT_FUEL_PRICE = Decimal("68")  # ₽/л
+
+
+@owner_router.message(Command("calc"), StateFilter(any_state))
+async def cmd_calc(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(TripCalc.waiting_for_distance)
+    await message.answer(
+        "🧮 <b>Калькулятор рейса</b>\n\n"
+        "Введите расстояние в км (например, 250):"
+    )
+
+
+@owner_router.message(TripCalc.waiting_for_distance)
+async def calc_distance(message: Message, state: FSMContext) -> None:
+    val = _parse_dec(message.text)
+    if val is None or val <= 0:
+        await message.answer("Не похоже на число. Введите расстояние в км.")
+        return
+    await state.update_data(distance=str(val))
+    await state.set_state(TripCalc.waiting_for_rate)
+    await message.answer("Ставка за рейс в рублях (например, 15000):")
+
+
+@owner_router.message(TripCalc.waiting_for_rate)
+async def calc_rate(message: Message, state: FSMContext) -> None:
+    val = _parse_dec(message.text)
+    if val is None or val <= 0:
+        await message.answer("Не похоже на сумму. Введите выручку рейса в ₽.")
+        return
+    await state.update_data(rate=str(val))
+    await state.set_state(TripCalc.waiting_for_fuel_norm)
+    await message.answer(
+        "Расход машины л/100км (например, 12.5).\n"
+        "Если не знаете — введите 12."
+    )
+
+
+@owner_router.message(TripCalc.waiting_for_fuel_norm)
+async def calc_finalize(message: Message, state: FSMContext) -> None:
+    norm = _parse_dec(message.text)
+    if norm is None or norm <= 0:
+        await message.answer("Не похоже на число. Введите расход л/100км.")
+        return
+    data = await state.get_data()
+    distance = Decimal(data["distance"])
+    rate = Decimal(data["rate"])
+    liters = (norm * distance) / Decimal(100)
+    fuel_cost = (liters * DEFAULT_FUEL_PRICE).quantize(Decimal("0.01"))
+    # ЗП водителя — для калькулятора берём грубый средний случай 8 ₽/км
+    salary = (distance * Decimal("8")).quantize(Decimal("0.01"))
+    profit = rate - fuel_cost - salary
+    margin_pct = (profit / rate * Decimal(100)).quantize(Decimal("0.1")) if rate > 0 else Decimal(0)
+    await state.clear()
+    await message.answer(
+        f"🧮 <b>Результат расчёта</b>\n\n"
+        f"Расстояние: <b>{distance:.0f}</b> км\n"
+        f"Выручка: <b>{rate:.0f}</b> ₽\n"
+        f"Топливо: ~<b>{fuel_cost:.0f}</b> ₽ ({liters:.1f} л при {norm} л/100км)\n"
+        f"ЗП водителя (грубо 8 ₽/км): <b>{salary:.0f}</b> ₽\n\n"
+        f"💰 Прибыль: <b>{profit:.0f}</b> ₽\n"
+        f"📈 Маржа: <b>{margin_pct}%</b>\n\n"
+        f"<i>Расчёт приблизительный. Топливо считаем по 68 ₽/л.</i>"
+    )
+
+
+def _parse_dec(text: str | None) -> Decimal | None:
+    if text is None:
+        return None
+    try:
+        return Decimal(text.strip().replace(",", ".").replace(" ", ""))
+    except InvalidOperation:
+        return None
+
+
+# =========================================================================
 # Заглушки для будущих действий + fallback
 # =========================================================================
 @owner_router.callback_query(F.data.startswith("driver:view:"))
@@ -974,6 +1251,17 @@ async def cb_driver_view(call: CallbackQuery) -> None:
 @owner_router.callback_query(F.data.startswith("vehicle:view:"))
 async def cb_vehicle_view(call: CallbackQuery) -> None:
     await call.answer("Профиль машины появится на Этапе 2", show_alert=True)
+
+
+@owner_router.message(Command("tariffs"), StateFilter(any_state))
+async def cmd_tariffs(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    """Показать тарифы. Кнопка «Написать для подключения» открывает чат с автором."""
+    await state.clear()
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    # URL чата владельца проекта — пока хардкод, поменять на свой
+    builder.button(text="✉️ Написать для подключения", url="https://t.me/")
+    await message.answer(billing.format_tariffs(), reply_markup=builder.as_markup())
 
 
 @owner_router.message(Command("login"), StateFilter(any_state))

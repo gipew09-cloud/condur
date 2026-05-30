@@ -22,14 +22,14 @@
         {% set cls = "row-profit" %}
       {% endif %}
       <tr class="{{ cls }}">
-        <td>{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
-        <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
-        <td>{{ driver_name }}</td>
-        <td>{{ plate }}</td>
-        <td class="num">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</td>
-        <td class="num">{{ "{:,.0f}".format(fuel).replace(',', ' ') }}</td>
-        <td class="num">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</td>
-        <td><span class="pill">{{ trip.status }}</span></td>
+        <td data-label="Дата">{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
+        <td data-label="Маршрут">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
+        <td data-label="Водитель">{{ driver_name }}</td>
+        <td data-label="Машина">{{ plate }}</td>
+        <td data-label="Выручка" class="num">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</td>
+        <td data-label="Топливо" class="num">{{ "{:,.0f}".format(fuel).replace(',', ' ') }}</td>
+        <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</td>
+        <td data-label="Статус"><span class="pill">{{ trip.status }}</span></td>
       </tr>
     {% endfor %}
     </tbody>

@@ -228,6 +228,32 @@ class ManualEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ========== ПОДПИСКИ / ТАРИФЫ ==========
+class Subscription(Base):
+    """
+    Тариф владельца. Один owner = одна активная запись.
+    Лимит машин проверяется при добавлении новой машины.
+    """
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        CheckConstraint(
+            "plan IN ('free','base','business','pro')", name="ck_subscription_plan"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("owners.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    plan: Mapped[str] = mapped_column(String(20), default="free")
+    vehicles_limit: Mapped[int] = mapped_column(Integer, default=2)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 # ========== КЭШ ДНЕВНОЙ СВОДКИ ==========
 class DailySummary(Base):
     __tablename__ = "daily_summaries"

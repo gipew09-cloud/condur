@@ -14,6 +14,22 @@ class OwnerRegistration(StatesGroup):
     waiting_for_phone = State()
 
 
+class Onboarding(StatesGroup):
+    """
+    5-шаговый онбординг нового владельца. Заменяет короткую регистрацию,
+    создаёт сразу машину, водителя и шаблон маршрута — чтобы человек
+    через 10 минут мог открыть первую смену.
+    """
+    company = State()
+    phone = State()
+    vehicle_plate = State()
+    vehicle_brand = State()
+    driver_name = State()
+    driver_phone = State()
+    route_from = State()
+    route_to = State()
+
+
 class AddDriver(StatesGroup):
     """Владелец добавляет водителя: имя → телефон → ЗП → время старта смены."""
     waiting_for_name = State()
@@ -45,6 +61,13 @@ class AddRouteTemplate(StatesGroup):
 class SetTripRevenue(StatesGroup):
     """Владелец вводит выручку завершённого рейса."""
     waiting_for_amount = State()
+
+
+class TripCalc(StatesGroup):
+    """Быстрый калькулятор рейса без записи в БД."""
+    waiting_for_distance = State()
+    waiting_for_rate = State()
+    waiting_for_fuel_norm = State()
 
 
 # ========== ВОДИТЕЛЬ ==========

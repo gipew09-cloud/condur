@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import async_session
 from app.models import (
     Driver,
+    Event,
     Expense,
     ManualEntry,
     Owner,
@@ -887,6 +888,71 @@ async def _finance_summary(
         "total_expense": total_expense,
         "profit": total_income - total_expense,
     }
+
+
+# =========================================================================
+# /map — карта водителей с последними координатами
+# =========================================================================
+@app.get("/map", response_class=HTMLResponse)
+async def map_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+):
+    return templates.TemplateResponse(
+        "map.html",
+        {"request": request, "owner": owner, "active_page": "map"},
+    )
+
+
+@app.get("/api/drivers-locations")
+async def api_drivers_locations(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """
+    Последняя координата каждого водителя владельца + признак активной смены.
+    Координаты тянем из events.payload (lat/lon) — DISTINCT ON по driver_id.
+    """
+    # Postgres DISTINCT ON через raw — проще, чем рисовать в SQLAlchemy
+    from sqlalchemy import text as sa_text
+    rows = await session.execute(
+        sa_text("""
+            SELECT DISTINCT ON (events.driver_id)
+                events.driver_id,
+                events.payload->>'lat' AS lat,
+                events.payload->>'lon' AS lon,
+                events.created_at,
+                drivers.full_name,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM shifts
+                    WHERE shifts.driver_id = events.driver_id
+                      AND shifts.status = 'started'
+                ) THEN true ELSE false END AS active_shift
+            FROM events
+            JOIN drivers ON drivers.id = events.driver_id
+            WHERE events.owner_id = :owner_id
+              AND events.event_type = 'location_sent'
+              AND events.payload ? 'lat'
+            ORDER BY events.driver_id, events.created_at DESC
+        """),
+        {"owner_id": owner.id},
+    )
+    result = []
+    for row in rows.mappings().all():
+        try:
+            lat = float(row["lat"])
+            lon = float(row["lon"])
+        except (TypeError, ValueError):
+            continue
+        result.append({
+            "driver_id": row["driver_id"],
+            "name": row["full_name"],
+            "lat": lat,
+            "lon": lon,
+            "active_shift": bool(row["active_shift"]),
+            "updated_at": row["created_at"].isoformat() if row["created_at"] else None,
+        })
+    return {"drivers": result}
 
 
 # =========================================================================
