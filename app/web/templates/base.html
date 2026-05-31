@@ -42,20 +42,13 @@
     .insights li { margin-bottom: .5rem; }
     .actions { display: flex; gap: .5rem; }
 
-    /* HTMX-индикатор глобальный */
+    /* HTMX-индикатор для точечных HTMX-запросов (формы редактирования и т.п.) */
     .htmx-indicator { opacity: 0; transition: opacity .15s; }
     .htmx-request .htmx-indicator,
     .htmx-request.htmx-indicator { opacity: 1; }
-
-    /* Плавное появление контента после hx-boost */
-    main.fade-in { animation: fadeIn .2s ease; }
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(4px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
   </style>
 </head>
-<body hx-boost="true" hx-target="main.container" hx-swap="innerHTML show:top swap:150ms" hx-select="main.container > *">
+<body>
 <header class="container">
   <nav class="topbar">
     <ul>
