@@ -545,16 +545,34 @@ async def update_driver(
 
 @app.delete("/drivers/{driver_id}", response_class=HTMLResponse)
 async def delete_driver(
+    request: Request,
     driver_id: int,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Мягкое удаление — is_active=False, чтобы FK на смены/рейсы не ломались."""
+    """
+    Мягкое удаление: is_active=False, telegram_id обнуляем (чтобы тот же
+    человек мог быть привязан заново). История смен/рейсов сохраняется по FK.
+    Водителю отправляем сообщение что владелец отключил его.
+    """
     driver = await session.get(Driver, driver_id)
     if driver is None or driver.owner_id != owner.id:
         raise HTTPException(status_code=404)
+    tg_id = driver.telegram_id
     driver.is_active = False
+    driver.telegram_id = None  # освобождаем привязку
+    driver.invite_token = None
     await session.commit()
+
+    # уведомить водителя что его отключили
+    if tg_id is not None:
+        from app.bots.notifications import notify_driver
+        driver_bot = request.app.state.driver_bot
+        await notify_driver(
+            driver_bot, session, tg_id,
+            "ℹ️ Владелец отключил вас от учёта автопарка. "
+            "Если это ошибка — попросите его прислать новую ссылку-приглашение."
+        )
     return HTMLResponse("")
 
 
@@ -1303,12 +1321,23 @@ async def trip_detail(
         select(Expense).where(Expense.trip_id == trip.id).order_by(Expense.created_at)
     )
     expenses = list(expenses_res.scalars().all())
+    # время когда водитель загрузил ТТН (берём последнее событие)
+    waybill_uploaded_at = (
+        await session.execute(
+            select(Event.created_at).where(
+                Event.trip_id == trip.id,
+                Event.event_type == "waybill_uploaded",
+            ).order_by(desc(Event.created_at)).limit(1)
+        )
+    ).scalar_one_or_none()
     return templates.TemplateResponse(
         "trip_detail.html",
         {
             "request": request, "owner": owner,
             "trip": trip, "driver": driver, "vehicle": vehicle,
-            "expenses": expenses, "active_page": "trips",
+            "expenses": expenses,
+            "waybill_uploaded_at": waybill_uploaded_at,
+            "active_page": "trips",
         },
     )
 
@@ -1357,12 +1386,22 @@ async def shift_detail(
         select(Expense).where(Expense.shift_id == shift.id).order_by(Expense.created_at)
     )
     expenses = list(expenses_res.scalars().all())
+    # время фото одометров: shift_started → начало, shift_completed → конец
+    events_times = await session.execute(
+        select(Event.event_type, Event.created_at).where(
+            Event.shift_id == shift.id,
+            Event.event_type.in_(("shift_started", "shift_completed")),
+        )
+    )
+    times = {et: dt for et, dt in events_times.all()}
     return templates.TemplateResponse(
         "shift_detail.html",
         {
             "request": request, "owner": owner,
             "shift": shift, "driver": driver, "vehicle": vehicle,
             "trips": trips, "expenses": expenses,
+            "photo_start_at": times.get("shift_started"),
+            "photo_end_at": times.get("shift_completed"),
             "active_page": "trips",
         },
     )
@@ -1458,9 +1497,25 @@ async def documents_page(
         .limit(200)
     )
     rows = list(rows_res.all())
+    # Времена загрузки ТТН по каждому trip — одним SQL
+    trip_ids = [t.id for t, _, _ in rows]
+    waybill_times: dict[int, datetime] = {}
+    if trip_ids:
+        wb_res = await session.execute(
+            select(Event.trip_id, func.max(Event.created_at)).where(
+                Event.owner_id == owner.id,
+                Event.event_type == "waybill_uploaded",
+                Event.trip_id.in_(trip_ids),
+            ).group_by(Event.trip_id)
+        )
+        waybill_times = {tid: dt for tid, dt in wb_res.all()}
     return templates.TemplateResponse(
         "documents.html",
-        {"request": request, "owner": owner, "rows": rows, "active_page": "trips"},
+        {
+            "request": request, "owner": owner, "rows": rows,
+            "waybill_times": waybill_times,
+            "active_page": "trips",
+        },
     )
 
 

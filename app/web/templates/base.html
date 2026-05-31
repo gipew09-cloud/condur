@@ -2,55 +2,74 @@
 <html lang="ru" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d4ed8">
   <title>{% block title %}TMS{% endblock %} — кабинет</title>
+
+  <!-- Шрифты: Inter для интерфейса, JetBrains Mono для цифр -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+
+  <!-- Pico + наши слои стилей -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <link rel="stylesheet" href="/static/cabinet.css">
   <link rel="stylesheet" href="/static/mobile.css">
+
+  <!-- HTMX и Phosphor Icons -->
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
   {% block head %}{% endblock %}
+
   <style>
+    /* === Локальные правила, специфичные для лейаута === */
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
-    .kpi { background: var(--pico-card-background-color); padding: 1rem; border-radius: 8px; border: 1px solid var(--pico-card-border-color); }
-    .kpi small { color: var(--pico-muted-color); display: block; margin-bottom: .25rem; }
-    .kpi strong { font-size: 1.6rem; }
-    .row-profit { background-color: #e8f5e9; }
-    .row-thin   { background-color: #fff8e1; }
-    .row-loss   { background-color: #ffebee; }
-    /* десктоп: ячейки выравниваем по центру по вертикали, заголовки не переносим */
+    .row-profit { background-color: #ecfdf5 !important; }
+    .row-thin   { background-color: #fefce8 !important; }
+    .row-loss   { background-color: #fef2f2 !important; }
+
     @media (min-width: 769px) {
       table th { white-space: nowrap; }
       table td { vertical-align: middle; }
       table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      /* кнопка-ссылка «Изменить» и аналоги — в одну строку */
       table td a[hx-get], table td a[hx-post] { white-space: nowrap; }
-      /* inline-форма редактирования занимает строку, лейблы видны */
       .edit-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin: 0; }
-      .edit-form label { display: flex; flex-direction: column; font-size: .75rem; color: var(--pico-muted-color); margin: 0; min-width: 90px; }
+      .edit-form label { display: flex; flex-direction: column; font-size: .75rem; color: var(--text-muted); margin: 0; min-width: 90px; }
       .edit-form input, .edit-form select { margin: 0; }
       .edit-form button { margin: 0; }
     }
     nav.topbar ul { gap: 1rem; }
     .insights li { margin-bottom: .5rem; }
-    .pill { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .85em; background: var(--pico-secondary-background); }
     .actions { display: flex; gap: .5rem; }
+
+    /* HTMX-индикатор глобальный */
+    .htmx-indicator { opacity: 0; transition: opacity .15s; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { opacity: 1; }
+
+    /* Плавное появление контента после hx-boost */
+    main.fade-in { animation: fadeIn .2s ease; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
   </style>
 </head>
-<body>
+<body hx-boost="true" hx-target="main.container" hx-swap="innerHTML show:top swap:150ms" hx-select="main.container > *">
 <header class="container">
   <nav class="topbar">
     <ul>
-      <li><strong>{{ owner.company_name or 'TMS' }}</strong></li>
+      <li><strong>{{ owner.company_name if owner else 'TMS' }}</strong></li>
     </ul>
     <ul>
-      <li><a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}>Главная</a></li>
-      <li><a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}>Рейсы</a></li>
-      <li><a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}>Водители</a></li>
-      <li><a href="/vehicles" {% if active_page == 'vehicles' %}aria-current="page"{% endif %}>Машины</a></li>
-      <li><a href="/routes" {% if active_page == 'routes' %}aria-current="page"{% endif %}>Направления</a></li>
-      <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}>Карта</a></li>
-      <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}>Финансы</a></li>
-      <li><a href="/logout">Выйти</a></li>
+      <li><a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house"></i> Главная</a></li>
+      <li><a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck"></i> Рейсы</a></li>
+      <li><a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users"></i> Водители</a></li>
+      <li><a href="/vehicles" {% if active_page == 'vehicles' %}aria-current="page"{% endif %}><i class="ph ph-van"></i> Машины</a></li>
+      <li><a href="/routes" {% if active_page == 'routes' %}aria-current="page"{% endif %}><i class="ph ph-arrows-left-right"></i> Направления</a></li>
+      <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin"></i> Карта</a></li>
+      <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet"></i> Финансы</a></li>
+      <li><a href="/logout"><i class="ph ph-sign-out"></i> Выйти</a></li>
     </ul>
   </nav>
 </header>
@@ -59,11 +78,11 @@
 </main>
 
 <nav class="bottom-nav">
-  <a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><span class="bn-icon">🏠</span>Главная</a>
-  <a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><span class="bn-icon">🚛</span>Рейсы</a>
-  <a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><span class="bn-icon">👥</span>Люди</a>
-  <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><span class="bn-icon">📍</span>Карта</a>
-  <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><span class="bn-icon">💰</span>Деньги</a>
+  <a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house bn-icon"></i>Главная</a>
+  <a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck bn-icon"></i>Рейсы</a>
+  <a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users bn-icon"></i>Люди</a>
+  <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin bn-icon"></i>Карта</a>
+  <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet bn-icon"></i>Деньги</a>
 </nav>
 
 {% block scripts %}{% endblock %}

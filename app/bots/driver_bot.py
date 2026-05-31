@@ -52,7 +52,17 @@ driver_router = Router()
 # Хелперы
 # =========================================================================
 async def _driver_by_telegram(session: AsyncSession, telegram_id: int) -> Driver | None:
-    result = await session.execute(select(Driver).where(Driver.telegram_id == telegram_id))
+    """
+    Возвращает активного водителя по telegram_id. Если запись помечена
+    is_active=False (владелец удалил на сайте) — возвращаем None, чтобы все
+    хендлеры считали такого пользователя «не зарегистрированным».
+    """
+    result = await session.execute(
+        select(Driver).where(
+            Driver.telegram_id == telegram_id,
+            Driver.is_active.is_(True),
+        )
+    )
     return result.scalar_one_or_none()
 
 

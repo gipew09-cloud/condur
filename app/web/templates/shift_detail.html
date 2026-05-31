@@ -22,7 +22,10 @@
 <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
   {% if shift.odometer_start_photo_url %}
   <div>
-    <small>Начало смены ({{ shift.odometer_start or '?' }} км)</small>
+    <small>
+      Начало смены ({{ shift.odometer_start or '?' }} км)
+      {% if photo_start_at %} · загружено {{ photo_start_at.strftime('%d.%m в %H:%M') }}{% endif %}
+    </small>
     <a href="/api/photo/{{ shift.odometer_start_photo_url }}" target="_blank">
       <img src="/api/photo/{{ shift.odometer_start_photo_url }}"
            style="width:100%; border-radius:8px; border:1px solid var(--border);">
@@ -31,7 +34,10 @@
   {% endif %}
   {% if shift.odometer_end_photo_url %}
   <div>
-    <small>Конец смены ({{ shift.odometer_end or '?' }} км)</small>
+    <small>
+      Конец смены ({{ shift.odometer_end or '?' }} км)
+      {% if photo_end_at %} · загружено {{ photo_end_at.strftime('%d.%m в %H:%M') }}{% endif %}
+    </small>
     <a href="/api/photo/{{ shift.odometer_end_photo_url }}" target="_blank">
       <img src="/api/photo/{{ shift.odometer_end_photo_url }}"
            style="width:100%; border-radius:8px; border:1px solid var(--border);">

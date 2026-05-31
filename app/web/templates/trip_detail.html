@@ -27,6 +27,9 @@
 
 {% if trip.waybill_photo_url %}
 <h3 style="margin-top:1.5rem;">📄 ТТН</h3>
+{% if waybill_uploaded_at %}
+<p><small>Загружено {{ waybill_uploaded_at.strftime('%d.%m.%Y в %H:%M') }}</small></p>
+{% endif %}
 <a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
   <img src="/api/photo/{{ trip.waybill_photo_url }}"
        style="max-width: 100%; max-height: 600px; border-radius: 8px; border: 1px solid var(--border);">

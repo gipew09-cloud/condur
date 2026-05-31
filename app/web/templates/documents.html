@@ -17,9 +17,11 @@
       <img src="/api/photo/{{ trip.waybill_photo_url }}"
            style="width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:6px; background:#eee;">
       <div style="margin-top:.5rem;">
-        <small>{{ trip.created_at.strftime('%d.%m.%Y') if trip.created_at else '—' }}</small>
         <strong style="font-size:.95rem; display:block;">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</strong>
-        <small>{{ driver_name }} · {{ plate }}</small>
+        <small>{{ driver_name }} · {{ plate }}</small><br>
+        <small style="color: var(--text-muted);">
+          📎 Загружено {{ waybill_times[trip.id].strftime('%d.%m.%Y в %H:%M') if waybill_times.get(trip.id) else '—' }}
+        </small>
       </div>
     </div>
   </a>
