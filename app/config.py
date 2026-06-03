@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     port: int = 8000
     # дефолтная таймзона: подставляется новым владельцам при регистрации
     default_timezone: str = "Europe/Moscow"
+    # Карта водителей — OpenStreetMap + Leaflet + CartoDB-плитки.
+    # Без API-ключа, бесплатно. Если когда-нибудь захотим Яндекс или 2GIS —
+    # они оба требуют регистрацию ключа, делать через ENV-переменную.
 
     model_config = SettingsConfigDict(
         env_file=".env",

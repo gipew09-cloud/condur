@@ -41,6 +41,7 @@ from app.models import (
     Trip,
     Vehicle,
 )
+from app.config import settings
 from app.services import auth_service
 from app.web.insights import generate_insights
 
@@ -1222,11 +1223,18 @@ async def api_drivers_locations(
                 events.payload->>'lon' AS lon,
                 events.created_at,
                 drivers.full_name,
+                drivers.phone,
                 CASE WHEN EXISTS (
                     SELECT 1 FROM shifts
                     WHERE shifts.driver_id = events.driver_id
                       AND shifts.status = 'started'
-                ) THEN true ELSE false END AS active_shift
+                ) THEN true ELSE false END AS active_shift,
+                (SELECT vehicles.license_plate
+                   FROM shifts
+                   JOIN vehicles ON vehicles.id = shifts.vehicle_id
+                  WHERE shifts.driver_id = events.driver_id
+                    AND shifts.status = 'started'
+                  LIMIT 1) AS plate
             FROM events
             JOIN drivers ON drivers.id = events.driver_id
             WHERE events.owner_id = :owner_id
@@ -1243,9 +1251,15 @@ async def api_drivers_locations(
             lon = float(row["lon"])
         except (TypeError, ValueError):
             continue
+        # инициалы для маркера
+        name = row["full_name"] or ""
+        initials = "".join(w[0].upper() for w in name.split()[:2]) or "?"
         result.append({
             "driver_id": row["driver_id"],
-            "name": row["full_name"],
+            "name": name,
+            "phone": row["phone"] or "",
+            "plate": row["plate"] or "",
+            "initials": initials,
             "lat": lat,
             "lon": lon,
             "active_shift": bool(row["active_shift"]),
