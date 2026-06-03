@@ -299,8 +299,8 @@ async def dashboard(
     )
     last_trips = list(last_trips_res.all())
 
-    # график 7 дней (выручка завершённых рейсов и расходы из expenses+fuel)
-    chart = await _seven_day_chart(session, owner.id)
+    # график: по умолчанию 7 дней; период переключается на странице через /api/dashboard-chart
+    chart = await _dashboard_chart(session, owner.id, "7d")
 
     insights = await generate_insights(session, owner.id)
 
@@ -322,15 +322,71 @@ async def dashboard(
     )
 
 
-async def _seven_day_chart(session: AsyncSession, owner_id: int) -> dict:
-    """Готовим данные для Chart.js: labels + revenue + expenses по последним 7 дням."""
-    end = date.today()
-    start = end - timedelta(days=6)
-    labels = []
-    revenue_by_day: dict[date, Decimal] = {}
-    expense_by_day: dict[date, Decimal] = {}
+@app.get("/api/dashboard-chart")
+async def api_dashboard_chart(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    period: str = "7d",
+):
+    """JSON для переключателя периода графика на дашборде (7d / 30d / 12m)."""
+    return await _dashboard_chart(session, owner.id, period)
 
-    rev_res = await session.execute(
+
+_RU_MON = ["янв", "фев", "мар", "апр", "май", "июн",
+           "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
+def _month_floor(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+
+def _add_months(d: date, n: int) -> date:
+    m = d.month - 1 + n
+    return date(d.year + m // 12, m % 12 + 1, 1)
+
+
+async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) -> dict:
+    """
+    Данные для графика дашборда за период 7д / 30д / 12 мес.
+    Доход/расход считаем ТЕМ ЖЕ определением, что и финансовая матрица
+    (_period_totals): доход = выручка completed-рейсов + ручные доходы;
+    расход = одобренные expenses + ручные расходы. fuel_cost_rub отдельно
+    НЕ суммируем — иначе двойной счёт. profit = доход − расход.
+    """
+    period = period if period in ("7d", "30d", "12m") else "7d"
+    today = date.today()
+
+    if period == "12m":
+        first = _add_months(_month_floor(today), -11)
+        start = first
+        keys = [_add_months(first, i) for i in range(12)]
+        labels = [f"{_RU_MON[k.month - 1]} {k:%y}" for k in keys]
+        bucket_keys = [(k.year, k.month) for k in keys]
+
+        def key_of(d):
+            return (d.year, d.month)
+    else:
+        days = 7 if period == "7d" else 30
+        start = today - timedelta(days=days - 1)
+        keys = [start + timedelta(days=i) for i in range(days)]
+        labels = [k.strftime("%d.%m") for k in keys]
+        bucket_keys = keys
+
+        def key_of(d):
+            return d
+
+    revenue = {k: Decimal(0) for k in bucket_keys}
+    expense = {k: Decimal(0) for k in bucket_keys}
+
+    def accumulate(rows, target):
+        for d, amount in rows:
+            if d is None:
+                continue
+            k = key_of(d)
+            if k in target:
+                target[k] += Decimal(amount)
+
+    rev_rows = await session.execute(
         select(func.date(Trip.completed_at), func.coalesce(func.sum(Trip.revenue_rub), 0))
         .where(
             Trip.owner_id == owner_id,
@@ -339,10 +395,20 @@ async def _seven_day_chart(session: AsyncSession, owner_id: int) -> dict:
         )
         .group_by(func.date(Trip.completed_at))
     )
-    for d, amount in rev_res.all():
-        revenue_by_day[d] = Decimal(amount)
+    accumulate(rev_rows.all(), revenue)
 
-    exp_res = await session.execute(
+    inc_rows = await session.execute(
+        select(ManualEntry.entry_date, func.coalesce(func.sum(ManualEntry.amount_rub), 0))
+        .where(
+            ManualEntry.owner_id == owner_id,
+            ManualEntry.type == "income",
+            ManualEntry.entry_date >= start,
+        )
+        .group_by(ManualEntry.entry_date)
+    )
+    accumulate(inc_rows.all(), revenue)
+
+    exp_rows = await session.execute(
         select(func.date(Expense.created_at), func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
             Expense.owner_id == owner_id,
@@ -351,29 +417,29 @@ async def _seven_day_chart(session: AsyncSession, owner_id: int) -> dict:
         )
         .group_by(func.date(Expense.created_at))
     )
-    for d, amount in exp_res.all():
-        expense_by_day[d] = Decimal(amount)
+    accumulate(exp_rows.all(), expense)
 
-    fuel_res = await session.execute(
-        select(func.date(Trip.completed_at), func.coalesce(func.sum(Trip.fuel_cost_rub), 0))
+    mexp_rows = await session.execute(
+        select(ManualEntry.entry_date, func.coalesce(func.sum(ManualEntry.amount_rub), 0))
         .where(
-            Trip.owner_id == owner_id,
-            Trip.status == "completed",
-            func.date(Trip.completed_at) >= start,
+            ManualEntry.owner_id == owner_id,
+            ManualEntry.type == "expense",
+            ManualEntry.entry_date >= start,
         )
-        .group_by(func.date(Trip.completed_at))
+        .group_by(ManualEntry.entry_date)
     )
-    for d, amount in fuel_res.all():
-        expense_by_day[d] = expense_by_day.get(d, Decimal(0)) + Decimal(amount)
+    accumulate(mexp_rows.all(), expense)
 
-    revenue = []
-    expenses = []
-    for i in range(7):
-        d = start + timedelta(days=i)
-        labels.append(d.strftime("%d.%m"))
-        revenue.append(float(revenue_by_day.get(d, Decimal(0))))
-        expenses.append(float(expense_by_day.get(d, Decimal(0))))
-    return {"labels": labels, "revenue": revenue, "expenses": expenses}
+    rev_list = [float(revenue[k]) for k in bucket_keys]
+    exp_list = [float(expense[k]) for k in bucket_keys]
+    profit_list = [round(r - e, 2) for r, e in zip(rev_list, exp_list)]
+    return {
+        "labels": labels,
+        "revenue": rev_list,
+        "expenses": exp_list,
+        "profit": profit_list,
+        "period": period,
+    }
 
 
 # =========================================================================

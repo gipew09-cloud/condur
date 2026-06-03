@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Главная{% endblock %}
 
+{% block head %}
+<style>
+  .chart-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; margin-bottom: .75rem; }
+  .chart-head h3 { margin: 0; }
+  .chart-periods { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 3px; gap: 2px; box-shadow: var(--shadow-sm); }
+  .cp-btn { width: auto; margin: 0; border: 0; background: transparent; color: var(--text-muted); font-weight: 600; font-size: .8rem; padding: .3rem .85rem; border-radius: 999px; cursor: pointer; transition: background .12s, color .12s; }
+  .cp-btn:hover { color: var(--accent); background: transparent; }
+  .cp-btn.active { background: var(--accent); color: #fff; }
+</style>
+{% endblock %}
+
 {% block content %}
 <h2>Главная</h2>
 
@@ -48,9 +59,16 @@
 </section>
 
 <section style="margin-top: 2rem;">
-  <h3>Выручка и расходы за 7 дней</h3>
-  <div style="position: relative; height: 280px; max-width: 100%;">
-    <canvas id="chart7d"></canvas>
+  <div class="chart-head">
+    <h3>Динамика</h3>
+    <div class="chart-periods" role="group" aria-label="Период графика">
+      <button type="button" class="cp-btn active" data-period="7d">7 дней</button>
+      <button type="button" class="cp-btn" data-period="30d">30 дней</button>
+      <button type="button" class="cp-btn" data-period="12m">12 мес</button>
+    </div>
+  </div>
+  <div style="position: relative; height: 300px; max-width: 100%;">
+    <canvas id="financeChart"></canvas>
   </div>
 </section>
 
@@ -92,22 +110,56 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-  const chartData = {{ chart | tojson }};
-  const ctx = document.getElementById('chart7d');
-  new Chart(ctx, {
+  const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+  const fmtShort = (v) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v);
+  const initial = {{ chart | tojson }};
+
+  const chart = new Chart(document.getElementById('financeChart'), {
     type: 'bar',
     data: {
-      labels: chartData.labels,
+      labels: initial.labels,
       datasets: [
-        { label: 'Выручка', data: chartData.revenue, backgroundColor: 'rgba(46, 125, 50, 0.7)' },
-        { label: 'Расходы', data: chartData.expenses, backgroundColor: 'rgba(198, 40, 40, 0.7)' }
-      ]
+        { type: 'bar', label: 'Доход', data: initial.revenue,
+          backgroundColor: 'rgba(16,185,129,.75)', borderRadius: 4, order: 2 },
+        { type: 'bar', label: 'Расход', data: initial.expenses,
+          backgroundColor: 'rgba(239,68,68,.7)', borderRadius: 4, order: 2 },
+        { type: 'line', label: 'Прибыль', data: initial.profit,
+          borderColor: '#1d4ed8', backgroundColor: 'rgba(29,78,216,.08)',
+          borderWidth: 2, tension: .35, fill: true, pointRadius: 3,
+          pointBackgroundColor: '#1d4ed8', order: 1 },
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { position: 'top' } },
-    }
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } },
+      },
+      scales: { y: { ticks: { callback: fmtShort } } },
+    },
+  });
+
+  async function loadPeriod(period) {
+    try {
+      const r = await fetch('/api/dashboard-chart?period=' + period);
+      if (!r.ok) return;
+      const d = await r.json();
+      chart.data.labels = d.labels;
+      chart.data.datasets[0].data = d.revenue;
+      chart.data.datasets[1].data = d.expenses;
+      chart.data.datasets[2].data = d.profit;
+      chart.update();
+    } catch (e) { console.error(e); }
+  }
+
+  document.querySelectorAll('.cp-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.cp-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadPeriod(btn.dataset.period);
+    });
   });
 </script>
 {% endblock %}
