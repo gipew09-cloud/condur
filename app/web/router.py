@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import re
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -42,7 +43,7 @@ from app.models import (
     Vehicle,
 )
 from app.config import settings
-from app.services import auth_service
+from app.services import auth_service, billing
 from app.web.insights import generate_insights
 
 # --------- инициализация ----------
@@ -507,11 +508,26 @@ async def drivers_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    new: Annotated[int | None, Query()] = None,
 ):
     rows = await _drivers_stats(session, owner.id)
+    invite = None
+    if new is not None:
+        created = next((r["driver"] for r in rows if r["driver"].id == new), None)
+        if created is not None and created.invite_token:
+            link = None
+            try:
+                me = await request.app.state.driver_bot.get_me()
+                link = f"https://t.me/{me.username}?start={created.invite_token}"
+            except Exception:
+                link = None
+            invite = {"name": created.full_name, "link": link}
     return templates.TemplateResponse(
         "drivers.html",
-        {"request": request, "owner": owner, "rows": rows, "active_page": "drivers"},
+        {
+            "request": request, "owner": owner, "rows": rows,
+            "active_page": "drivers", "invite": invite,
+        },
     )
 
 
@@ -561,6 +577,51 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
 
 
 _SHIFT_TIME_RE_WEB = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+@app.post("/drivers")
+async def create_driver(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    full_name: Annotated[str, Form()],
+    salary_type: Annotated[str, Form()] = "per_km",
+    salary_rate: Annotated[str, Form()] = "0",
+    phone: Annotated[str, Form()] = "",
+    per_diem_rub: Annotated[str, Form()] = "0",
+    shift_start_time: Annotated[str, Form()] = "",
+):
+    """Создать водителя из веб-кабинета. Генерируем invite-токен — ссылку
+    для подключения показываем владельцу на странице после редиректа."""
+    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift"):
+        raise HTTPException(status_code=400, detail="Bad salary_type")
+    if len(full_name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Bad name")
+    try:
+        rate = Decimal((salary_rate or "0").replace(",", "."))
+        per_diem = Decimal((per_diem_rub or "0").replace(",", "."))
+        if rate < 0 or per_diem < 0:
+            raise InvalidOperation
+    except InvalidOperation:
+        raise HTTPException(status_code=400, detail="Bad numeric values")
+
+    sst = shift_start_time.strip()
+    if sst and not _SHIFT_TIME_RE_WEB.match(sst):
+        raise HTTPException(status_code=400, detail="Bad shift_start_time")
+
+    driver = Driver(
+        owner_id=owner.id,
+        full_name=full_name.strip(),
+        phone=phone.strip() or None,
+        salary_type=salary_type,
+        salary_rate=rate,
+        per_diem_rub=per_diem,
+        shift_start_time=sst or None,
+        invite_token=uuid.uuid4().hex,
+        is_active=True,
+    )
+    session.add(driver)
+    await session.commit()
+    return RedirectResponse(f"/drivers?new={driver.id}", status_code=303)
 
 
 @app.post("/drivers/{driver_id}", response_class=HTMLResponse)
@@ -741,6 +802,8 @@ async def vehicles_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    limit: Annotated[int | None, Query()] = None,
+    dup: Annotated[str | None, Query()] = None,
 ):
     month_start, _ = _month_window()
     vehicles_res = await session.execute(
@@ -751,13 +814,89 @@ async def vehicles_page(
     vehicles = list(vehicles_res.scalars().all())
     rows = [await _vehicle_row_dict(session, v, month_start) for v in vehicles]
     in_minus = sum(1 for r in rows if r["profit"] < 0)
+    notice = None
+    if limit is not None:
+        notice = {"kind": "limit", "limit": limit}
+    elif dup:
+        notice = {"kind": "dup", "plate": dup}
     return templates.TemplateResponse(
         "vehicles.html",
         {
             "request": request, "owner": owner, "rows": rows,
-            "active_page": "vehicles", "in_minus": in_minus,
+            "active_page": "vehicles", "in_minus": in_minus, "notice": notice,
         },
     )
+
+
+@app.post("/vehicles")
+async def create_vehicle(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    license_plate: Annotated[str, Form()],
+    brand: Annotated[str, Form()] = "",
+    type: Annotated[str, Form()] = "truck",
+    fuel_norm_per_100km: Annotated[str, Form()] = "",
+    osago_expires: Annotated[str, Form()] = "",
+    inspection_expires: Annotated[str, Form()] = "",
+    tacho_expires: Annotated[str, Form()] = "",
+):
+    """Добавить машину из веб-кабинета. Проверяем лимит тарифа и уникальность
+    гос. номера; мягко удалённую машину с тем же номером — реактивируем."""
+    if type not in ("truck", "gazelle", "refrigerator"):
+        raise HTTPException(status_code=400, detail="Bad type")
+    plate_clean = license_plate.strip().upper().replace(" ", "")
+    if len(plate_clean) < 4:
+        raise HTTPException(status_code=400, detail="Bad license_plate")
+
+    norm: Decimal | None = None
+    if fuel_norm_per_100km.strip():
+        try:
+            norm = Decimal(fuel_norm_per_100km.replace(",", "."))
+            if norm < 0:
+                raise InvalidOperation
+        except InvalidOperation:
+            raise HTTPException(status_code=400, detail="Bad fuel_norm")
+
+    def _parse_date(value: str) -> date | None:
+        if not value.strip():
+            return None
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+
+    can_add, _count, plan_limit = await billing.can_add_vehicle(session, owner.id)
+    if not can_add:
+        return RedirectResponse(f"/vehicles?limit={plan_limit}", status_code=303)
+
+    existing = (
+        await session.execute(
+            select(Vehicle).where(
+                Vehicle.owner_id == owner.id,
+                Vehicle.license_plate == plate_clean,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None and existing.is_active:
+        return RedirectResponse(f"/vehicles?dup={plate_clean}", status_code=303)
+
+    target = existing if existing is not None else Vehicle(owner_id=owner.id)
+    target.license_plate = plate_clean
+    target.brand = brand.strip() or None
+    target.type = type
+    target.fuel_norm_per_100km = norm
+    target.osago_expires = _parse_date(osago_expires)
+    target.inspection_expires = _parse_date(inspection_expires)
+    target.tacho_expires = _parse_date(tacho_expires)
+    target.is_active = True
+    if existing is None:
+        session.add(target)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return RedirectResponse(f"/vehicles?dup={plate_clean}", status_code=303)
+    return RedirectResponse("/vehicles", status_code=303)
 
 
 async def _load_vehicle_row(

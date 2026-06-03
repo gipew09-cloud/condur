@@ -67,8 +67,13 @@
       <button type="button" class="cp-btn" data-period="12m">12 мес</button>
     </div>
   </div>
-  <div style="position: relative; height: 300px; max-width: 100%;">
+  <div style="position: relative; height: 280px; max-width: 100%;">
     <canvas id="financeChart"></canvas>
+  </div>
+
+  <h3 style="margin-top: 1.5rem;">Прибыль</h3>
+  <div style="position: relative; height: 220px; max-width: 100%;">
+    <canvas id="profitChart"></canvas>
   </div>
 </section>
 
@@ -114,31 +119,45 @@
   const fmtShort = (v) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v);
   const initial = {{ chart | tojson }};
 
-  const chart = new Chart(document.getElementById('financeChart'), {
+  const baseOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'top' },
+      tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } },
+    },
+    scales: { y: { ticks: { callback: fmtShort } } },
+  };
+
+  // График 1 — доход (зелёный) и расход (красный)
+  const financeChart = new Chart(document.getElementById('financeChart'), {
     type: 'bar',
     data: {
       labels: initial.labels,
       datasets: [
-        { type: 'bar', label: 'Доход', data: initial.revenue,
-          backgroundColor: 'rgba(16,185,129,.75)', borderRadius: 4, order: 2 },
-        { type: 'bar', label: 'Расход', data: initial.expenses,
-          backgroundColor: 'rgba(239,68,68,.7)', borderRadius: 4, order: 2 },
-        { type: 'line', label: 'Прибыль', data: initial.profit,
-          borderColor: '#1d4ed8', backgroundColor: 'rgba(29,78,216,.08)',
-          borderWidth: 2, tension: .35, fill: true, pointRadius: 3,
-          pointBackgroundColor: '#1d4ed8', order: 1 },
+        { label: 'Доход', data: initial.revenue,
+          backgroundColor: 'rgba(16,185,129,.75)', borderRadius: 4 },
+        { label: 'Расход', data: initial.expenses,
+          backgroundColor: 'rgba(239,68,68,.7)', borderRadius: 4 },
       ],
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'top' },
-        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } },
-      },
-      scales: { y: { ticks: { callback: fmtShort } } },
+    options: baseOpts,
+  });
+
+  // График 2 — прибыль (синяя линия), отдельно
+  const profitChart = new Chart(document.getElementById('profitChart'), {
+    type: 'line',
+    data: {
+      labels: initial.labels,
+      datasets: [
+        { label: 'Прибыль', data: initial.profit,
+          borderColor: '#1d4ed8', backgroundColor: 'rgba(29,78,216,.10)',
+          borderWidth: 2, tension: .35, fill: true, pointRadius: 3,
+          pointBackgroundColor: '#1d4ed8' },
+      ],
     },
+    options: baseOpts,
   });
 
   async function loadPeriod(period) {
@@ -146,11 +165,13 @@
       const r = await fetch('/api/dashboard-chart?period=' + period);
       if (!r.ok) return;
       const d = await r.json();
-      chart.data.labels = d.labels;
-      chart.data.datasets[0].data = d.revenue;
-      chart.data.datasets[1].data = d.expenses;
-      chart.data.datasets[2].data = d.profit;
-      chart.update();
+      financeChart.data.labels = d.labels;
+      financeChart.data.datasets[0].data = d.revenue;
+      financeChart.data.datasets[1].data = d.expenses;
+      financeChart.update();
+      profitChart.data.labels = d.labels;
+      profitChart.data.datasets[0].data = d.profit;
+      profitChart.update();
     } catch (e) { console.error(e); }
   }
 

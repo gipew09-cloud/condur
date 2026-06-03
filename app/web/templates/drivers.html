@@ -5,8 +5,52 @@
 <h2>Водители</h2>
 <p><small>Показатели за текущий месяц.</small></p>
 
+{% if invite %}
+  <div class="add-banner">
+    <strong>✅ Водитель «{{ invite.name }}» добавлен.</strong>
+    {% if invite.link %}
+      <p>Отправьте ему ссылку для подключения к боту:</p>
+      <code class="add-banner__link">{{ invite.link }}</code>
+    {% else %}
+      <p>Ссылку-приглашение возьмите в боте владельца (бот сейчас недоступен).</p>
+    {% endif %}
+  </div>
+{% endif %}
+
+<details class="add-panel">
+  <summary class="add-toggle">➕ Добавить водителя</summary>
+  <form action="/drivers" method="post" class="add-form">
+    <div class="add-grid">
+      <label>ФИО*
+        <input type="text" name="full_name" required placeholder="Иванов Иван">
+      </label>
+      <label>Телефон
+        <input type="text" name="phone" placeholder="+7XXXXXXXXXX">
+      </label>
+      <label>Тип ЗП
+        <select name="salary_type">
+          <option value="per_km">За км</option>
+          <option value="per_trip">За рейс</option>
+          <option value="percent">Процент</option>
+          <option value="fixed_per_shift">Фикс/смена</option>
+        </select>
+      </label>
+      <label>Ставка
+        <input type="text" name="salary_rate" value="0" inputmode="decimal">
+      </label>
+      <label>Суточные, ₽
+        <input type="text" name="per_diem_rub" value="0" inputmode="decimal">
+      </label>
+      <label>Старт смены
+        <input type="text" name="shift_start_time" placeholder="08:00">
+      </label>
+    </div>
+    <button type="submit">Добавить водителя</button>
+  </form>
+</details>
+
 {% if not rows %}
-  <p>Водителей нет. Добавьте через бот владельца.</p>
+  <p>Водителей пока нет. Добавьте первого кнопкой «➕ Добавить водителя» выше или через бот владельца.</p>
 {% else %}
   <table>
     <thead>

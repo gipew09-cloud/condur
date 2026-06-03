@@ -304,3 +304,66 @@ a:hover { color: var(--accent-hover); }
 
 /* ============ Phosphor иконки в нижнем меню ============ */
 .bottom-nav i.bn-icon { font-size: 1.35rem; line-height: 1.4; display: block; margin: 0 auto .15rem; }
+
+/* ============ панель «добавить» (водитель / машина) ============ */
+.add-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  margin: .75rem 0 1.25rem;
+  padding: 0;
+}
+.add-toggle {
+  list-style: none;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent);
+  padding: .8rem 1rem;
+  user-select: none;
+  border-radius: var(--radius-md);
+  transition: background .12s;
+}
+.add-toggle::-webkit-details-marker { display: none; }
+.add-toggle:hover { background: var(--accent-soft); }
+.add-panel[open] .add-toggle {
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+.add-form { padding: 1rem; }
+.add-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: .75rem 1rem;
+  margin-bottom: 1rem;
+}
+.add-grid label { margin: 0; font-size: .85rem; font-weight: 500; }
+.add-form button[type="submit"] { width: auto; }
+
+/* ============ баннер-результат / уведомление ============ */
+.add-banner {
+  background: var(--success-bg);
+  border: 1px solid #a7f3d0;
+  color: var(--success-text);
+  border-radius: var(--radius-md);
+  padding: .85rem 1rem;
+  margin: .75rem 0 1.25rem;
+}
+.add-banner p { margin: .4rem 0 0; }
+.add-banner--warn {
+  background: var(--warn-bg);
+  border-color: #fcd34d;
+  color: var(--warn-text);
+}
+.add-banner__link {
+  display: block;
+  margin-top: .5rem;
+  padding: .5rem .65rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: .85rem;
+  color: var(--text);
+  word-break: break-all;
+  user-select: all;
+}

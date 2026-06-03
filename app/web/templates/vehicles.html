@@ -5,14 +5,59 @@
 <h2>Машины</h2>
 <p><small>P&L и пробег за текущий месяц.</small></p>
 
+{% if notice %}
+  <div class="add-banner add-banner--warn">
+    {% if notice.kind == 'limit' %}
+      <strong>⚠️ Достигнут лимит тарифа — {{ notice.limit }} машин.</strong>
+      <p>Чтобы добавить больше, обновите тариф: команда <code>/tariffs</code> в боте владельца.</p>
+    {% elif notice.kind == 'dup' %}
+      <strong>⚠️ Машина с номером {{ notice.plate }} уже есть в автопарке.</strong>
+    {% endif %}
+  </div>
+{% endif %}
+
 {% if in_minus %}
   <p style="color: var(--danger-text); font-weight: 600;">
     ⚠️ Машин в минусе: {{ in_minus }}
   </p>
 {% endif %}
 
+<details class="add-panel">
+  <summary class="add-toggle">➕ Добавить машину</summary>
+  <form action="/vehicles" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Гос. номер*
+        <input type="text" name="license_plate" required placeholder="А123ВС77">
+      </label>
+      <label>Марка
+        <input type="text" name="brand" placeholder="КамАЗ 5490">
+      </label>
+      <label>Тип
+        <select name="type">
+          <option value="truck">Грузовик</option>
+          <option value="gazelle">Газель / фургон</option>
+          <option value="refrigerator">Рефрижератор</option>
+        </select>
+      </label>
+      <label>Норма л/100км
+        <input type="text" name="fuel_norm_per_100km" placeholder="32" inputmode="decimal">
+      </label>
+      <label>ОСАГО до
+        <input type="date" name="osago_expires">
+      </label>
+      <label>ТО до
+        <input type="date" name="inspection_expires">
+      </label>
+      <label>Тахограф до
+        <input type="date" name="tacho_expires">
+      </label>
+    </div>
+    <button type="submit">Добавить машину</button>
+  </form>
+</details>
+
 {% if not rows %}
-  <p>Машин нет. Добавьте через бот владельца.</p>
+  <p>Машин пока нет. Добавьте первую кнопкой «➕ Добавить машину» выше или через бот владельца.</p>
 {% else %}
   <table>
     <thead>
