@@ -27,9 +27,9 @@ from app.services.timeutil import now_in_tz, owner_tz
 
 logger = logging.getLogger(__name__)
 
-# для детектора тишины: telegram_id водителя -> когда мы последний раз
-# алертили владельца. Чтобы не спамить — не чаще 1 раз в 2 часа.
-_SILENCE_LAST_ALERT: dict[int, datetime] = {}
+# Детектор тишины: не спамить — не чаще 1 раза в SILENCE_DEDUP_HOURS на
+# водителя. Дедуп теперь через таблицу Event (см. silence_detector_job),
+# поэтому in-memory словарь больше не нужен.
 SILENCE_THRESHOLD_HOURS = 4
 SILENCE_DEDUP_HOURS = 2
 
@@ -41,18 +41,23 @@ async def daily_summary_job(owner_bot: Bot) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
         for owner in owners_res.scalars().all():
-            local = now_in_tz(owner.timezone)
-            if local.hour != 21 or local.minute >= 30:
-                continue
-            already = await session.execute(
-                select(DailySummary).where(
-                    DailySummary.owner_id == owner.id,
-                    DailySummary.date == local.date(),
+            try:
+                local = now_in_tz(owner.timezone)
+                if local.hour != 21 or local.minute >= 30:
+                    continue
+                already = await session.execute(
+                    select(DailySummary).where(
+                        DailySummary.owner_id == owner.id,
+                        DailySummary.date == local.date(),
+                    )
                 )
-            )
-            if already.scalar_one_or_none() is not None:
+                if already.scalar_one_or_none() is not None:
+                    continue
+                await _send_daily_summary(session, owner_bot, owner, local.date())
+            except Exception:
+                logger.exception("daily_summary_job failed for owner %s", owner.id)
+                await session.rollback()
                 continue
-            await _send_daily_summary(session, owner_bot, owner, local.date())
 
 
 async def _send_daily_summary(
@@ -142,10 +147,15 @@ async def doc_expiry_job(owner_bot: Bot) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
         for owner in owners_res.scalars().all():
-            local = now_in_tz(owner.timezone)
-            if local.hour != 9 or local.minute >= 30:
+            try:
+                local = now_in_tz(owner.timezone)
+                if local.hour != 9 or local.minute >= 30:
+                    continue
+                await _check_owner_docs(session, owner_bot, owner, local.date())
+            except Exception:
+                logger.exception("doc_expiry_job failed for owner %s", owner.id)
+                await session.rollback()
                 continue
-            await _check_owner_docs(session, owner_bot, owner, local.date())
 
 
 async def _check_owner_docs(
@@ -188,8 +198,13 @@ async def late_start_job(owner_bot: Bot) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
         for owner in owners_res.scalars().all():
-            local_now = now_in_tz(owner.timezone)
-            await _check_late_starts(session, owner_bot, owner, local_now)
+            try:
+                local_now = now_in_tz(owner.timezone)
+                await _check_late_starts(session, owner_bot, owner, local_now)
+            except Exception:
+                logger.exception("late_start_job failed for owner %s", owner.id)
+                await session.rollback()
+                continue
 
 
 async def _check_late_starts(
@@ -222,8 +237,6 @@ async def _check_late_starts(
         if shifts_res.scalar_one_or_none() is not None:
             continue
         # уже алёртили сегодня?
-        from sqlalchemy.dialects.postgresql import JSONB
-        from app.models import Event
         existing_alert = await session.execute(
             select(Event.id).where(
                 Event.owner_id == owner.id,
@@ -252,10 +265,13 @@ async def _check_late_starts(
 
 # =========================================================================
 # Детектор тишины — каждые 30 минут проверяет все активные смены.
-# Один SQL по всем водителям сразу, in-memory дедуп раз в 2ч на каждого.
+# Один SQL по всем водителям сразу, дедуп раз в 2ч на каждого через
+# таблицу Event (переживает рестарт и несколько процессов).
 # =========================================================================
 async def silence_detector_job(owner_bot: Bot) -> None:
-    threshold = datetime.now(timezone.utc) - timedelta(hours=SILENCE_THRESHOLD_HOURS)
+    now = datetime.now(timezone.utc)
+    threshold = now - timedelta(hours=SILENCE_THRESHOLD_HOURS)
+    dedup_threshold = now - timedelta(hours=SILENCE_DEDUP_HOURS)
     async with async_session() as session:
         # для каждого активного смена-водителя: последний event этого водителя
         result = await session.execute(
@@ -281,15 +297,24 @@ async def silence_detector_job(owner_bot: Bot) -> None:
         if not rows:
             return
 
+        # Дедуп через Event: кому уже слали silence_alert за последние
+        # SILENCE_DEDUP_HOURS — пропускаем (раньше держали в памяти).
+        active_driver_ids = [r[0] for r in rows]
+        recent_res = await session.execute(
+            select(Event.driver_id).where(
+                Event.event_type == "silence_alert",
+                Event.driver_id.in_(active_driver_ids),
+                Event.created_at >= dedup_threshold,
+            )
+        )
+        recently_alerted = {row[0] for row in recent_res.all()}
+
         owners_cache: dict[int, Owner] = {}
-        now = datetime.now(timezone.utc)
         for driver_id, full_name, owner_id, _tid, shift_id, started_at, last_event_at in rows:
             last_seen = last_event_at or started_at
             if last_seen is None or last_seen > threshold:
                 continue
-            # дедуп
-            previous_alert = _SILENCE_LAST_ALERT.get(driver_id)
-            if previous_alert and (now - previous_alert) < timedelta(hours=SILENCE_DEDUP_HOURS):
+            if driver_id in recently_alerted:
                 continue
             owner = owners_cache.get(owner_id)
             if owner is None:
@@ -303,7 +328,7 @@ async def silence_detector_job(owner_bot: Bot) -> None:
                 f"Смена открыта с {started_at.astimezone(owner_tz(owner.timezone)):%H:%M %d.%m}."
             )
             await notify_owner(owner_bot, session, owner, text)
-            _SILENCE_LAST_ALERT[driver_id] = now
+            recently_alerted.add(driver_id)  # защита от дублей в этом же прогоне
             await log_event(
                 session, owner_id=owner_id, driver_id=driver_id,
                 shift_id=shift_id, event_type="silence_alert",
@@ -319,23 +344,28 @@ async def weekly_review_job(owner_bot: Bot) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
         for owner in owners_res.scalars().all():
-            local = now_in_tz(owner.timezone)
-            # воскресенье = weekday() == 6, окно 20:00..20:30
-            if local.weekday() != 6 or local.hour != 20 or local.minute >= 30:
-                continue
-            # уже отправляли сегодня?
-            already = await session.execute(
-                select(Event.id).where(
-                    Event.owner_id == owner.id,
-                    Event.event_type == "weekly_review_sent",
-                    Event.created_at >= datetime.combine(
-                        local.date(), datetime.min.time()
-                    ).replace(tzinfo=owner_tz(owner.timezone)),
+            try:
+                local = now_in_tz(owner.timezone)
+                # воскресенье = weekday() == 6, окно 20:00..20:30
+                if local.weekday() != 6 or local.hour != 20 or local.minute >= 30:
+                    continue
+                # уже отправляли сегодня?
+                already = await session.execute(
+                    select(Event.id).where(
+                        Event.owner_id == owner.id,
+                        Event.event_type == "weekly_review_sent",
+                        Event.created_at >= datetime.combine(
+                            local.date(), datetime.min.time()
+                        ).replace(tzinfo=owner_tz(owner.timezone)),
+                    )
                 )
-            )
-            if already.scalar_one_or_none() is not None:
+                if already.scalar_one_or_none() is not None:
+                    continue
+                await _send_weekly_review(session, owner_bot, owner, local)
+            except Exception:
+                logger.exception("weekly_review_job failed for owner %s", owner.id)
+                await session.rollback()
                 continue
-            await _send_weekly_review(session, owner_bot, owner, local)
 
 
 async def _send_weekly_review(
@@ -468,21 +498,26 @@ async def monthly_econometer_job(owner_bot: Bot) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
         for owner in owners_res.scalars().all():
-            local = now_in_tz(owner.timezone)
-            if local.day != 1 or local.hour != 10 or local.minute >= 30:
-                continue
-            already = await session.execute(
-                select(Event.id).where(
-                    Event.owner_id == owner.id,
-                    Event.event_type == "econometer_sent",
-                    Event.created_at >= datetime.combine(
-                        local.date(), datetime.min.time()
-                    ).replace(tzinfo=owner_tz(owner.timezone)),
+            try:
+                local = now_in_tz(owner.timezone)
+                if local.day != 1 or local.hour != 10 or local.minute >= 30:
+                    continue
+                already = await session.execute(
+                    select(Event.id).where(
+                        Event.owner_id == owner.id,
+                        Event.event_type == "econometer_sent",
+                        Event.created_at >= datetime.combine(
+                            local.date(), datetime.min.time()
+                        ).replace(tzinfo=owner_tz(owner.timezone)),
+                    )
                 )
-            )
-            if already.scalar_one_or_none() is not None:
+                if already.scalar_one_or_none() is not None:
+                    continue
+                await _send_econometer(session, owner_bot, owner, local)
+            except Exception:
+                logger.exception("monthly_econometer_job failed for owner %s", owner.id)
+                await session.rollback()
                 continue
-            await _send_econometer(session, owner_bot, owner, local)
 
 
 async def _send_econometer(session, owner_bot: Bot, owner: Owner, local_now: datetime) -> None:

@@ -37,10 +37,11 @@ from app.models import Owner
 logger = logging.getLogger(__name__)
 
 
-# Что считаем временной проблемой и ретраим: сетевые сбои, 5xx Telegram,
-# rate limit. TelegramBadRequest/ForbiddenError НЕ ретраим — это клиентские
-# ошибки, повтор бесполезен.
-_RETRYABLE_DOWNLOAD_ERRORS = (
+# Что считаем временной проблемой и ретраим (и при скачивании фото, и при
+# отправке сообщений): сетевые сбои, 5xx Telegram, rate limit.
+# TelegramBadRequest/ForbiddenError НЕ ретраим — это клиентские ошибки,
+# повтор бесполезен.
+_RETRYABLE_TELEGRAM_ERRORS = (
     TelegramNetworkError,
     TelegramServerError,
     TelegramRetryAfter,
@@ -53,11 +54,25 @@ async def _download_with_retry(bot: Bot, file_id: str):
     async for attempt in AsyncRetrying(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type(_RETRYABLE_DOWNLOAD_ERRORS),
+        retry=retry_if_exception_type(_RETRYABLE_TELEGRAM_ERRORS),
         reraise=True,
     ):
         with attempt:
             return await bot.download(file_id)
+
+
+async def _send_message_with_retry(
+    bot: Bot, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None
+):
+    """Отправка сообщения с 3 попытками на временные сбои (сеть, 5xx, rate limit)."""
+    async for attempt in AsyncRetrying(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(_RETRYABLE_TELEGRAM_ERRORS),
+        reraise=True,
+    ):
+        with attempt:
+            return await bot.send_message(chat_id, text, reply_markup=reply_markup)
 
 
 async def _disable(session: AsyncSession, owner_id: int) -> None:
@@ -78,7 +93,9 @@ async def notify_owner(
     if not owner.notifications_enabled or owner.telegram_id is None:
         return None
     try:
-        sent = await bot.send_message(owner.telegram_id, text, reply_markup=reply_markup)
+        sent = await _send_message_with_retry(
+            bot, owner.telegram_id, text, reply_markup
+        )
         return sent.message_id
     except TelegramForbiddenError:
         logger.warning("Owner %s blocked the bot, disabling notifications", owner.id)
@@ -86,6 +103,11 @@ async def notify_owner(
         return None
     except TelegramBadRequest as exc:
         logger.error("Failed to notify owner %s: %s", owner.id, exc)
+        return None
+    except (RetryError, *_RETRYABLE_TELEGRAM_ERRORS) as exc:
+        # временный сбой не разрешился за 3 попытки — логируем и НЕ валим
+        # вызывающий код (важно для циклов рассылки по всем владельцам)
+        logger.error("Failed to notify owner %s after retries: %s", owner.id, exc)
         return None
 
 
@@ -111,7 +133,7 @@ async def transfer_photo_to_owner(
         # клиентская ошибка — file_id битый или бот заблокирован, ретраить нечего
         logger.error("Failed to download photo %s: %s", source_file_id, exc)
         return None
-    except (RetryError, *_RETRYABLE_DOWNLOAD_ERRORS) as exc:
+    except (RetryError, *_RETRYABLE_TELEGRAM_ERRORS) as exc:
         # сетевая проблема всё-таки не разрешилась за 3 попытки
         logger.error(
             "Photo %s download failed after retries: %s — file_id остаётся в БД",

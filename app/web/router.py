@@ -1409,14 +1409,16 @@ async def map_page(
     )
 
 
-@app.get("/api/drivers-locations")
-async def api_drivers_locations(
-    owner: Annotated[Owner, Depends(current_owner)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-):
+async def _driver_positions(session: AsyncSession, owner_id: int) -> list[dict]:
     """
-    Последняя координата каждого водителя владельца + признак активной смены.
-    Координаты тянем из events.payload (lat/lon) — DISTINCT ON по driver_id.
+    Последняя известная позиция каждого водителя владельца + признак активной
+    смены и гос. номер машины в смене.
+
+    СЕЙЧАС источник координат — ручные геопозиции водителя (события
+    `location_sent`), поэтому карта почти всегда пустая. В Блоке 2 здесь
+    подключится телематика (таблица VehicleState через машину активной смены),
+    а ручные точки останутся фоллбэком. Набор ключей в словаре — это контракт
+    для `map.html`, его не меняем.
     """
     # Postgres DISTINCT ON через raw — проще, чем рисовать в SQLAlchemy
     from sqlalchemy import text as sa_text
@@ -1447,7 +1449,7 @@ async def api_drivers_locations(
               AND events.payload ? 'lat'
             ORDER BY events.driver_id, events.created_at DESC
         """),
-        {"owner_id": owner.id},
+        {"owner_id": owner_id},
     )
     result = []
     for row in rows.mappings().all():
@@ -1470,7 +1472,16 @@ async def api_drivers_locations(
             "active_shift": bool(row["active_shift"]),
             "updated_at": row["created_at"].isoformat() if row["created_at"] else None,
         })
-    return {"drivers": result}
+    return result
+
+
+@app.get("/api/drivers-locations")
+async def api_drivers_locations(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Последняя координата каждого водителя владельца — для карты."""
+    return {"drivers": await _driver_positions(session, owner.id)}
 
 
 # =========================================================================
