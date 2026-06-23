@@ -258,6 +258,10 @@ _RU_MONTHS_GEN = [
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ]
+_RU_MONTHS_NOM = [
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+]
 _EXPENSE_CAT_LABELS = {
     "fuel": "Топливо", "repair": "Ремонт", "parking": "Парковка",
     "fine": "Штрафы", "toll": "Дороги", "other": "Прочее",
@@ -316,13 +320,13 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
                 continue
             if exp < today:
                 attention.append({
-                    "sev": "danger", "title": f"Истёк {label}",
-                    "sub": f"{v.license_plate} · был до {exp:%d.%m.%Y}",
+                    "sev": "danger", "icon": "📄", "title": f"Истёк {label}",
+                    "pill": f"{(today - exp).days} дн", "sub": f"{v.license_plate} · был до {exp:%d.%m.%Y}",
                 })
             elif exp <= cutoff:
                 attention.append({
-                    "sev": "warn", "title": f"Истекают документы · {(exp - today).days} дн",
-                    "sub": f"{label} · {v.license_plate} · до {exp:%d.%m.%Y}",
+                    "sev": "warn", "icon": "📄", "title": "Истекают документы",
+                    "pill": f"{(exp - today).days} дн", "sub": f"{label} · {v.license_plate} · до {exp:%d.%m.%Y}",
                 })
 
     # --- структура расходов за месяц (одобренные, по категориям) ---
@@ -359,7 +363,14 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
         "active_vehicles": active_vehicles,
         "attention": attention,
         "breakdown": breakdown,
+        "expense_total": sum(b["amount"] for b in breakdown),
+        "expense_month": _RU_MONTHS_NOM[now_local.month - 1],
         "trips_yesterday": trips_yesterday,
+        # статусы для превью карты (норма/внимание/проблема). Внимание и проблема
+        # появятся с телематикой; пока всё, что в движении — «в норме».
+        "map_normal": len(active_vehicles),
+        "map_attention": 0,
+        "map_problem": 0,
     }
 
 
