@@ -23,7 +23,8 @@
       {% endif %}
       <tr class="{{ cls }}" onclick="location.href='/trips/{{ trip.id }}'" style="cursor:pointer;">
         <td data-label="Дата">{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
-        <td data-label="Маршрут">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
+        <td data-label="Маршрут">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}
+          {% if trip.is_manual %}<span class="badge badge--neutral" title="Добавлено вручную, км неизвестен">вручную</span>{% endif %}</td>
         <td data-label="Водитель">{{ driver_name }}</td>
         <td data-label="Машина">{{ plate }}</td>
         <td data-label="Выручка" class="num">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</td>
@@ -34,4 +35,19 @@
     {% endfor %}
     </tbody>
   </table>
+
+  {% set qs = "driver_id=" ~ (filter_driver_id or "") ~ "&date_from=" ~ filter_date_from ~ "&date_to=" ~ filter_date_to %}
+  {% if page > 1 or has_next %}
+    <div class="pagination" style="display:flex; gap:.5rem; justify-content:center; margin-top:1rem;">
+      {% if page > 1 %}
+        <a hx-get="/trips?page={{ page - 1 }}&{{ qs }}" hx-target="#trips-table" hx-push-url="true"
+           role="button" class="secondary outline">← Назад</a>
+      {% endif %}
+      <span style="align-self:center; color:var(--text-muted); font-size:.85rem;">стр. {{ page }}</span>
+      {% if has_next %}
+        <a hx-get="/trips?page={{ page + 1 }}&{{ qs }}" hx-target="#trips-table" hx-push-url="true"
+           role="button" class="secondary outline">Дальше →</a>
+      {% endif %}
+    </div>
+  {% endif %}
 {% endif %}

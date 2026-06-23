@@ -1,41 +1,42 @@
 /*
   Цвет/типографика/компоненты кабинета. Подключается ПОСЛЕ pico.min.css,
   ПЕРЕД mobile.css.
-  Стек: Pico v2 + Phosphor Icons + Inter / JetBrains Mono.
+  Стек: Pico v2 + Phosphor Icons + Onest / JetBrains Mono.
 
-  Палитра — глубокий синий (доверие, B2B) + янтарный акцент (деньги).
+  Дизайн «Свежий путь»: синий бренд + мягкие серые поверхности, скруглённые
+  карточки, спокойные тени; зелёный/красный/янтарный для статусов.
 */
 
 :root {
-  --accent: #1d4ed8;       /* blue-700 */
-  --accent-hover: #1e40af;
-  --accent-soft: #eff6ff;
-  --amber: #f59e0b;
-  --amber-soft: #fffbeb;
-  --bg: #f8fafc;
+  --accent: #2563eb;       /* blue-600 (бренд «Свежий путь») */
+  --accent-hover: #1d4ed8; /* blue-700 при наведении */
+  --accent-soft: #e8f0fe;
+  --amber: #e0a32e;
+  --amber-soft: #fdf0d3;
+  --bg: #f4f5f8;           /* мягкий холодно-серый фон страниц */
   --surface: #ffffff;
-  --border: #e2e8f0;
+  --border: #e6e8ee;
   --text: #0f172a;
-  --text-muted: #64748b;
-  --success-bg: #ecfdf5;
-  --success-text: #047857;
-  --danger-bg:  #fef2f2;
-  --danger-text: #b91c1c;
-  --warn-bg: #fffbeb;
-  --warn-text: #92400e;
+  --text-muted: #5b6573;
+  --success-bg: #e7f6ec;
+  --success-text: #147a3d;
+  --danger-bg:  #fde8e6;
+  --danger-text: #c5362b;
+  --warn-bg: #fdf0d3;
+  --warn-text: #9a5b00;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
 
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, .04);
-  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, .06), 0 2px 4px -2px rgba(15, 23, 42, .04);
-  --shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, .08), 0 4px 6px -4px rgba(15, 23, 42, .04);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow-md: 0 1px 3px rgba(16, 24, 40, .06), 0 8px 24px -12px rgba(16, 24, 40, .18);
+  --shadow-lg: 0 1px 3px rgba(16, 24, 40, .06), 0 24px 60px -20px rgba(16, 24, 40, .20);
 }
 
 /* override Pico-переменных */
 [data-theme="light"], :root:not([data-theme="dark"]) {
-  --pico-font-family-sans-serif: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --pico-font-family-sans-serif: 'Onest', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --pico-font-family-monospace: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
   --pico-font-size: 15px;
   --pico-line-height: 1.55;
@@ -63,7 +64,7 @@
 
 body {
   background: var(--bg);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Onest', system-ui, -apple-system, sans-serif;
 }
 
 /* Цифры — табулярные везде где деньги/числа */
@@ -211,8 +212,13 @@ button[type="submit"],
   border-color: var(--accent);
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, .28);
 }
-button[type="submit"]:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button[type="submit"]:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, .35);
+}
 [role="button"].secondary.outline {
   border-color: var(--border);
   color: var(--text-muted);

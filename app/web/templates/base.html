@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#1d4ed8">
   <title>{% block title %}TMS{% endblock %} — кабинет</title>
 
-  <!-- Шрифты: Inter для интерфейса, JetBrains Mono для цифр -->
+  <!-- Шрифты: Onest для интерфейса (дизайн «Свежий путь»), JetBrains Mono для цифр -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 
   <!-- Pico + наши слои стилей -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
@@ -24,9 +24,9 @@
   <style>
     /* === Локальные правила, специфичные для лейаута === */
     .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
-    .row-profit { background-color: #ecfdf5 !important; }
-    .row-thin   { background-color: #fefce8 !important; }
-    .row-loss   { background-color: #fef2f2 !important; }
+    .row-profit { background-color: var(--success-bg) !important; }
+    .row-thin   { background-color: var(--warn-bg) !important; }
+    .row-loss   { background-color: var(--danger-bg) !important; }
 
     @media (min-width: 769px) {
       table th { white-space: nowrap; }

@@ -578,3 +578,68 @@ async def _send_econometer(session, owner_bot: Bot, owner: Owner, local_now: dat
     )
     await session.commit()
     await notify_owner(owner_bot, session, owner, text)
+
+
+# =========================================================================
+# Невыход водителя — каждый час. Активный водитель без смен дольше
+# NO_SHOW_THRESHOLD_HOURS → уведомить владельца (дедуп раз в сутки через Event).
+# =========================================================================
+NO_SHOW_THRESHOLD_HOURS = 36
+
+
+async def no_show_detector_job(owner_bot: Bot) -> None:
+    now = datetime.now(timezone.utc)
+    threshold = now - timedelta(hours=NO_SHOW_THRESHOLD_HOURS)
+    dedup_since = now - timedelta(hours=24)
+    async with async_session() as session:
+        drivers_res = await session.execute(
+            select(Driver).where(Driver.is_active.is_(True))
+        )
+        for driver in drivers_res.scalars().all():
+            try:
+                # есть активная смена? тогда это не невыход
+                active = await session.execute(
+                    select(Shift.id).where(
+                        Shift.driver_id == driver.id, Shift.status == "started"
+                    )
+                )
+                if active.scalar_one_or_none() is not None:
+                    continue
+                # последняя активность по сменам (или дата подключения водителя)
+                last_shift = await session.execute(
+                    select(func.max(Shift.started_at)).where(Shift.driver_id == driver.id)
+                )
+                last_active = last_shift.scalar_one() or driver.created_at
+                if last_active is None or last_active > threshold:
+                    continue
+                # уже алёртили за последние сутки?
+                already = await session.execute(
+                    select(Event.id).where(
+                        Event.driver_id == driver.id,
+                        Event.event_type == "no_show_alert",
+                        Event.created_at >= dedup_since,
+                    )
+                )
+                if already.scalar_one_or_none() is not None:
+                    continue
+                owner = await session.get(Owner, driver.owner_id)
+                if owner is None:
+                    continue
+                since_label = last_active.astimezone(
+                    owner_tz(owner.timezone)
+                ).strftime("%d.%m %H:%M")
+                hours = int((now - last_active).total_seconds() // 3600)
+                await notify_owner(
+                    owner_bot, session, owner,
+                    f"🚷 <b>{driver.full_name}</b> не выходил на смену с {since_label} "
+                    f"(~{hours} ч). Возможно, простаивает — есть кому дать работу?",
+                )
+                await log_event(
+                    session, owner_id=owner.id, driver_id=driver.id,
+                    event_type="no_show_alert", payload={"hours": hours},
+                )
+                await session.commit()
+            except Exception:
+                logger.exception("no_show_detector_job failed for driver %s", driver.id)
+                await session.rollback()
+                continue

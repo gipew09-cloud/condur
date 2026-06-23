@@ -44,13 +44,15 @@ from app.bots.states import (
     AddDriver,
     AddRouteTemplate,
     AddVehicle,
+    EditExpenseAmount,
     Onboarding,
     OwnerRegistration,
     SetTripRevenue,
     TripCalc,
 )
+from app.config import settings
 from app.models import (
-    Driver, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
+    Driver, Expense, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
 )
 from app.services import auth_service, billing, expense_service, salary_service, trip_service
 from app.services.cash_pending import PENDING as CASH_PENDING
@@ -366,6 +368,61 @@ async def cb_main_menu(call: CallbackQuery, state: FSMContext, session: AsyncSes
 async def cb_stats(call: CallbackQuery) -> None:
     await call.message.edit_text(msg.STATS_PLACEHOLDER, reply_markup=back_to_menu_keyboard())
     await call.answer()
+
+
+# =========================================================================
+# Часовой пояс владельца (баг E2) — иначе всё показывается по Москве
+# =========================================================================
+async def _show_timezone_picker(target: Message, owner: Owner) -> None:
+    await target.answer(
+        f"Ваш часовой пояс: <b>{owner.timezone}</b>.\nВыберите свой регион:",
+        reply_markup=kb.timezone_keyboard(),
+    )
+
+
+@owner_router.message(Command("timezone"), StateFilter(any_state))
+async def cmd_timezone(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await message.answer("Сначала /start")
+        return
+    await _show_timezone_picker(message, owner)
+
+
+@owner_router.callback_query(F.data == "owner:timezone")
+async def cb_owner_timezone(call: CallbackQuery, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    await call.message.edit_text(
+        f"Ваш часовой пояс: <b>{owner.timezone}</b>.\nВыберите свой регион:",
+        reply_markup=kb.timezone_keyboard(),
+    )
+    await call.answer()
+
+
+@owner_router.callback_query(F.data.startswith("tz:set:"))
+async def cb_set_timezone(call: CallbackQuery, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    try:
+        idx = int(call.data.split(":")[2])
+        tz_name = kb.RU_TIMEZONES[idx][0]
+    except (IndexError, ValueError):
+        await call.answer("Некорректный выбор", show_alert=True)
+        return
+    owner.timezone = tz_name
+    await session.commit()
+    await call.message.edit_text(
+        f"✅ Часовой пояс установлен: <b>{tz_name}</b>.\n"
+        "Время в боте и кабинете теперь по вашему региону.",
+        reply_markup=back_to_menu_keyboard(),
+    )
+    await call.answer("Готово")
 
 
 # =========================================================================
@@ -768,8 +825,12 @@ async def _finalize_vehicle(
     state: FSMContext,
     session: AsyncSession,
     tacho_date: str | None,
+    user_id: int,
 ) -> None:
-    owner = await _get_owner(session, message.from_user.id)
+    # ВАЖНО: при вызове из callback `message` — это сообщение БОТА, у него
+    # message.from_user это бот. Поэтому владельца ищем по явному user_id
+    # (call.from_user.id), иначе owner=None → «Что-то пошло не так» (был баг E1).
+    owner = await _get_owner(session, user_id)
     if owner is None:
         await message.answer(msg.SOMETHING_WRONG)
         await state.clear()
@@ -798,7 +859,7 @@ async def _finalize_vehicle(
 
     await state.clear()
     await message.answer(msg.ADD_VEHICLE_DONE.format(plate=data["license_plate"]))
-    owner_refreshed = await _get_owner(session, message.from_user.id)
+    owner_refreshed = await _get_owner(session, user_id)
     if owner_refreshed is not None:
         await _show_main_menu(message, owner_refreshed)
 
@@ -809,7 +870,10 @@ async def add_vehicle_tacho(message: Message, state: FSMContext, session: AsyncS
     if parsed is None:
         await message.answer(msg.ADD_VEHICLE_DATE_INVALID)
         return
-    await _finalize_vehicle(message, state, session, tacho_date=parsed.isoformat())
+    await _finalize_vehicle(
+        message, state, session, tacho_date=parsed.isoformat(),
+        user_id=message.from_user.id,
+    )
 
 
 @owner_router.callback_query(AddVehicle.waiting_for_tacho, F.data == "vehicle:skip_tacho")
@@ -817,7 +881,9 @@ async def cb_add_vehicle_skip_tacho(
     call: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     await call.message.delete()
-    await _finalize_vehicle(call.message, state, session, tacho_date=None)
+    await _finalize_vehicle(
+        call.message, state, session, tacho_date=None, user_id=call.from_user.id,
+    )
     await call.answer()
 
 
@@ -1193,16 +1259,82 @@ async def _decide_expense(call: CallbackQuery, session: AsyncSession, driver_bot
     except Exception as exc:  # noqa: BLE001 — telegram капризен с edit, не валим процесс
         logger.warning("Failed to edit expense decision message: %s", exc)
 
-    # Уведомить водителя
-    driver = await session.get(Driver, expense.driver_id)
-    if driver is not None and driver.telegram_id is not None:
-        template = msg.EXPENSE_APPROVED_DRIVER if approve else msg.EXPENSE_REJECTED_DRIVER
-        await notify_driver(
-            driver_bot, session, driver.telegram_id,
-            template.format(category=category_label, amount=expense.amount_rub),
-        )
+    # Уведомить водителя — только если включён флаг (по умолчанию не отвлекаем).
+    if settings.feature_notify_driver_approval:
+        driver = await session.get(Driver, expense.driver_id)
+        if driver is not None and driver.telegram_id is not None:
+            template = msg.EXPENSE_APPROVED_DRIVER if approve else msg.EXPENSE_REJECTED_DRIVER
+            await notify_driver(
+                driver_bot, session, driver.telegram_id,
+                template.format(category=category_label, amount=expense.amount_rub),
+            )
 
     await call.answer("Готово")
+
+
+# =========================================================================
+# Изменение суммы расхода владельцем (Блок C) — на случай ошибки распознавания
+# =========================================================================
+@owner_router.callback_query(F.data.startswith("expense:edit:"))
+async def cb_expense_edit(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        expense_id = int(call.data.split(":")[2])
+    except (IndexError, ValueError):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id:
+        await call.answer("Расход не найден", show_alert=True)
+        return
+    if expense.status != "pending":
+        await call.answer("Решение по этому расходу уже принято", show_alert=True)
+        return
+    await state.set_state(EditExpenseAmount.waiting_for_amount)
+    await state.update_data(expense_id=expense_id)
+    await call.message.answer(msg.EXPENSE_EDIT_ASK_AMOUNT)
+    await call.answer()
+
+
+@owner_router.message(EditExpenseAmount.waiting_for_amount)
+async def edit_expense_amount(call_message: Message, state: FSMContext, session: AsyncSession) -> None:
+    raw = (call_message.text or "").strip().replace(",", ".").replace(" ", "")
+    try:
+        amount = Decimal(raw)
+        if amount <= 0:
+            raise InvalidOperation
+    except InvalidOperation:
+        await call_message.answer(msg.EXPENSE_AMOUNT_INVALID)
+        return
+
+    data = await state.get_data()
+    expense_id = data.get("expense_id")
+    owner = await _get_owner(session, call_message.from_user.id)
+    expense = await session.get(Expense, expense_id) if expense_id else None
+    if owner is None or expense is None or expense.owner_id != owner.id:
+        await state.clear()
+        await call_message.answer(msg.SOMETHING_WRONG)
+        return
+
+    old_amount = expense.amount_rub
+    expense.amount_rub = amount.quantize(Decimal("0.01"))
+    await log_event(
+        session, owner_id=owner.id, driver_id=expense.driver_id,
+        shift_id=expense.shift_id, trip_id=expense.trip_id,
+        event_type="expense_amount_edited",
+        payload={"expense_id": expense.id, "old": str(old_amount), "new": str(expense.amount_rub)},
+    )
+    await session.commit()
+    await state.clear()
+
+    category_label = expense_service.CATEGORY_LABELS.get(expense.category, expense.category)
+    await call_message.answer(
+        msg.EXPENSE_EDIT_DONE.format(category=category_label, amount=f"{expense.amount_rub:.0f}"),
+        reply_markup=kb.expense_decision_keyboard(expense.id),
+    )
 
 
 @owner_router.callback_query(F.data.startswith("expense:approve:"))

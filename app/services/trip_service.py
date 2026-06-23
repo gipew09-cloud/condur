@@ -89,6 +89,19 @@ async def complete_trip(
     )
     fuel_sum = sum((row[0] or Decimal(0)) for row in fuel_total.all()) or Decimal(0)
     trip.fuel_cost_rub = Decimal(fuel_sum).quantize(Decimal("0.01"))
+
+    # Прочие расходы рейса (не топливо, не отклонённые) → other_costs_rub,
+    # чтобы прибыль = выручка − топливо − прочее была осмысленной (Блок G2).
+    other_total = await session.execute(
+        select(Expense.amount_rub).where(
+            Expense.trip_id == trip.id,
+            Expense.category != "fuel",
+            Expense.status != "rejected",
+        )
+    )
+    other_sum = sum((row[0] or Decimal(0)) for row in other_total.all()) or Decimal(0)
+    trip.other_costs_rub = Decimal(other_sum).quantize(Decimal("0.01"))
+
     trip.status = "completed"
     trip.completed_at = datetime.now(timezone.utc)
     return trip

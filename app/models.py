@@ -108,6 +108,9 @@ class Shift(Base):
         Integer, Computed("odometer_end - odometer_start", persisted=True)
     )
     notes: Mapped[str | None] = mapped_column(Text)
+    # Смена добавлена вручную (оффлайн, задним числом): нет одометра/GPS,
+    # пробег неизвестен. На сайте такие помечаем «добавлено вручную».
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 # ========== РЕЙСЫ ==========
@@ -148,6 +151,8 @@ class Trip(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Рейс добавлен вручную (оффлайн, задним числом): без GPS/одометра.
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 # ========== РАСХОДЫ ==========

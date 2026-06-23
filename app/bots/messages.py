@@ -113,6 +113,11 @@ SHIFT_STARTED = (
     "Машина: <b>{plate}</b>\n"
     "Одометр: <b>{km}</b> км"
 )
+# Вариант без одометра (FEATURE_ODOMETER_PHOTO выключен)
+SHIFT_STARTED_SIMPLE = (
+    "✅ Смена начата.\n"
+    "Машина: <b>{plate}</b>"
+)
 SHIFT_COMPLETED_DRIVER = (
     "✅ Смена завершена.\n\n"
     "Пробег: <b>{distance}</b> км\n"
@@ -120,6 +125,11 @@ SHIFT_COMPLETED_DRIVER = (
     "Расходы (одобренные): <b>{expenses}</b> ₽\n"
     "Зарплата: <b>~{salary}</b> ₽\n\n"
     "<i>Расчёт приблизительный, уточните у владельца.</i>"
+)
+# Вариант без показа зарплаты (FEATURE_SHOW_SALARY выключен)
+SHIFT_COMPLETED_DRIVER_SIMPLE = (
+    "✅ Смена завершена.\n"
+    "Рейсов: <b>{trips}</b>"
 )
 
 # ========== ВОДИТЕЛЬ — рейс ==========
@@ -155,15 +165,42 @@ TRIP_COMPLETED_DRIVER = (
 EXPENSE_PICK_CATEGORY = "Категория расхода:"
 EXPENSE_ASK_AMOUNT = "Введите сумму расхода в рублях:"
 EXPENSE_AMOUNT_INVALID = "Не похоже на сумму. Введите число."
+EXPENSE_ASK_DESCRIPTION = "Коротко опишите, что за расход (например: «мойка», «трос»):"
 EXPENSE_ASK_RECEIPT = "Пришлите фото чека или нажмите «Пропустить»."
 EXPENSE_RECEIPT_PHOTO_REQUIRED = "Нужно именно фото. Или нажмите «Пропустить»."
-EXPENSE_SUBMITTED = (
-    "✅ Расход отправлен владельцу на одобрение.\n"
-    "Когда он примет решение — вы получите уведомление."
-)
+EXPENSE_SUBMITTED = "✅ Расход отправлен владельцу на одобрение."
+# Владелец правит сумму расхода (Блок C)
+EXPENSE_EDIT_ASK_AMOUNT = "Введите правильную сумму расхода в рублях:"
+EXPENSE_EDIT_DONE = "Сумма обновлена: {category} — <b>{amount}</b> ₽. Теперь одобрите или отклоните."
 EXPENSE_APPROVED_DRIVER = "✅ Расход {category} на {amount} ₽ одобрен владельцем."
 EXPENSE_REJECTED_DRIVER = "❌ Расход {category} на {amount} ₽ отклонён."
 EXPENSE_CANCELLED = "Создание расхода отменено."
+
+# ========== ВОДИТЕЛЬ — оффлайн-добавление задним числом (Блок D) ==========
+MANUAL_PICK_VEHICLE = "Какая машина? (запись задним числом)"
+MANUAL_NO_VEHICLES = "Нет доступных машин. Обратитесь к владельцу."
+MANUAL_ASK_DATE = (
+    "Когда это было? Напишите дату — например <b>21.06</b> или <b>21.06.2026</b>, "
+    "либо «сегодня» / «вчера»:"
+)
+MANUAL_DATE_INVALID = "Не понял дату. Напишите как 21.06, или «вчера»."
+MANUAL_SHIFT_DONE = (
+    "✅ Смена добавлена вручную ({date}).\n"
+    "<i>Без одометра — пробег неизвестен.</i>"
+)
+MANUAL_TRIP_DONE = (
+    "✅ Рейс добавлен вручную ({date}).\n"
+    "<b>{origin}</b> → <b>{destination}</b>\n"
+    "<i>Без GPS — пробег неизвестен.</i>"
+)
+NOTIFY_MANUAL_SHIFT = (
+    "📝 <b>{driver}</b> добавил смену вручную за {date} (машина {plate}). "
+    "Пробег неизвестен."
+)
+NOTIFY_MANUAL_TRIP = (
+    "📝 <b>{driver}</b> добавил рейс вручную за {date}: "
+    "{origin} → {destination} (машина {plate}). Пробег неизвестен."
+)
 
 # ========== ВОДИТЕЛЬ — SOS ==========
 SOS_ASK_CONFIRM = (
@@ -193,6 +230,10 @@ NOTIFY_SHIFT_STARTED = (
     "🟢 <b>{driver}</b> начал смену.\n"
     "Машина: {plate}\n"
     "Одометр: {km} км"
+)
+NOTIFY_SHIFT_STARTED_SIMPLE = (
+    "🟢 <b>{driver}</b> начал смену.\n"
+    "Машина: {plate}"
 )
 NOTIFY_SHIFT_COMPLETED = (
     "⚪️ <b>{driver}</b> завершил смену.\n"

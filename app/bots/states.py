@@ -63,6 +63,11 @@ class SetTripRevenue(StatesGroup):
     waiting_for_amount = State()
 
 
+class EditExpenseAmount(StatesGroup):
+    """Владелец правит сумму расхода (если бот/водитель ошиблись), Блок C."""
+    waiting_for_amount = State()
+
+
 class TripCalc(StatesGroup):
     """Быстрый калькулятор рейса без записи в БД."""
     waiting_for_distance = State()
@@ -107,9 +112,10 @@ class UnloadingLocation(StatesGroup):
 
 
 class NewExpense(StatesGroup):
-    """Создание расхода: категория → сумма → фото чека (опционально)."""
+    """Создание расхода: категория → сумма → (для «Прочее» — описание) → фото чека."""
     selecting_category = State()
     waiting_for_amount = State()
+    waiting_for_description = State()
     waiting_for_receipt = State()
 
 
@@ -117,3 +123,17 @@ class HandedCash(StatesGroup):
     """Водитель сообщает что отдал нал владельцу."""
     waiting_for_amount = State()
     waiting_for_photo = State()
+
+
+class AddManualShift(StatesGroup):
+    """Оффлайн-добавление смены задним числом (Блок D): машина → дата."""
+    selecting_vehicle = State()
+    waiting_for_date = State()
+
+
+class AddManualTrip(StatesGroup):
+    """Оффлайн-добавление рейса задним числом (Блок D): машина → маршрут → дата."""
+    selecting_vehicle = State()
+    waiting_for_origin = State()
+    waiting_for_destination = State()
+    waiting_for_date = State()

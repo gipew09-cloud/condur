@@ -17,6 +17,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
+from app.config import settings
 from app.services.expense_service import CATEGORY_LABELS
 
 
@@ -39,6 +40,9 @@ BTN_DOWNTIME = "⏸ Простой"
 BTN_HANDED_CASH = "💵 Сдал деньги"
 BTN_SKIP = "⏭ Пропустить"
 BTN_SEND_LOCATION = "📍 Отправить геопозицию"
+# Оффлайн-добавление задним числом (Блок D)
+BTN_ADD_SHIFT = "➕ Добавить смену"
+BTN_ADD_TRIP = "➕ Добавить рейс"
 
 
 # =========================================================================
@@ -50,6 +54,32 @@ def owner_main_menu() -> InlineKeyboardMarkup:
     kb.button(text="🚚 Мои машины", callback_data="owner:vehicles")
     kb.button(text="🗺 Шаблоны маршрутов", callback_data="owner:routes")
     kb.button(text="📊 Статистика", callback_data="owner:stats")
+    kb.button(text="🕒 Часовой пояс", callback_data="owner:timezone")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# Распространённые часовые пояса РФ (для установки владельцем, баг E2).
+RU_TIMEZONES = [
+    ("Europe/Kaliningrad", "Калининград (МСК−1)"),
+    ("Europe/Moscow", "Москва (МСК)"),
+    ("Europe/Samara", "Самара (МСК+1)"),
+    ("Asia/Yekaterinburg", "Екатеринбург (МСК+2)"),
+    ("Asia/Omsk", "Омск (МСК+3)"),
+    ("Asia/Krasnoyarsk", "Красноярск (МСК+4)"),
+    ("Asia/Irkutsk", "Иркутск (МСК+5)"),
+    ("Asia/Yakutsk", "Якутск (МСК+6)"),
+    ("Asia/Vladivostok", "Владивосток (МСК+7)"),
+    ("Asia/Magadan", "Магадан (МСК+8)"),
+    ("Asia/Kamchatka", "Камчатка (МСК+9)"),
+]
+
+
+def timezone_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for i, (_, label) in enumerate(RU_TIMEZONES):
+        kb.button(text=label, callback_data=f"tz:set:{i}")
+    kb.button(text="« Назад", callback_data="owner:menu")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -110,8 +140,9 @@ def back_to_menu_keyboard() -> InlineKeyboardMarkup:
 def expense_decision_keyboard(expense_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Одобрить", callback_data=f"expense:approve:{expense_id}")
+    kb.button(text="✏️ Изменить", callback_data=f"expense:edit:{expense_id}")
     kb.button(text="❌ Отклонить", callback_data=f"expense:reject:{expense_id}")
-    kb.adjust(2)
+    kb.adjust(3)
     return kb.as_markup()
 
 
@@ -131,11 +162,40 @@ def _kb(*rows: list[str]) -> ReplyKeyboardMarkup:
 
 
 def driver_no_shift_kb() -> ReplyKeyboardMarkup:
-    return _kb(
-        [BTN_START_SHIFT],
-        [BTN_DOWNTIME, BTN_HANDED_CASH],
-        [BTN_STATUS],
-    )
+    rows: list[list[str]] = [[BTN_START_SHIFT]]
+    # Оффлайн-добавление задним числом (когда не было связи на складе).
+    rows.append([BTN_ADD_SHIFT, BTN_ADD_TRIP])
+    # «Простой» и «Сдал деньги» — по флагам (по умолчанию скрыты).
+    extras: list[str] = []
+    if settings.feature_downtime:
+        extras.append(BTN_DOWNTIME)
+    if settings.feature_cash_handover:
+        extras.append(BTN_HANDED_CASH)
+    if extras:
+        rows.append(extras)
+    return _kb(*rows)
+
+
+def manual_vehicle_keyboard(vehicles, prefix: str) -> InlineKeyboardMarkup:
+    """Выбор машины для оффлайн-добавления. prefix: 'mshift' или 'mtrip'."""
+    kb = InlineKeyboardBuilder()
+    for v in vehicles:
+        label = v.license_plate + (f" — {v.brand}" if v.brand else "")
+        kb.button(text=label, callback_data=f"{prefix}:veh:{v.id}")
+    kb.button(text="✖️ Отмена", callback_data=f"{prefix}:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def manual_route_keyboard(templates) -> InlineKeyboardMarkup:
+    """Выбор маршрута для оффлайн-рейса: шаблон или вручную."""
+    kb = InlineKeyboardBuilder()
+    for t in templates:
+        kb.button(text=f"🗺 {t.name}", callback_data=f"mtrip:rt:{t.id}")
+    kb.button(text="✏️ Другой маршрут", callback_data="mtrip:manual")
+    kb.button(text="✖️ Отмена", callback_data="mtrip:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
 
 
 def driver_shift_no_trip_kb() -> ReplyKeyboardMarkup:
@@ -143,7 +203,6 @@ def driver_shift_no_trip_kb() -> ReplyKeyboardMarkup:
         [BTN_NEW_TRIP],
         [BTN_END_SHIFT],
         [BTN_EXPENSE, BTN_SOS],
-        [BTN_STATUS],
     )
 
 
@@ -152,16 +211,17 @@ def driver_trip_created_kb() -> ReplyKeyboardMarkup:
         [BTN_TRIP_DEPART],
         [BTN_UPLOAD_WAYBILL],
         [BTN_EXPENSE, BTN_SOS],
-        [BTN_STATUS],
     )
 
 
 def driver_trip_in_transit_kb() -> ReplyKeyboardMarkup:
+    # При выключенных промежуточных статусах рейса (FEATURE_TRIP_STATUS_STEPS)
+    # вместо «Выгрузка» сразу показываем «Сдал груз».
+    main = BTN_TRIP_UNLOADING if settings.feature_trip_status_steps else BTN_END_TRIP
     return _kb(
-        [BTN_TRIP_UNLOADING],
+        [main],
         [BTN_UPLOAD_WAYBILL],
         [BTN_EXPENSE, BTN_SOS],
-        [BTN_STATUS],
     )
 
 
@@ -170,7 +230,6 @@ def driver_trip_unloading_kb() -> ReplyKeyboardMarkup:
         [BTN_END_TRIP],
         [BTN_UPLOAD_WAYBILL],
         [BTN_EXPENSE, BTN_SOS],
-        [BTN_STATUS],
     )
 
 
@@ -298,6 +357,17 @@ def route_template_keyboard(templates) -> InlineKeyboardMarkup:
     for t in templates:
         kb.button(text=f"🗺 {t.name}", callback_data=f"rt:pick:{t.id}")
     kb.button(text="✏️ Другой маршрут", callback_data="rt:manual")
+    kb.button(text="✖️ Отмена", callback_data="rt:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def route_confirm_keyboard() -> InlineKeyboardMarkup:
+    """После выбора шаблона: подтвердить или переснять выбор (баг E3 — водители
+    часто жмут не тот шаблон)."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Создать рейс", callback_data="rt:confirm")
+    kb.button(text="✏️ Изменить маршрут", callback_data="rt:change")
     kb.button(text="✖️ Отмена", callback_data="rt:cancel")
     kb.adjust(1)
     return kb.as_markup()

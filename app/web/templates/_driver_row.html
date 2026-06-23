@@ -48,7 +48,10 @@
 </tr>
 {% else %}
 <tr id="driver-row-{{ d.id }}">
-  <td data-label="Водитель">{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill">не активирован</span>{% endif %}</td>
+  <td data-label="Водитель">{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill">не активирован</span>{% endif %}
+    {% if row.active_shift %}<span class="badge badge--success">🟢 в смене</span>
+    {% elif row.idle_label %}<span class="badge badge--warning">простаивает с {{ row.idle_label }}</span>{% endif %}
+  </td>
   <td data-label="Тип / ставка">{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}</td>
   <td data-label="Смен" class="num">{{ row.shifts }}</td>
   <td data-label="Рейсов" class="num">{{ row.trips }}</td>

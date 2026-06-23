@@ -36,6 +36,7 @@ from app.services.scheduler_jobs import (
     doc_expiry_job,
     late_start_job,
     monthly_econometer_job,
+    no_show_detector_job,
     silence_detector_job,
     weekly_review_job,
 )
@@ -127,6 +128,11 @@ async def main() -> None:
     # Экономометр: каждый день 10:00..10:30 — внутри проверим что 1 число месяца.
     scheduler.add_job(
         monthly_econometer_job, "cron", minute="*/30", args=[owner_bot],
+        max_instances=1,
+    )
+    # Невыход водителя: раз в час проверяем, кто давно не открывал смену.
+    scheduler.add_job(
+        no_show_detector_job, "cron", minute="5", args=[owner_bot],
         max_instances=1,
     )
     scheduler.start()

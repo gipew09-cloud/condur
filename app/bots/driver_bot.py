@@ -8,7 +8,8 @@
   из БД и сбрасывает залипший FSM.
 """
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -23,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bots import keyboards as kb
 from app.bots import messages as msg
 from app.bots.notifications import notify_owner, transfer_photo_to_owner
+from app.config import settings
 from app.bots.states import (
+    AddManualShift,
+    AddManualTrip,
     EndShift,
     EndTripLocation,
     HandedCash,
@@ -36,13 +40,14 @@ from app.bots.states import (
 from app.models import Driver, Expense, Owner, RouteTemplate, Shift, Vehicle
 from app.services import (
     expense_service,
+    receipt_ocr,
     salary_service,
     shift_service,
     trip_service,
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
-from app.services.timeutil import fmt_time
+from app.services.timeutil import fmt_time, owner_tz
 
 logger = logging.getLogger(__name__)
 driver_router = Router()
@@ -277,8 +282,61 @@ async def cmd_balance(message: Message, session: AsyncSession) -> None:
 # =========================================================================
 # НАЧАЛО СМЕНЫ
 # =========================================================================
+async def _do_start_shift(
+    reply_target: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_bot: Bot,
+    driver: Driver,
+    vehicle: Vehicle,
+    odometer_start: int | None,
+    photo_file_id: str | None,
+) -> None:
+    """Создать смену и уведомить. Общий хвост для всех путей старта
+    (с одометром / без одометра / авто-старт при одной машине)."""
+    shift = await shift_service.start_shift(
+        session,
+        owner_id=driver.owner_id,
+        driver_id=driver.id,
+        vehicle_id=vehicle.id,
+        odometer_start=odometer_start,
+        photo_file_id=photo_file_id,
+    )
+    await session.flush()
+    await log_event(
+        session,
+        owner_id=driver.owner_id,
+        driver_id=driver.id,
+        shift_id=shift.id,
+        event_type="shift_started",
+        payload={"vehicle_id": vehicle.id, "odometer_start": odometer_start},
+    )
+    await session.commit()
+    await state.clear()
+
+    if odometer_start is not None:
+        driver_text = msg.SHIFT_STARTED.format(plate=vehicle.license_plate, km=odometer_start)
+    else:
+        driver_text = msg.SHIFT_STARTED_SIMPLE.format(plate=vehicle.license_plate)
+    await _refresh_ui(reply_target, session, driver, driver_text)
+
+    owner = await session.get(Owner, driver.owner_id)
+    if owner is not None:
+        if odometer_start is not None:
+            owner_text = msg.NOTIFY_SHIFT_STARTED.format(
+                driver=driver.full_name, plate=vehicle.license_plate, km=odometer_start
+            )
+        else:
+            owner_text = msg.NOTIFY_SHIFT_STARTED_SIMPLE.format(
+                driver=driver.full_name, plate=vehicle.license_plate
+            )
+        await notify_owner(owner_bot, session, owner, owner_text)
+
+
 @driver_router.message(F.text == kb.BTN_START_SHIFT, StateFilter(any_state))
-async def btn_start_shift(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def btn_start_shift(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
     await state.clear()
     driver = await _driver_by_telegram(session, message.from_user.id)
     if driver is None:
@@ -292,6 +350,15 @@ async def btn_start_shift(message: Message, state: FSMContext, session: AsyncSes
     vehicles = await shift_service.get_free_vehicles(session, driver.owner_id)
     if not vehicles:
         await _refresh_ui(message, session, driver, msg.SHIFT_NO_FREE_VEHICLES)
+        return
+
+    # Упрощённый старт: без одометра и, если машина одна — без выбора,
+    # сразу открываем смену (FEATURE_ODOMETER_PHOTO выключен).
+    if not settings.feature_odometer_photo and len(vehicles) == 1:
+        await _do_start_shift(
+            message, state, session, owner_bot, driver, vehicles[0],
+            odometer_start=None, photo_file_id=None,
+        )
         return
 
     await state.set_state(StartShift.selecting_vehicle)
@@ -310,13 +377,23 @@ async def cb_shift_cancel(call: CallbackQuery, state: FSMContext, session: Async
 
 @driver_router.callback_query(StartShift.selecting_vehicle, F.data.startswith("shift:pick:"))
 async def cb_shift_pick_vehicle(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
     vehicle_id = int(call.data.split(":")[2])
     vehicle = await session.get(Vehicle, vehicle_id)
     driver = await _driver_by_telegram(session, call.from_user.id)
     if vehicle is None or driver is None or vehicle.owner_id != driver.owner_id:
         await call.answer("Машина недоступна", show_alert=True)
+        return
+
+    # Без одометра — открываем смену сразу после выбора машины.
+    if not settings.feature_odometer_photo:
+        await call.message.edit_text(f"Машина: <b>{vehicle.license_plate}</b>")
+        await call.answer()
+        await _do_start_shift(
+            call.message, state, session, owner_bot, driver, vehicle,
+            odometer_start=None, photo_file_id=None,
+        )
         return
 
     await state.update_data(vehicle_id=vehicle.id)
@@ -361,46 +438,19 @@ async def shift_start_odometer_value(
         await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
         return
 
-    shift = await shift_service.start_shift(
-        session,
-        owner_id=driver.owner_id,
-        driver_id=driver.id,
-        vehicle_id=vehicle.id,
-        odometer_start=value,
-        photo_file_id=data.get("odometer_photo"),
+    await _do_start_shift(
+        message, state, session, owner_bot, driver, vehicle,
+        odometer_start=value, photo_file_id=data.get("odometer_photo"),
     )
-    await session.flush()
-    await log_event(
-        session,
-        owner_id=driver.owner_id,
-        driver_id=driver.id,
-        shift_id=shift.id,
-        event_type="shift_started",
-        payload={"vehicle_id": vehicle.id, "odometer_start": value},
-    )
-    await session.commit()
-    await state.clear()
-
-    await _refresh_ui(
-        message, session, driver,
-        msg.SHIFT_STARTED.format(plate=vehicle.license_plate, km=value),
-    )
-
-    owner = await session.get(Owner, driver.owner_id)
-    if owner is not None:
-        await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_SHIFT_STARTED.format(
-                driver=driver.full_name, plate=vehicle.license_plate, km=value
-            ),
-        )
 
 
 # =========================================================================
 # ЗАВЕРШЕНИЕ СМЕНЫ — с контролем топлива
 # =========================================================================
 @driver_router.message(F.text == kb.BTN_END_SHIFT, StateFilter(any_state))
-async def btn_end_shift(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def btn_end_shift(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
     await state.clear()
     driver = await _driver_by_telegram(session, message.from_user.id)
     if driver is None:
@@ -412,6 +462,11 @@ async def btn_end_shift(message: Message, state: FSMContext, session: AsyncSessi
         return
     if await trip_service.get_active_trip(session, shift.id) is not None:
         await _refresh_ui(message, session, driver, msg.SHIFT_TRIP_OPEN_CANT_END)
+        return
+
+    # Без одометра — завершаем смену сразу (FEATURE_ODOMETER_PHOTO выключен).
+    if not settings.feature_odometer_photo:
+        await _do_end_shift(message, state, session, owner_bot, driver, shift, odometer_end=None)
         return
 
     await state.set_state(EndShift.waiting_for_odometer_photo)
@@ -465,11 +520,25 @@ async def shift_end_odometer_value(
         )
         return
 
+    await _do_end_shift(message, state, session, owner_bot, driver, shift, odometer_end=value)
+
+
+async def _do_end_shift(
+    reply_target: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_bot: Bot,
+    driver: Driver,
+    shift: Shift,
+    odometer_end: int | None,
+) -> None:
+    """Завершить смену и уведомить. Общий хвост для путей с одометром и без.
+    Зарплату водителю показываем только при FEATURE_SHOW_SALARY."""
     data = await state.get_data()
     await shift_service.end_shift(
         session,
         shift=shift,
-        odometer_end=value,
+        odometer_end=odometer_end,
         photo_file_id=data.get("odometer_photo"),
         ended_at=datetime.now(timezone.utc),
     )
@@ -498,15 +567,16 @@ async def shift_end_odometer_value(
     await session.commit()
     await state.clear()
 
-    await _refresh_ui(
-        message, session, driver,
-        msg.SHIFT_COMPLETED_DRIVER.format(
+    if settings.feature_show_salary:
+        driver_text = msg.SHIFT_COMPLETED_DRIVER.format(
             distance=shift.distance_km or 0,
             trips=len(trips),
             expenses=f"{expenses_total:.2f}",
             salary=f"{salary:.0f}",
-        ),
-    )
+        )
+    else:
+        driver_text = msg.SHIFT_COMPLETED_DRIVER_SIMPLE.format(trips=len(trips))
+    await _refresh_ui(reply_target, session, driver, driver_text)
 
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
@@ -609,7 +679,7 @@ async def btn_new_trip(message: Message, state: FSMContext, session: AsyncSessio
 
 @driver_router.callback_query(F.data.startswith("rt:pick:"))
 async def cb_route_template_pick(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession, owner_bot: Bot
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     template_id = int(call.data.split(":")[2])
     template = await session.get(RouteTemplate, template_id)
@@ -623,42 +693,64 @@ async def cb_route_template_pick(
         await call.answer("Сначала откройте смену", show_alert=True)
         return
 
-    trip = await trip_service.create_trip(
-        session,
-        shift=shift,
+    # Не создаём сразу — сперва даём подтвердить/переснять (баг E3).
+    await state.update_data(
         origin=template.origin,
         destination=template.destination,
-        cargo_name=template.default_cargo or template.name,
+        cargo=template.default_cargo or template.name,
     )
-    await session.flush()
-    await log_event(
-        session,
-        owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id,
-        event_type="trip_created",
-        payload={"template_id": template.id},
+    await call.message.edit_text(
+        f"Маршрут: <b>{template.origin} → {template.destination}</b>",
+        reply_markup=kb.route_confirm_keyboard(),
     )
-    await session.commit()
-    await state.clear()
+    await call.answer()
 
+
+@driver_router.callback_query(F.data == "rt:confirm")
+async def cb_route_confirm(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if driver is None:
+        await call.answer(msg.DRIVER_LINK_EXPECTED, show_alert=True)
+        return
+    data = await state.get_data()
+    origin, destination, cargo = data.get("origin"), data.get("destination"), data.get("cargo")
+    if not origin or not destination:
+        await call.answer("Маршрут не выбран", show_alert=True)
+        return
     await call.message.delete()
-    await _refresh_ui(
-        call.message, session, driver,
-        msg.TRIP_CREATED.format(
-            origin=template.origin, destination=template.destination,
-            cargo=template.default_cargo or template.name,
-        ),
+    await _finalize_new_trip(
+        call.message, state, session, owner_bot, driver,
+        origin=origin, destination=destination, cargo=cargo,
     )
-    owner = await session.get(Owner, driver.owner_id)
-    if owner is not None:
-        await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_TRIP_CREATED.format(
-                driver=driver.full_name, origin=template.origin,
-                destination=template.destination,
-                cargo=template.default_cargo or template.name,
-            ),
+    await call.answer()
+
+
+@driver_router.callback_query(F.data == "rt:change")
+async def cb_route_change(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    """Переснять выбор маршрута — снова показать шаблоны (баг E3)."""
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if driver is None:
+        await call.answer(msg.DRIVER_LINK_EXPECTED, show_alert=True)
+        return
+    templates_res = await session.execute(
+        select(RouteTemplate)
+        .where(RouteTemplate.owner_id == driver.owner_id, RouteTemplate.is_active.is_(True))
+        .order_by(RouteTemplate.name)
+    )
+    templates = list(templates_res.scalars().all())
+    await state.set_state(NewTrip.waiting_for_origin)
+    await state.update_data(picking_template=True)
+    if templates:
+        await call.message.edit_text(
+            "Выберите маршрут из шаблона или введите свой:",
+            reply_markup=kb.route_template_keyboard(templates),
         )
+    else:
+        await call.message.edit_text(msg.TRIP_ASK_ORIGIN)
     await call.answer()
 
 
@@ -697,14 +789,76 @@ async def trip_origin(message: Message, state: FSMContext) -> None:
 
 
 @driver_router.message(NewTrip.waiting_for_destination)
-async def trip_destination(message: Message, state: FSMContext) -> None:
+async def trip_destination(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
     text = (message.text or "").strip()
     if not text:
         await message.answer(msg.TRIP_ASK_DESTINATION)
         return
     await state.update_data(destination=text)
+
+    # Без вопроса «что везёте» (FEATURE_TRIP_CARGO выключен) — создаём рейс сразу.
+    if not settings.feature_trip_cargo:
+        driver = await _driver_by_telegram(session, message.from_user.id)
+        if driver is None:
+            await state.clear()
+            await message.answer(msg.SOMETHING_WRONG)
+            return
+        data = await state.get_data()
+        await _finalize_new_trip(
+            message, state, session, owner_bot, driver,
+            origin=data["origin"], destination=text, cargo=None,
+        )
+        return
+
     await state.set_state(NewTrip.waiting_for_cargo)
     await message.answer(msg.TRIP_ASK_CARGO)
+
+
+async def _finalize_new_trip(
+    reply_target: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_bot: Bot,
+    driver: Driver,
+    origin: str,
+    destination: str,
+    cargo: str | None,
+) -> None:
+    """Создать рейс и уведомить. Общий хвост для путей с грузом и без."""
+    shift = await shift_service.get_active_shift(session, driver.id)
+    if shift is None:
+        await state.clear()
+        await _refresh_ui(reply_target, session, driver, msg.TRIP_NEED_SHIFT)
+        return
+    trip = await trip_service.create_trip(
+        session, shift=shift, origin=origin, destination=destination, cargo_name=cargo,
+    )
+    await session.flush()
+    await log_event(
+        session,
+        owner_id=driver.owner_id, driver_id=driver.id,
+        shift_id=shift.id, trip_id=trip.id, event_type="trip_created",
+        payload={"origin": origin, "destination": destination},
+    )
+    await session.commit()
+    await state.clear()
+
+    cargo_display = cargo or "—"
+    await _refresh_ui(
+        reply_target, session, driver,
+        msg.TRIP_CREATED.format(origin=origin, destination=destination, cargo=cargo_display),
+    )
+    owner = await session.get(Owner, driver.owner_id)
+    if owner is not None:
+        await notify_owner(
+            owner_bot, session, owner,
+            msg.NOTIFY_TRIP_CREATED.format(
+                driver=driver.full_name, origin=origin,
+                destination=destination, cargo=cargo_display,
+            ),
+        )
 
 
 @driver_router.message(NewTrip.waiting_for_cargo)
@@ -721,42 +875,12 @@ async def trip_cargo(
         await state.clear()
         await message.answer(msg.SOMETHING_WRONG)
         return
-    shift = await shift_service.get_active_shift(session, driver.id)
-    if shift is None:
-        await state.clear()
-        await _refresh_ui(message, session, driver, msg.TRIP_NEED_SHIFT)
-        return
 
     data = await state.get_data()
-    trip = await trip_service.create_trip(
-        session, shift=shift,
-        origin=data["origin"], destination=data["destination"], cargo_name=cargo,
+    await _finalize_new_trip(
+        message, state, session, owner_bot, driver,
+        origin=data["origin"], destination=data["destination"], cargo=cargo,
     )
-    await session.flush()
-    await log_event(
-        session,
-        owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_created",
-        payload={"origin": data["origin"], "destination": data["destination"]},
-    )
-    await session.commit()
-    await state.clear()
-
-    await _refresh_ui(
-        message, session, driver,
-        msg.TRIP_CREATED.format(
-            origin=data["origin"], destination=data["destination"], cargo=cargo
-        ),
-    )
-    owner = await session.get(Owner, driver.owner_id)
-    if owner is not None:
-        await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_TRIP_CREATED.format(
-                driver=driver.full_name, origin=data["origin"],
-                destination=data["destination"], cargo=cargo,
-            ),
-        )
 
 
 # =========================================================================
@@ -801,9 +925,17 @@ async def btn_trip_depart(
 # =========================================================================
 # ВЫГРУЗКА (in_transit → unloading) — с геопозицией
 # =========================================================================
+def _can_end_trip_status(status: str) -> bool:
+    """Из каких статусов разрешено «Сдал груз». При выключенных промежуточных
+    статусах (FEATURE_TRIP_STATUS_STEPS) рейс завершается прямо из in_transit."""
+    if settings.feature_trip_status_steps:
+        return status == "unloading"
+    return status in ("in_transit", "unloading")
+
+
 @driver_router.message(F.text == kb.BTN_TRIP_UNLOADING, StateFilter(any_state))
 async def btn_trip_unloading_start(
-    message: Message, state: FSMContext, session: AsyncSession
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
     await state.clear()
     driver = await _driver_by_telegram(session, message.from_user.id)
@@ -814,6 +946,11 @@ async def btn_trip_unloading_start(
     trip = await trip_service.get_active_trip(session, shift.id) if shift else None
     if trip is None or trip.status != "in_transit":
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
+        return
+
+    # Без геопозиции при сдаче (FEATURE_CARGO_GEOLOCATION выключен) — сразу.
+    if not settings.feature_cargo_geolocation:
+        await _do_unloading(message, state, session, owner_bot, location=None)
         return
 
     await state.set_state(UnloadingLocation.waiting_for_location)
@@ -969,7 +1106,7 @@ async def upload_waybill_invalid(message: Message) -> None:
 # =========================================================================
 @driver_router.message(F.text == kb.BTN_END_TRIP, StateFilter(any_state))
 async def btn_end_trip_start(
-    message: Message, state: FSMContext, session: AsyncSession
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
     await state.clear()
     driver = await _driver_by_telegram(session, message.from_user.id)
@@ -978,8 +1115,13 @@ async def btn_end_trip_start(
         return
     shift = await shift_service.get_active_shift(session, driver.id)
     trip = await trip_service.get_active_trip(session, shift.id) if shift else None
-    if trip is None or trip.status != "unloading":
+    if trip is None or not _can_end_trip_status(trip.status):
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
+        return
+
+    # Без геопозиции при сдаче (FEATURE_CARGO_GEOLOCATION выключен) — сразу.
+    if not settings.feature_cargo_geolocation:
+        await _do_end_trip(message, state, session, owner_bot, location=None)
         return
 
     await state.set_state(EndTripLocation.waiting_for_location)
@@ -1022,7 +1164,7 @@ async def _do_end_trip(
         return
     shift = await shift_service.get_active_shift(session, driver.id)
     trip = await trip_service.get_active_trip(session, shift.id) if shift else None
-    if trip is None or trip.status != "unloading":
+    if trip is None or not _can_end_trip_status(trip.status):
         await state.clear()
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
         return
@@ -1116,6 +1258,27 @@ async def expense_amount(message: Message, state: FSMContext) -> None:
         await message.answer(msg.EXPENSE_AMOUNT_INVALID)
         return
     await state.update_data(amount=str(amount))
+
+    # Для категории «Прочее» спрашиваем короткое описание (Блок C) — что за расход.
+    data = await state.get_data()
+    if data.get("category") == "other":
+        await state.set_state(NewExpense.waiting_for_description)
+        await message.answer(msg.EXPENSE_ASK_DESCRIPTION)
+        return
+
+    await state.set_state(NewExpense.waiting_for_receipt)
+    await message.answer(
+        msg.EXPENSE_ASK_RECEIPT, reply_markup=kb.expense_receipt_skip_keyboard()
+    )
+
+
+@driver_router.message(NewExpense.waiting_for_description)
+async def expense_description(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(msg.EXPENSE_ASK_DESCRIPTION)
+        return
+    await state.update_data(description=text)
     await state.set_state(NewExpense.waiting_for_receipt)
     await message.answer(
         msg.EXPENSE_ASK_RECEIPT, reply_markup=kb.expense_receipt_skip_keyboard()
@@ -1141,6 +1304,7 @@ async def _finalize_expense(
     trip = await trip_service.get_active_trip(session, shift.id)
     amount = Decimal(data["amount"])
     category = data["category"]
+    description = data.get("description")
 
     expense = await expense_service.create_expense(
         session,
@@ -1148,6 +1312,7 @@ async def _finalize_expense(
         shift_id=shift.id, trip_id=trip.id if trip else None,
         category=category, amount_rub=amount,
         receipt_photo_id=receipt_file_id,
+        description=description,
     )
     await session.flush()
     await log_event(
@@ -1179,6 +1344,8 @@ async def _finalize_expense(
         category=expense_service.CATEGORY_LABELS[category],
         amount=f"{amount:.0f}" + liters_hint,
     )
+    if description:
+        caption += f"\nОписание: {description}"
     markup = kb.expense_decision_keyboard(expense.id)
 
     if receipt_file_id is not None:
@@ -1206,6 +1373,18 @@ async def expense_receipt_photo(
         await state.clear()
         await message.answer(msg.SOMETHING_WRONG)
         return
+
+    # (Дормант) распознавание суммы с чека. Активно только при включённом
+    # FEATURE_RECEIPT_OCR и заданном ключе — иначе остаётся сумма от водителя.
+    if receipt_ocr.is_enabled() and file_id is not None:
+        try:
+            buf = await bot.download(file_id)
+            reading = await receipt_ocr.recognize(buf.read())
+            if reading and reading.amount_rub:
+                await state.update_data(amount=str(reading.amount_rub))
+        except Exception as exc:  # noqa: BLE001 — OCR не критичен
+            logger.debug("receipt OCR skipped: %s", exc)
+
     await _finalize_expense(
         state=state, session=session, driver=driver,
         receipt_file_id=file_id, source_bot=bot, owner_bot=owner_bot,
@@ -1489,6 +1668,322 @@ async def cb_sos_confirm(
     await call.message.delete()
     await _refresh_ui(call.message, session, driver, msg.SOS_SENT)
     await call.answer()
+
+
+# =========================================================================
+# ОФФЛАЙН-ДОБАВЛЕНИЕ задним числом (Блок D)
+# Когда на складе не было связи: водитель вносит смену/рейс позже.
+# У таких записей нет одометра/GPS — пробег неизвестен, помечаем is_manual.
+# =========================================================================
+async def _owner_active_vehicles(session: AsyncSession, owner_id: int) -> list[Vehicle]:
+    res = await session.execute(
+        select(Vehicle)
+        .where(Vehicle.owner_id == owner_id, Vehicle.is_active.is_(True))
+        .order_by(Vehicle.license_plate)
+    )
+    return list(res.scalars().all())
+
+
+_MANUAL_DATE_RE = re.compile(r"^(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?$")
+
+
+def _parse_manual_date(text: str | None, tz_name: str | None) -> datetime | None:
+    """«сегодня»/«вчера»/«ДД.ММ»/«ДД.ММ.ГГГГ» → UTC-aware (полдень местного времени)."""
+    tz = owner_tz(tz_name)
+    today = datetime.now(tz).date()
+    raw = (text or "").strip().lower()
+    if raw in ("", "сегодня"):
+        d = today
+    elif raw == "вчера":
+        d = today - timedelta(days=1)
+    else:
+        m = _MANUAL_DATE_RE.match(raw)
+        if not m:
+            return None
+        day, month = int(m.group(1)), int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else today.year
+        if year < 100:
+            year += 2000
+        try:
+            d = date(year, month, day)
+        except ValueError:
+            return None
+    return datetime(d.year, d.month, d.day, 12, 0, tzinfo=tz).astimezone(timezone.utc)
+
+
+def _date_label(dt: datetime, tz_name: str | None) -> str:
+    return dt.astimezone(owner_tz(tz_name)).strftime("%d.%m.%Y")
+
+
+# --- Добавить смену вручную ---
+@driver_router.message(F.text == kb.BTN_ADD_SHIFT, StateFilter(any_state))
+async def btn_add_shift(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await message.answer(msg.DRIVER_LINK_EXPECTED)
+        return
+    vehicles = await _owner_active_vehicles(session, driver.owner_id)
+    if not vehicles:
+        await _refresh_ui(message, session, driver, msg.MANUAL_NO_VEHICLES)
+        return
+    if len(vehicles) == 1:
+        await state.update_data(vehicle_id=vehicles[0].id)
+        await state.set_state(AddManualShift.waiting_for_date)
+        await message.answer(msg.MANUAL_ASK_DATE)
+        return
+    await state.set_state(AddManualShift.selecting_vehicle)
+    await message.answer(
+        msg.MANUAL_PICK_VEHICLE, reply_markup=kb.manual_vehicle_keyboard(vehicles, "mshift")
+    )
+
+
+@driver_router.callback_query(AddManualShift.selecting_vehicle, F.data == "mshift:cancel")
+async def cb_mshift_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    await call.message.delete()
+    if driver is not None:
+        await _refresh_ui(call.message, session, driver, msg.CANCELLED)
+    await call.answer()
+
+
+@driver_router.callback_query(AddManualShift.selecting_vehicle, F.data.startswith("mshift:veh:"))
+async def cb_mshift_vehicle(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    vehicle_id = int(call.data.split(":")[2])
+    vehicle = await session.get(Vehicle, vehicle_id)
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if vehicle is None or driver is None or vehicle.owner_id != driver.owner_id:
+        await call.answer("Машина недоступна", show_alert=True)
+        return
+    await state.update_data(vehicle_id=vehicle_id)
+    await state.set_state(AddManualShift.waiting_for_date)
+    await call.message.edit_text(f"Машина: <b>{vehicle.license_plate}</b>")
+    await call.message.answer(msg.MANUAL_ASK_DATE)
+    await call.answer()
+
+
+@driver_router.message(AddManualShift.waiting_for_date)
+async def manual_shift_date(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    owner = await session.get(Owner, driver.owner_id)
+    tz_name = owner.timezone if owner else None
+    dt = _parse_manual_date(message.text, tz_name)
+    if dt is None:
+        await message.answer(msg.MANUAL_DATE_INVALID)
+        return
+    data = await state.get_data()
+    vehicle = await session.get(Vehicle, data.get("vehicle_id"))
+    if vehicle is None or vehicle.owner_id != driver.owner_id:
+        await state.clear()
+        await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
+        return
+
+    shift = Shift(
+        owner_id=driver.owner_id, driver_id=driver.id, vehicle_id=vehicle.id,
+        status="completed", started_at=dt, ended_at=dt, is_manual=True,
+    )
+    session.add(shift)
+    await session.flush()
+    await log_event(
+        session, owner_id=driver.owner_id, driver_id=driver.id, shift_id=shift.id,
+        event_type="shift_added_manual",
+        payload={"vehicle_id": vehicle.id, "date": dt.isoformat()},
+    )
+    await session.commit()
+    await state.clear()
+
+    label = _date_label(dt, tz_name)
+    await _refresh_ui(message, session, driver, msg.MANUAL_SHIFT_DONE.format(date=label))
+    if owner is not None:
+        await notify_owner(
+            owner_bot, session, owner,
+            msg.NOTIFY_MANUAL_SHIFT.format(
+                driver=driver.full_name, date=label, plate=vehicle.license_plate
+            ),
+        )
+
+
+# --- Добавить рейс вручную ---
+async def _manual_trip_ask_route(
+    reply_target: Message, state: FSMContext, session: AsyncSession, owner_id: int
+) -> None:
+    templates_res = await session.execute(
+        select(RouteTemplate)
+        .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
+        .order_by(RouteTemplate.name)
+    )
+    templates = list(templates_res.scalars().all())
+    if templates:
+        await state.set_state(AddManualTrip.waiting_for_origin)
+        await state.update_data(picking_template=True)
+        await reply_target.answer(
+            "Маршрут — выберите шаблон или введите свой:",
+            reply_markup=kb.manual_route_keyboard(templates),
+        )
+    else:
+        await state.set_state(AddManualTrip.waiting_for_origin)
+        await reply_target.answer(msg.TRIP_ASK_ORIGIN)
+
+
+@driver_router.message(F.text == kb.BTN_ADD_TRIP, StateFilter(any_state))
+async def btn_add_trip(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await message.answer(msg.DRIVER_LINK_EXPECTED)
+        return
+    vehicles = await _owner_active_vehicles(session, driver.owner_id)
+    if not vehicles:
+        await _refresh_ui(message, session, driver, msg.MANUAL_NO_VEHICLES)
+        return
+    if len(vehicles) == 1:
+        await state.update_data(vehicle_id=vehicles[0].id)
+        await _manual_trip_ask_route(message, state, session, driver.owner_id)
+        return
+    await state.set_state(AddManualTrip.selecting_vehicle)
+    await message.answer(
+        msg.MANUAL_PICK_VEHICLE, reply_markup=kb.manual_vehicle_keyboard(vehicles, "mtrip")
+    )
+
+
+@driver_router.callback_query(F.data == "mtrip:cancel")
+async def cb_mtrip_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    await call.message.delete()
+    if driver is not None:
+        await _refresh_ui(call.message, session, driver, msg.CANCELLED)
+    await call.answer()
+
+
+@driver_router.callback_query(AddManualTrip.selecting_vehicle, F.data.startswith("mtrip:veh:"))
+async def cb_mtrip_vehicle(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    vehicle_id = int(call.data.split(":")[2])
+    vehicle = await session.get(Vehicle, vehicle_id)
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if vehicle is None or driver is None or vehicle.owner_id != driver.owner_id:
+        await call.answer("Машина недоступна", show_alert=True)
+        return
+    await state.update_data(vehicle_id=vehicle_id)
+    await call.message.edit_text(f"Машина: <b>{vehicle.license_plate}</b>")
+    await _manual_trip_ask_route(call.message, state, session, driver.owner_id)
+    await call.answer()
+
+
+@driver_router.callback_query(F.data.startswith("mtrip:rt:"))
+async def cb_mtrip_route_template(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    template_id = int(call.data.split(":")[2])
+    template = await session.get(RouteTemplate, template_id)
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if driver is None or template is None or template.owner_id != driver.owner_id:
+        await call.answer("Шаблон недоступен", show_alert=True)
+        return
+    await state.update_data(origin=template.origin, destination=template.destination)
+    await state.set_state(AddManualTrip.waiting_for_date)
+    await call.message.edit_text(f"Маршрут: <b>{template.origin} → {template.destination}</b>")
+    await call.message.answer(msg.MANUAL_ASK_DATE)
+    await call.answer()
+
+
+@driver_router.callback_query(F.data == "mtrip:manual")
+async def cb_mtrip_manual(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AddManualTrip.waiting_for_origin)
+    await state.update_data(picking_template=False)
+    await call.message.delete()
+    await call.message.answer(msg.TRIP_ASK_ORIGIN)
+    await call.answer()
+
+
+@driver_router.message(AddManualTrip.waiting_for_origin)
+async def manual_trip_origin(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if data.get("picking_template"):
+        await state.update_data(picking_template=False)
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(msg.TRIP_ASK_ORIGIN)
+        return
+    await state.update_data(origin=text)
+    await state.set_state(AddManualTrip.waiting_for_destination)
+    await message.answer(msg.TRIP_ASK_DESTINATION)
+
+
+@driver_router.message(AddManualTrip.waiting_for_destination)
+async def manual_trip_destination(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(msg.TRIP_ASK_DESTINATION)
+        return
+    await state.update_data(destination=text)
+    await state.set_state(AddManualTrip.waiting_for_date)
+    await message.answer(msg.MANUAL_ASK_DATE)
+
+
+@driver_router.message(AddManualTrip.waiting_for_date)
+async def manual_trip_date(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    owner = await session.get(Owner, driver.owner_id)
+    tz_name = owner.timezone if owner else None
+    dt = _parse_manual_date(message.text, tz_name)
+    if dt is None:
+        await message.answer(msg.MANUAL_DATE_INVALID)
+        return
+    data = await state.get_data()
+    vehicle = await session.get(Vehicle, data.get("vehicle_id"))
+    origin, destination = data.get("origin"), data.get("destination")
+    if vehicle is None or vehicle.owner_id != driver.owner_id or not origin or not destination:
+        await state.clear()
+        await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
+        return
+
+    # Ручной рейс живёт в ручной (завершённой) смене — чтобы FK shift_id был валиден.
+    shift = Shift(
+        owner_id=driver.owner_id, driver_id=driver.id, vehicle_id=vehicle.id,
+        status="completed", started_at=dt, ended_at=dt, is_manual=True,
+    )
+    session.add(shift)
+    await session.flush()
+    trip = await trip_service.create_trip(
+        session, shift=shift, origin=origin, destination=destination, cargo_name=None,
+    )
+    await session.flush()
+    trip.status = "completed"
+    trip.completed_at = dt
+    trip.is_manual = True
+    await log_event(
+        session, owner_id=driver.owner_id, driver_id=driver.id,
+        shift_id=shift.id, trip_id=trip.id, event_type="trip_added_manual",
+        payload={"origin": origin, "destination": destination, "date": dt.isoformat()},
+    )
+    await session.commit()
+    await state.clear()
+
+    label = _date_label(dt, tz_name)
+    await _refresh_ui(
+        message, session, driver,
+        msg.MANUAL_TRIP_DONE.format(date=label, origin=origin, destination=destination),
+    )
+    if owner is not None:
+        await notify_owner(
+            owner_bot, session, owner,
+            msg.NOTIFY_MANUAL_TRIP.format(
+                driver=driver.full_name, date=label, origin=origin,
+                destination=destination, plate=vehicle.license_plate,
+            ),
+        )
 
 
 # =========================================================================

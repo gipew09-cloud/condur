@@ -44,6 +44,7 @@ from app.models import (
 )
 from app.config import settings
 from app.services import auth_service, billing
+from app.services.timeutil import owner_tz
 from app.web.insights import generate_insights
 
 # --------- инициализация ----------
@@ -454,6 +455,7 @@ async def trips_page(
     driver_id: Annotated[int | None, Query()] = None,
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query()] = 1,
 ):
     conditions = [Trip.owner_id == owner.id]
     if driver_id:
@@ -471,15 +473,21 @@ async def trips_page(
         except ValueError:
             pass
 
+    # Пагинация (Блок G5): по 50 на страницу, тянем +1 чтобы понять есть ли «дальше».
+    page = max(1, page)
+    page_size = 50
     rows_res = await session.execute(
         select(Trip, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Trip.driver_id)
         .join(Vehicle, Vehicle.id == Trip.vehicle_id)
         .where(and_(*conditions))
         .order_by(desc(Trip.created_at))
-        .limit(200)
+        .limit(page_size + 1)
+        .offset((page - 1) * page_size)
     )
-    rows = list(rows_res.all())
+    rows_all = list(rows_res.all())
+    has_next = len(rows_all) > page_size
+    rows = rows_all[:page_size]
 
     drivers_res = await session.execute(
         select(Driver).where(Driver.owner_id == owner.id).order_by(Driver.full_name)
@@ -495,6 +503,8 @@ async def trips_page(
         "filter_date_from": date_from or "",
         "filter_date_to": date_to or "",
         "active_page": "trips",
+        "page": page,
+        "has_next": has_next,
     }
     template = "_trips_table.html" if _is_htmx(request) else "trips.html"
     return templates.TemplateResponse(template, ctx)
@@ -533,6 +543,8 @@ async def drivers_page(
 
 async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
     month_start, _ = _month_window()
+    owner = await session.get(Owner, owner_id)
+    tz_name = owner.timezone if owner else None
     drivers_res = await session.execute(
         select(Driver)
         .where(Driver.owner_id == owner_id, Driver.is_active.is_(True))
@@ -542,6 +554,21 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
 
     rows = []
     for d in drivers:
+        # Простой/невыход (Блок F): активна ли смена и с какого времени тишина.
+        last_shift = (
+            await session.execute(
+                select(Shift.status, Shift.started_at)
+                .where(Shift.driver_id == d.id)
+                .order_by(Shift.started_at.desc())
+                .limit(1)
+            )
+        ).first()
+        active_shift = bool(last_shift and last_shift[0] == "started")
+        idle_label = None
+        if not active_shift:
+            ref = (last_shift[1] if last_shift else None) or d.created_at
+            if ref is not None:
+                idle_label = ref.astimezone(owner_tz(tz_name)).strftime("%d.%m %H:%M")
         agg = await session.execute(
             select(
                 func.coalesce(func.sum(Shift.distance_km), 0),
@@ -572,6 +599,8 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
             "trips": trips_count or 0,
             "revenue": Decimal(revenue or 0),
             "fuel_cost": Decimal(fuel_cost or 0),
+            "active_shift": active_shift,
+            "idle_label": idle_label,
         })
     return rows
 
@@ -1535,6 +1564,30 @@ async def api_photo(
 # =========================================================================
 # /trips/{id} — детали рейса с фото ТТН и связанными расходами
 # =========================================================================
+@app.post("/trips/{trip_id}/revenue")
+async def update_trip_revenue(
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    revenue_rub: Annotated[str, Form()],
+):
+    """Владелец правит выручку рейса на сайте (Блок G1). Прибыль (profit_rub) —
+    вычисляемая колонка Postgres, пересчитается сама; финитоги и графики берут
+    revenue_rub из тех же рейсов, поэтому обновятся автоматически."""
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    try:
+        rev = Decimal(revenue_rub.replace(",", ".").replace(" ", ""))
+        if rev < 0:
+            raise InvalidOperation
+    except InvalidOperation:
+        raise HTTPException(status_code=400, detail="Bad revenue")
+    trip.revenue_rub = rev.quantize(Decimal("0.01"))
+    await session.commit()
+    return RedirectResponse(f"/trips/{trip_id}", status_code=303)
+
+
 @app.get("/trips/{trip_id}", response_class=HTMLResponse)
 async def trip_detail(
     request: Request,
