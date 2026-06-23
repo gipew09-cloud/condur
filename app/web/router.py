@@ -20,7 +20,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, AsyncIterator
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -40,6 +40,7 @@ from app.models import (
     Owner,
     Shift,
     Trip,
+    TripDocument,
     Vehicle,
 )
 from app.config import settings
@@ -250,6 +251,118 @@ async def logout():
 # =========================================================================
 # Dashboard
 # =========================================================================
+_RU_WEEKDAYS = [
+    "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье",
+]
+_RU_MONTHS_GEN = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+_EXPENSE_CAT_LABELS = {
+    "fuel": "Топливо", "repair": "Ремонт", "parking": "Парковка",
+    "fine": "Штрафы", "toll": "Дороги", "other": "Прочее",
+}
+
+
+async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
+    """Данные для блоков дашборда «Свежий путь»: дата, «требуют внимания»,
+    машины в работе, структура расходов, дельты KPI. Телематические поля
+    (температура и т.п.) появятся, когда подключим телематику."""
+    tz = owner_tz(owner.timezone)
+    now_local = datetime.now(tz)
+    date_label = (
+        f"{_RU_WEEKDAYS[now_local.weekday()]}, {now_local.day} "
+        f"{_RU_MONTHS_GEN[now_local.month - 1]} · {now_local:%H:%M}"
+    )
+    today = now_local.date()
+    today_start, _ = _today_window()
+    month_start, _ = _month_window()
+
+    # --- машины в работе (активные смены + маршрут активного рейса) ---
+    active_res = await session.execute(
+        select(Shift.id, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Shift.driver_id)
+        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .where(Shift.owner_id == owner.id, Shift.status == "started")
+        .order_by(Vehicle.license_plate)
+    )
+    active_vehicles = []
+    for shift_id, dname, plate in active_res.all():
+        trip = (
+            await session.execute(
+                select(Trip).where(
+                    Trip.shift_id == shift_id,
+                    Trip.status.in_(("created", "in_transit", "unloading")),
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        active_vehicles.append({
+            "plate": plate, "driver": dname,
+            "route": (f"{trip.origin or '—'} → {trip.destination or '—'}" if trip else "без рейса"),
+            "status": _TRIP_STATUS_LABELS.get(trip.status, "") if trip else "",
+        })
+
+    # --- требуют внимания: истекающие документы (реальные данные) ---
+    attention = []
+    cutoff = today + timedelta(days=30)
+    veh_res = await session.execute(
+        select(Vehicle).where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+    )
+    _DOC = {"osago_expires": "ОСАГО", "inspection_expires": "техосмотр", "tacho_expires": "тахограф"}
+    for v in veh_res.scalars().all():
+        for field, label in _DOC.items():
+            exp = getattr(v, field)
+            if exp is None:
+                continue
+            if exp < today:
+                attention.append({
+                    "sev": "danger", "title": f"Истёк {label}",
+                    "sub": f"{v.license_plate} · был до {exp:%d.%m.%Y}",
+                })
+            elif exp <= cutoff:
+                attention.append({
+                    "sev": "warn", "title": f"Истекают документы · {(exp - today).days} дн",
+                    "sub": f"{label} · {v.license_plate} · до {exp:%d.%m.%Y}",
+                })
+
+    # --- структура расходов за месяц (одобренные, по категориям) ---
+    br_res = await session.execute(
+        select(Expense.category, func.coalesce(func.sum(Expense.amount_rub), 0))
+        .where(
+            Expense.owner_id == owner.id,
+            Expense.status == "approved",
+            Expense.created_at >= month_start,
+        )
+        .group_by(Expense.category)
+    )
+    breakdown = [
+        {"label": _EXPENSE_CAT_LABELS.get(cat, cat), "amount": float(amt)}
+        for cat, amt in br_res.all() if amt
+    ]
+    breakdown.sort(key=lambda x: x["amount"], reverse=True)
+
+    # --- дельта рейсов к вчера ---
+    trips_yesterday = (
+        await session.execute(
+            select(func.count(Trip.id)).where(
+                Trip.owner_id == owner.id,
+                Trip.status == "completed",
+                Trip.completed_at >= today_start - timedelta(days=1),
+                Trip.completed_at < today_start,
+            )
+        )
+    ).scalar_one() or 0
+
+    return {
+        "date_label": date_label,
+        "in_transit_count": len(active_vehicles),
+        "active_vehicles": active_vehicles,
+        "attention": attention,
+        "breakdown": breakdown,
+        "trips_yesterday": trips_yesterday,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
@@ -305,6 +418,7 @@ async def dashboard(
     chart = await _dashboard_chart(session, owner.id, "7d")
 
     insights = await generate_insights(session, owner.id)
+    overview = await _dashboard_overview(session, owner)
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -314,11 +428,13 @@ async def dashboard(
             "kpi": {
                 "trips_today": trips_today,
                 "km_today": km_today,
+                "trips_yesterday": overview["trips_yesterday"],
             },
             "finance": finance,
             "last_trips": last_trips,
             "chart": chart,
             "insights": insights,
+            "overview": overview,
             "active_page": "dashboard",
         },
     )
@@ -493,12 +609,20 @@ async def trips_page(
         select(Driver).where(Driver.owner_id == owner.id).order_by(Driver.full_name)
     )
     drivers = list(drivers_res.scalars().all())
+    vehicles_res = await session.execute(
+        select(Vehicle)
+        .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+        .order_by(Vehicle.license_plate)
+    )
+    vehicles = list(vehicles_res.scalars().all())
 
     ctx = {
         "request": request,
         "owner": owner,
         "rows": rows,
         "drivers": drivers,
+        "vehicles": vehicles,
+        "today": date.today().isoformat(),
         "filter_driver_id": driver_id,
         "filter_date_from": date_from or "",
         "filter_date_to": date_to or "",
@@ -1564,6 +1688,68 @@ async def api_photo(
 # =========================================================================
 # /trips/{id} — детали рейса с фото ТТН и связанными расходами
 # =========================================================================
+def _web_date_to_utc(value: str, tz_name: str | None) -> datetime:
+    """Дата из <input type=date> → UTC-datetime (полдень местного времени)."""
+    tz = owner_tz(tz_name)
+    try:
+        d = date.fromisoformat(value) if value else datetime.now(tz).date()
+    except ValueError:
+        d = datetime.now(tz).date()
+    return datetime(d.year, d.month, d.day, 12, 0, tzinfo=tz).astimezone(timezone.utc)
+
+
+@app.post("/trips/add")
+async def create_trip_manual(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    driver_id: Annotated[str, Form()],
+    vehicle_id: Annotated[str, Form()],
+    origin: Annotated[str, Form()],
+    destination: Annotated[str, Form()],
+    revenue_rub: Annotated[str, Form()] = "",
+    trip_date: Annotated[str, Form()] = "",
+):
+    """Владелец добавляет рейс с сайта (Блок: форма владельца). Рейс ручной —
+    живёт в ручной (завершённой) смене, чтобы FK shift_id был валиден; помечается
+    is_manual («вручную, км неизвестен»)."""
+    try:
+        d_id, v_id = int(driver_id), int(vehicle_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Bad driver/vehicle")
+    driver = await session.get(Driver, d_id)
+    vehicle = await session.get(Vehicle, v_id)
+    if driver is None or driver.owner_id != owner.id or vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=400, detail="Bad driver/vehicle")
+    if not origin.strip() or not destination.strip():
+        raise HTTPException(status_code=400, detail="Need route")
+
+    revenue = None
+    if revenue_rub.strip():
+        try:
+            revenue = Decimal(revenue_rub.replace(",", ".").replace(" ", ""))
+            if revenue < 0:
+                raise InvalidOperation
+        except InvalidOperation:
+            raise HTTPException(status_code=400, detail="Bad revenue")
+
+    dt = _web_date_to_utc(trip_date, owner.timezone)
+    shift = Shift(
+        owner_id=owner.id, driver_id=d_id, vehicle_id=v_id,
+        status="completed", started_at=dt, ended_at=dt, is_manual=True,
+    )
+    session.add(shift)
+    await session.flush()
+    trip = Trip(
+        owner_id=owner.id, shift_id=shift.id, driver_id=d_id, vehicle_id=v_id,
+        status="completed", origin=origin.strip(), destination=destination.strip(),
+        completed_at=dt, is_manual=True,
+        revenue_rub=(revenue.quantize(Decimal("0.01")) if revenue is not None else None),
+    )
+    session.add(trip)
+    await session.commit()
+    return RedirectResponse("/trips", status_code=303)
+
+
 @app.post("/trips/{trip_id}/revenue")
 async def update_trip_revenue(
     trip_id: int,
@@ -1586,6 +1772,89 @@ async def update_trip_revenue(
     trip.revenue_rub = rev.quantize(Decimal("0.01"))
     await session.commit()
     return RedirectResponse(f"/trips/{trip_id}", status_code=303)
+
+
+_MAX_DOC_BYTES = 6 * 1024 * 1024  # 6 МБ на документ
+
+
+@app.post("/trips/{trip_id}/document")
+async def upload_trip_document(
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    file: Annotated[UploadFile, File()],
+):
+    """Владелец загружает фото/скан документа к рейсу прямо на сайте. Байты
+    кладём в Postgres (без S3). Лимит 6 МБ."""
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Пустой файл")
+    if len(data) > _MAX_DOC_BYTES:
+        raise HTTPException(status_code=400, detail="Файл слишком большой (макс 6 МБ)")
+    doc = TripDocument(
+        trip_id=trip.id, owner_id=owner.id,
+        filename=file.filename,
+        content_type=file.content_type or "application/octet-stream",
+        data=data,
+    )
+    session.add(doc)
+    await session.commit()
+    return RedirectResponse(f"/trips/{trip_id}", status_code=303)
+
+
+@app.get("/api/trip-doc/{doc_id}")
+async def get_trip_document(
+    doc_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    doc = await session.get(TripDocument, doc_id)
+    if doc is None or doc.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    return Response(content=doc.data, media_type=doc.content_type)
+
+
+async def _route_travel_estimate(
+    session: AsyncSession, owner_id: int, origin: str | None, destination: str | None
+) -> dict | None:
+    """Среднее время в пути по маршруту origin→destination из истории завершённых
+    рейсов. Длительность = завершение − выезд (событие trip_in_transit, иначе
+    создание рейса). Возвращает {minutes, count} или None, если данных нет."""
+    if not origin or not destination:
+        return None
+    trips = (
+        await session.execute(
+            select(Trip.id, Trip.created_at, Trip.completed_at)
+            .where(
+                Trip.owner_id == owner_id,
+                Trip.origin == origin,
+                Trip.destination == destination,
+                Trip.status == "completed",
+                Trip.completed_at.is_not(None),
+            )
+            .order_by(desc(Trip.completed_at))
+            .limit(50)
+        )
+    ).all()
+    durations = []
+    for tid, created, completed in trips:
+        dep = (
+            await session.execute(
+                select(Event.created_at)
+                .where(Event.trip_id == tid, Event.event_type == "trip_in_transit")
+                .order_by(Event.created_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none() or created
+        if dep and completed and completed > dep:
+            durations.append((completed - dep).total_seconds())
+    if not durations:
+        return None
+    avg_min = int(sum(durations) / len(durations) / 60)
+    return {"minutes": avg_min, "count": len(durations)}
 
 
 @app.get("/trips/{trip_id}", response_class=HTMLResponse)
@@ -1613,6 +1882,21 @@ async def trip_detail(
             ).order_by(desc(Event.created_at)).limit(1)
         )
     ).scalar_one_or_none()
+    # документы, загруженные владельцем на сайте (метаданные без байтов)
+    docs_res = await session.execute(
+        select(TripDocument.id, TripDocument.filename, TripDocument.content_type, TripDocument.uploaded_at)
+        .where(TripDocument.trip_id == trip.id)
+        .order_by(desc(TripDocument.uploaded_at))
+    )
+    documents = [
+        {"id": did, "filename": fn, "content_type": ct, "uploaded_at": ua}
+        for did, fn, ct, ua in docs_res.all()
+    ]
+    travel = await _route_travel_estimate(session, owner.id, trip.origin, trip.destination)
+    travel_label = None
+    if travel:
+        h, m = divmod(travel["minutes"], 60)
+        travel_label = (f"{h} ч " if h else "") + f"{m} мин"
     return templates.TemplateResponse(
         "trip_detail.html",
         {
@@ -1620,6 +1904,8 @@ async def trip_detail(
             "trip": trip, "driver": driver, "vehicle": vehicle,
             "expenses": expenses,
             "waybill_uploaded_at": waybill_uploaded_at,
+            "documents": documents,
+            "travel": travel, "travel_label": travel_label,
             "active_page": "trips",
         },
     )

@@ -3,92 +3,165 @@
 
 {% block head %}
 <style>
+  .dash-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; margin: .25rem 0 1.25rem; }
+  .dash-head .when { color: var(--text-muted); font-size: .9rem; margin: .15rem 0 0; }
+  .dash-head .right { display: flex; align-items: center; gap: .9rem; }
+  .dash-head .intransit { color: var(--text-muted); font-size: .85rem; white-space: nowrap; }
+  .dash-head a[role="button"] { width: auto; margin: 0; }
+
+  /* Требуют внимания */
+  .attn { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 1rem 1.1rem; margin-bottom: 1.5rem; }
+  .attn__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: .6rem; }
+  .attn__head h3 { margin: 0; font-size: 1rem; }
+  .attn__count { background: var(--danger-bg); color: var(--danger-text); font-weight: 700; border-radius: 999px; padding: .05rem .55rem; font-size: .8rem; margin-left: .4rem; }
+  .attn__list { display: grid; gap: .5rem; }
+  .attn__item { display: flex; gap: .7rem; align-items: stretch; padding: .55rem .7rem; border-radius: var(--radius-md); border: 1px solid var(--border); background: #fcfcfd; }
+  .attn__item::before { content: ""; width: 4px; border-radius: 4px; flex: none; }
+  .attn__item.sev-danger::before { background: var(--danger-text); }
+  .attn__item.sev-warn::before { background: var(--amber); }
+  .attn__item.sev-info::before { background: var(--accent); }
+  .attn__item b { display: block; font-size: .9rem; }
+  .attn__item small { color: var(--text-muted); }
+  .attn__empty { color: var(--text-muted); font-size: .9rem; }
+
+  /* KPI с дельтами */
+  .kpi-delta { font-size: .78rem; font-weight: 600; margin-left: .35rem; }
+  .kpi-delta.up { color: var(--success-text); }
+  .kpi-delta.down { color: var(--danger-text); }
+  .kpi small.sub { display: block; color: var(--text-muted); font-weight: 500; text-transform: none; letter-spacing: 0; font-size: .72rem; margin-top: .2rem; }
+
+  /* Колонки: график + структура расходов */
+  .dash-cols { display: grid; grid-template-columns: 1.7fr 1fr; gap: 1.25rem; margin-top: 1.5rem; }
+  @media (max-width: 900px) { .dash-cols { grid-template-columns: 1fr; } }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); padding: 1rem 1.1rem; }
+  .panel h3 { margin: 0 0 .75rem; font-size: 1rem; }
   .chart-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; margin-bottom: .75rem; }
   .chart-head h3 { margin: 0; }
-  .chart-periods { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 3px; gap: 2px; box-shadow: var(--shadow-sm); }
-  .cp-btn { width: auto; margin: 0; border: 0; background: transparent; color: var(--text-muted); font-weight: 600; font-size: .8rem; padding: .3rem .85rem; border-radius: 999px; cursor: pointer; transition: background .12s, color .12s; }
-  .cp-btn:hover { color: var(--accent); background: transparent; }
+  .chart-periods { display: inline-flex; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 3px; gap: 2px; }
+  .cp-btn { width: auto; margin: 0; border: 0; background: transparent; color: var(--text-muted); font-weight: 600; font-size: .8rem; padding: .3rem .85rem; border-radius: 999px; cursor: pointer; }
   .cp-btn.active { background: var(--accent); color: #fff; }
+
+  /* Машины в работе */
+  .work-list { display: grid; gap: .55rem; }
+  .work-row { display: flex; align-items: center; gap: .8rem; padding: .6rem .8rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+  .work-row .plate { font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .work-row .rt { color: var(--text-muted); font-size: .85rem; flex: 1; }
+  .work-row .pill { white-space: nowrap; }
 </style>
 {% endblock %}
 
 {% block content %}
-<h2>Главная</h2>
-
 {% macro money(value) -%}
-{{ "{:,.0f}".format(value).replace(',', ' ') }} ₽
+{{ "{:,.0f}".format(value).replace(',', ' ') }} ₽
 {%- endmacro %}
 
-<section class="finance-grid">
+<div class="dash-head">
+  <div>
+    <h2 style="margin:0;">Главная</h2>
+    <p class="when">{{ overview.date_label }}</p>
+  </div>
+  <div class="right">
+    <span class="intransit">🚚 {{ overview.in_transit_count }} в рейсе</span>
+    <a href="/trips#add-trip" role="button">+ Новый рейс</a>
+  </div>
+</div>
+
+<section class="attn">
+  <div class="attn__head">
+    <h3>Требуют внимания{% if overview.attention %}<span class="attn__count">{{ overview.attention | length }}</span>{% endif %}</h3>
+    {% if overview.attention %}<a href="/vehicles" style="font-size:.85rem;">Показать все →</a>{% endif %}
+  </div>
+  {% if overview.attention %}
+    <div class="attn__list">
+      {% for a in overview.attention[:5] %}
+        <div class="attn__item sev-{{ a.sev }}">
+          <div><b>{{ a.title }}</b>{% if a.sub %}<small>{{ a.sub }}</small>{% endif %}</div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="attn__empty">✅ Всё в порядке — срочных вопросов нет.</p>
+  {% endif %}
+</section>
+
+{% set rev_today = finance.today.income | float %}
+{% set prof_today = finance.today.profit | float %}
+{% set margin = (prof_today / rev_today * 100) if rev_today > 0 else 0 %}
+{% set d_trips = kpi.trips_today - kpi.trips_yesterday %}
+<section class="kpi-grid">
+  <div class="kpi">
+    <small>Рейсов сегодня</small>
+    <strong>{{ kpi.trips_today }}{% if d_trips != 0 %}<span class="kpi-delta {{ 'up' if d_trips > 0 else 'down' }}">{{ '↑+' ~ d_trips if d_trips > 0 else '↓' ~ d_trips }} к вчера</span>{% endif %}</strong>
+  </div>
+  <div class="kpi"><small>Километров сегодня</small><strong>{{ kpi.km_today }}</strong></div>
+  <div class="kpi"><small>Выручка сегодня</small><strong>{{ money(rev_today) }}</strong></div>
+  <div class="kpi"><small>Прибыль сегодня</small><strong>{{ money(prof_today) }}</strong><small class="sub">маржа {{ "%.0f"|format(margin) }}%</small></div>
+</section>
+
+<section class="dash-cols">
+  <div class="panel">
+    <div class="chart-head">
+      <h3>Выручка и прибыль</h3>
+      <div class="chart-periods" role="group" aria-label="Период графика">
+        <button type="button" class="cp-btn active" data-period="7d">7 дней</button>
+        <button type="button" class="cp-btn" data-period="30d">30 дней</button>
+        <button type="button" class="cp-btn" data-period="12m">12 мес</button>
+      </div>
+    </div>
+    <div style="position: relative; height: 240px;"><canvas id="financeChart"></canvas></div>
+    <h3 style="margin-top: 1.25rem;">Прибыль</h3>
+    <div style="position: relative; height: 170px;"><canvas id="profitChart"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <h3>Структура расходов</h3>
+    {% if overview.breakdown %}
+      <div style="position: relative; height: 230px;"><canvas id="expenseChart"></canvas></div>
+    {% else %}
+      <p style="color: var(--text-muted); font-size:.9rem;">За месяц одобренных расходов пока нет.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section style="margin-top: 1.5rem;">
+  <h3>Машины сейчас в работе</h3>
+  {% if overview.active_vehicles %}
+    <div class="work-list">
+      {% for w in overview.active_vehicles %}
+        <div class="work-row">
+          <span class="plate">{{ w.plate }}</span>
+          <span class="rt">{{ w.route }} · {{ w.driver }}</span>
+          {% if w.status %}<span class="pill">{{ w.status }}</span>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p style="color: var(--text-muted);">Сейчас нет открытых смен.</p>
+  {% endif %}
+</section>
+
+<section style="margin-top: 1.5rem;">
+  <h3>Сводка по деньгам</h3>
   <table class="finance-matrix">
     <thead>
-      <tr>
-        <th></th>
-        <th>Сегодня</th>
-        <th>Этот месяц</th>
-        <th>Этот год</th>
-      </tr>
+      <tr><th></th><th>Сегодня</th><th>Этот месяц</th><th>Этот год</th></tr>
     </thead>
     <tbody>
-      <tr class="row-income">
-        <th>💰 Доход</th>
-        <td>{{ money(finance.today.income) }}</td>
-        <td>{{ money(finance.month.income) }}</td>
-        <td>{{ money(finance.year.income) }}</td>
-      </tr>
-      <tr class="row-expense">
-        <th>💳 Расход</th>
-        <td>{{ money(finance.today.expense) }}</td>
-        <td>{{ money(finance.month.expense) }}</td>
-        <td>{{ money(finance.year.expense) }}</td>
-      </tr>
-      <tr class="row-profit-total">
-        <th>📈 Прибыль</th>
-        <td>{{ money(finance.today.profit) }}</td>
-        <td>{{ money(finance.month.profit) }}</td>
-        <td>{{ money(finance.year.profit) }}</td>
-      </tr>
+      <tr class="row-income"><th>💰 Доход</th><td>{{ money(finance.today.income) }}</td><td>{{ money(finance.month.income) }}</td><td>{{ money(finance.year.income) }}</td></tr>
+      <tr class="row-expense"><th>💳 Расход</th><td>{{ money(finance.today.expense) }}</td><td>{{ money(finance.month.expense) }}</td><td>{{ money(finance.year.expense) }}</td></tr>
+      <tr class="row-profit-total"><th>📈 Прибыль</th><td>{{ money(finance.today.profit) }}</td><td>{{ money(finance.month.profit) }}</td><td>{{ money(finance.year.profit) }}</td></tr>
     </tbody>
   </table>
 </section>
 
-<h3 style="margin-top: 1.5rem;">Операции сегодня</h3>
-<section class="kpi-grid">
-  <div class="kpi"><small>Рейсов сегодня</small><strong>{{ kpi.trips_today }}</strong></div>
-  <div class="kpi"><small>Километров сегодня</small><strong>{{ kpi.km_today }}</strong></div>
-</section>
-
-<section style="margin-top: 2rem;">
-  <div class="chart-head">
-    <h3>Динамика</h3>
-    <div class="chart-periods" role="group" aria-label="Период графика">
-      <button type="button" class="cp-btn active" data-period="7d">7 дней</button>
-      <button type="button" class="cp-btn" data-period="30d">30 дней</button>
-      <button type="button" class="cp-btn" data-period="12m">12 мес</button>
-    </div>
-  </div>
-  <div style="position: relative; height: 280px; max-width: 100%;">
-    <canvas id="financeChart"></canvas>
-  </div>
-
-  <h3 style="margin-top: 1.5rem;">Прибыль</h3>
-  <div style="position: relative; height: 220px; max-width: 100%;">
-    <canvas id="profitChart"></canvas>
-  </div>
-</section>
-
-<section style="margin-top: 2rem;">
+{% if insights %}
+<section style="margin-top: 1.5rem;">
   <h3>Замечания</h3>
-  {% if insights %}
-    <ul class="insights">
-      {% for it in insights %}<li>{{ it | safe }}</li>{% endfor %}
-    </ul>
-  {% else %}
-    <p>Замечаний нет. Всё ровно.</p>
-  {% endif %}
+  <ul class="insights">{% for it in insights %}<li>{{ it | safe }}</li>{% endfor %}</ul>
 </section>
+{% endif %}
 
-<section style="margin-top: 2rem;">
+<section style="margin-top: 1.5rem;">
   <h3>Последние 10 рейсов</h3>
   {% if last_trips %}
     <table>
@@ -97,7 +170,7 @@
       {% for trip, driver_name, plate in last_trips %}
         <tr>
           <td>{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
-          <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</td>
+          <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}{% if trip.is_manual %} <span class="badge badge--neutral">вручную</span>{% endif %}</td>
           <td>{{ driver_name }}</td>
           <td>{{ plate }}</td>
           <td><span class="pill">{{ trip.status | tstatus }}</span></td>
@@ -118,10 +191,10 @@
   const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
   const fmtShort = (v) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v);
   const initial = {{ chart | tojson }};
+  const breakdown = {{ overview.breakdown | tojson }};
 
   const baseOpts = {
-    responsive: true,
-    maintainAspectRatio: false,
+    responsive: true, maintainAspectRatio: false,
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { position: 'top' },
@@ -130,35 +203,42 @@
     scales: { y: { ticks: { callback: fmtShort } } },
   };
 
-  // График 1 — доход (зелёный) и расход (красный)
   const financeChart = new Chart(document.getElementById('financeChart'), {
     type: 'bar',
-    data: {
-      labels: initial.labels,
-      datasets: [
-        { label: 'Доход', data: initial.revenue,
-          backgroundColor: 'rgba(16,185,129,.75)', borderRadius: 4 },
-        { label: 'Расход', data: initial.expenses,
-          backgroundColor: 'rgba(239,68,68,.7)', borderRadius: 4 },
-      ],
-    },
+    data: { labels: initial.labels, datasets: [
+      { label: 'Доход', data: initial.revenue, backgroundColor: 'rgba(20,122,61,.78)', borderRadius: 4 },
+      { label: 'Расход', data: initial.expenses, backgroundColor: 'rgba(197,54,43,.72)', borderRadius: 4 },
+    ]},
     options: baseOpts,
   });
 
-  // График 2 — прибыль (синяя линия), отдельно
   const profitChart = new Chart(document.getElementById('profitChart'), {
     type: 'line',
-    data: {
-      labels: initial.labels,
-      datasets: [
-        { label: 'Прибыль', data: initial.profit,
-          borderColor: '#1d4ed8', backgroundColor: 'rgba(29,78,216,.10)',
-          borderWidth: 2, tension: .35, fill: true, pointRadius: 3,
-          pointBackgroundColor: '#1d4ed8' },
-      ],
-    },
+    data: { labels: initial.labels, datasets: [
+      { label: 'Прибыль', data: initial.profit, borderColor: '#2563eb',
+        backgroundColor: 'rgba(37,99,235,.10)', borderWidth: 2, tension: .35, fill: true,
+        pointRadius: 3, pointBackgroundColor: '#2563eb' },
+    ]},
     options: baseOpts,
   });
+
+  const expEl = document.getElementById('expenseChart');
+  if (expEl && breakdown.length) {
+    new Chart(expEl, {
+      type: 'doughnut',
+      data: {
+        labels: breakdown.map(b => b.label),
+        datasets: [{ data: breakdown.map(b => b.amount),
+          backgroundColor: ['#2563eb', '#e0a32e', '#c5362b', '#147a3d', '#7c3aed', '#5b6573'],
+          borderWidth: 2, borderColor: '#fff' }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: { legend: { position: 'bottom' },
+          tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtRub(c.parsed)}` } } },
+      },
+    });
+  }
 
   async function loadPeriod(period) {
     try {
@@ -174,7 +254,6 @@
       profitChart.update();
     } catch (e) { console.error(e); }
   }
-
   document.querySelectorAll('.cp-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.cp-btn').forEach((b) => b.classList.remove('active'));

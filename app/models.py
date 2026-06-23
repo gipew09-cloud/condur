@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Integer, String, Text, Boolean, Numeric, Date,
-    DateTime, ForeignKey, Computed, CheckConstraint, UniqueConstraint, func,
+    DateTime, ForeignKey, Computed, CheckConstraint, UniqueConstraint, LargeBinary, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -153,6 +153,25 @@ class Trip(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Рейс добавлен вручную (оффлайн, задним числом): без GPS/одометра.
     is_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+# ========== ДОКУМЕНТЫ К РЕЙСУ (загружены владельцем на сайте) ==========
+class TripDocument(Base):
+    """
+    Документ к рейсу, загруженный ВЛАДЕЛЬЦЕМ на сайте. Байты храним прямо в
+    Postgres (без S3): для малых объёмов это бесплатно и переживает редеплой
+    Railway. Фото ТТН от водителя по-прежнему лежат как Telegram file_id в
+    Trip.waybill_photo_url — это отдельный канал, не сюда.
+    """
+    __tablename__ = "trip_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id", ondelete="CASCADE"), index=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ========== РАСХОДЫ ==========

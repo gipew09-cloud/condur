@@ -23,6 +23,34 @@
   <button type="submit">Применить</button>
 </form>
 
+<details class="add-panel" id="add-trip" style="margin-top: 1rem;">
+  <summary class="add-toggle">➕ Добавить рейс вручную</summary>
+  <form action="/trips/add" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Водитель*
+        <select name="driver_id" required>
+          <option value="">—</option>
+          {% for d in drivers %}<option value="{{ d.id }}">{{ d.full_name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Машина*
+        <select name="vehicle_id" required>
+          <option value="">—</option>
+          {% for v in vehicles %}<option value="{{ v.id }}">{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Откуда*<input type="text" name="origin" required placeholder="Москва"></label>
+      <label>Куда*<input type="text" name="destination" required placeholder="Воронеж"></label>
+      <label>Выручка, ₽<input type="text" name="revenue_rub" inputmode="decimal" placeholder="необязательно"></label>
+      <label>Дата<input type="date" name="trip_date" value="{{ today }}"></label>
+    </div>
+    <button type="submit">Добавить рейс</button>
+    <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+      Рейс добавится как «вручную» (без GPS, км неизвестен).
+    </p>
+  </form>
+</details>
+
 <div id="trips-table" style="margin-top: 1rem;">
   {% include "_trips_table.html" %}
 </div>

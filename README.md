@@ -77,7 +77,7 @@ python -m app.main
 | `FEATURE_TRIP_CARGO` | off | Вопрос «что везёте» при создании рейса |
 | `FEATURE_ODOMETER_PHOTO` | off | Фото одометра + ввод показаний при старте/конце смены |
 | `FEATURE_TRIP_STATUS_STEPS` | off | Промежуточный статус рейса «Выгрузка» (иначе сразу «Сдал груз») |
-| `FEATURE_CARGO_GEOLOCATION` | off | Запрос геопозиции при сдаче груза |
+| `FEATURE_CARGO_GEOLOCATION` | **on** | Запрос геопозиции при сдаче груза (наполняет карту) |
 | `FEATURE_CASH_HANDOVER` | off | Кнопка «Сдал деньги» |
 | `FEATURE_SHOW_SALARY` | off | Показ зарплаты водителю в конце смены |
 | `FEATURE_NOTIFY_DRIVER_APPROVAL` | off | Уведомлять водителя об одобрении/отклонении расхода |
