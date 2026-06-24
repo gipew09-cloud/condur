@@ -7,6 +7,14 @@
   <p class="sub">Показатели за текущий месяц и статус занятости.</p>
 </div>
 
+{% if totals %}
+<section class="kpi-grid" style="margin-bottom:1.25rem;">
+  <div class="kpi"><small>Всего водителей</small><strong>{{ totals.count }}</strong></div>
+  <div class="kpi"><small>Сейчас в смене</small><strong>{{ totals.in_shift }}</strong></div>
+  <div class="kpi"><small>Свободны</small><strong>{{ totals.idle }}</strong></div>
+</section>
+{% endif %}
+
 {% if invite %}
   <div class="add-banner">
     <strong>✅ Водитель «{{ invite.name }}» добавлен.</strong>

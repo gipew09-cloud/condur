@@ -9,6 +9,14 @@
   <p class="sub">Все рейсы автопарка. Фильтруйте по водителю и датам или добавьте рейс вручную.</p>
 </div>
 
+{% if totals %}
+<section class="kpi-grid" style="margin-bottom:1.25rem;">
+  <div class="kpi"><small>Рейсов по фильтру</small><strong>{{ totals.count }}</strong></div>
+  <div class="kpi"><small>Выручка</small><strong>{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} ₽</strong></div>
+</section>
+{% endif %}
+
 <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
   <div class="grid">
     <label>

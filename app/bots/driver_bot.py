@@ -1281,6 +1281,15 @@ async def cb_driver_revenue(call: CallbackQuery, state: FSMContext, session: Asy
     if driver is None or trip is None or trip.driver_id != driver.id:
         await call.answer("Рейс не найден", show_alert=True)
         return
+    # Правило первого: если выручка уже указана — водитель её НЕ перетирает
+    # (менять может только владелец). Убираем кнопку и выходим.
+    if trip.revenue_rub is not None:
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        await call.answer(f"Выручка уже указана: {trip.revenue_rub:.0f} ₽", show_alert=True)
+        return
     # убрать кнопку, чтобы не нажимали повторно
     try:
         await call.message.edit_reply_markup(reply_markup=None)

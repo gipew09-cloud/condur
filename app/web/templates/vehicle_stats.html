@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Машина {{ vehicle.license_plate }}{% endblock %}
+
+{% block content %}
+<p><a href="/vehicles">← к машинам</a></p>
+<div class="page-head">
+  <h1>{{ vehicle.license_plate }}{% if vehicle.brand %} · {{ vehicle.brand }}{% endif %}</h1>
+  <p class="sub">{{ vehicle.type | vtype }} · вся статистика по машине</p>
+</div>
+
+{% macro stat_block(title, s) %}
+<section class="section">
+  <h3>{{ title }}</h3>
+  <section class="kpi-grid">
+    <div class="kpi"><small>Пробег, км</small><strong>{{ "{:,.0f}".format(s.km or 0).replace(',', ' ') }}</strong></div>
+    <div class="kpi"><small>Рейсов</small><strong>{{ s.trips }}</strong></div>
+    <div class="kpi"><small>Выручка</small><strong>{{ "{:,.0f}".format(s.revenue).replace(',', ' ') }} ₽</strong></div>
+    <div class="kpi"><small>Расходы</small><strong>{{ "{:,.0f}".format(s.expense).replace(',', ' ') }} ₽</strong></div>
+    <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(s.profit).replace(',', ' ') }} ₽</strong></div>
+    <div class="kpi"><small>Маржа</small><strong>{{ "{:.0f}".format(s.margin) }}%</strong></div>
+  </section>
+</section>
+{% endmacro %}
+
+{{ stat_block('За текущий месяц', month) }}
+{{ stat_block('За всё время', alltime) }}
+
+<section class="section">
+  <h3>Документы</h3>
+  <table>
+    <thead><tr><th>Документ</th><th>Норма топлива</th><th>Действует до</th></tr></thead>
+    <tbody>
+      <tr><td data-label="Документ">ОСАГО</td><td data-label="Норма" class="num">{{ vehicle.fuel_norm_per_100km or '—' }} л/100км</td><td data-label="До">{{ vehicle.osago_expires.strftime('%d.%m.%Y') if vehicle.osago_expires else '—' }}</td></tr>
+      <tr><td data-label="Документ">Техосмотр</td><td></td><td data-label="До">{{ vehicle.inspection_expires.strftime('%d.%m.%Y') if vehicle.inspection_expires else '—' }}</td></tr>
+      <tr><td data-label="Документ">Тахограф</td><td></td><td data-label="До">{{ vehicle.tacho_expires.strftime('%d.%m.%Y') if vehicle.tacho_expires else '—' }}</td></tr>
+    </tbody>
+  </table>
+</section>
+{% endblock %}

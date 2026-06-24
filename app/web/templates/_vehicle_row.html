@@ -54,7 +54,8 @@
   <td data-label="Расходы" class="num">{{ "{:,.0f}".format(row.expense).replace(',', ' ') }}</td>
   <td data-label="Прибыль" class="num"><b>{{ "{:,.0f}".format(row.profit).replace(',', ' ') }}</b></td>
   <td data-label="Маржа" class="num">{{ "{:.0f}".format(row.margin) }}%</td>
-  <td>
+  <td style="white-space:nowrap;">
+    <a href="/vehicles/{{ v.id }}/stats" title="Статистика">📊</a>
     <a href="#" hx-get="/vehicles/{{ v.id }}/edit" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML">✎</a>
   </td>
 </tr>

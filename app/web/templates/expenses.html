@@ -18,6 +18,15 @@
   <p class="sub">Расходы водителей по сменам и рейсам. Фильтр по категории и статусу.</p>
 </div>
 
+{% if totals %}
+<section class="kpi-grid" style="margin-bottom:1.25rem;">
+  <div class="kpi"><small>Записей</small><strong>{{ totals.count }}</strong></div>
+  <div class="kpi"><small>Сумма</small><strong>{{ "{:,.0f}".format(totals.sum).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>На проверке</small><strong>{{ totals.pending }}</strong></div>
+  <div class="kpi"><small>Одобрено</small><strong>{{ totals.approved }}</strong></div>
+</section>
+{% endif %}
+
 <form method="GET" action="/expenses">
   <div class="grid">
     <label>

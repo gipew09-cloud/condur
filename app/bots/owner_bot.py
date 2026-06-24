@@ -1049,7 +1049,7 @@ async def cb_route_delete(call: CallbackQuery, session: AsyncSession) -> None:
 # Указать выручку рейса (callback из уведомления о завершении)
 # =========================================================================
 @owner_router.callback_query(F.data.startswith("trip:revenue:"))
-async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     try:
         trip_id = int(call.data.split(":")[2])
     except (IndexError, ValueError):
@@ -1061,10 +1061,18 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001 — telegram капризен с edit, не валим callback
         pass
+    trip = await session.get(Trip, trip_id)
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
-    await call.message.answer("Введите выручку по рейсу в рублях:")
+    # Владелец — главный: если выручка уже есть (указал водитель), показываем
+    # текущую сумму, владелец может оставить или переписать.
+    if trip is not None and trip.revenue_rub is not None:
+        await call.message.answer(
+            f"Текущая выручка: {trip.revenue_rub:.0f} ₽. Введите новую сумму:"
+        )
+    else:
+        await call.message.answer("Введите выручку по рейсу в рублях:")
 
 
 @owner_router.callback_query(F.data.startswith("trev:ok:"))

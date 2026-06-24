@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Акты по РЦ{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Акты по РЦ</h1>
+  <p class="sub">Акт оказанных услуг (форма 101 РС) по каждому распределительному центру за период — отдельным листом, с итогом и суммой прописью. Скачивается в Excel.</p>
+</div>
+
+<form method="GET" action="/acts">
+  <div class="grid">
+    <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
+    <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
+    <label>&nbsp;<button type="submit">Показать</button></label>
+    <label>&nbsp;<a role="button" href="/acts/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Скачать акты (.xlsx)</a></label>
+  </div>
+</form>
+
+{% if preview %}
+<table style="margin-top:1rem;">
+  <thead><tr><th>РЦ (пункт назначения)</th><th class="num">Рейсов</th><th class="num">Сумма</th></tr></thead>
+  <tbody>
+    {% for p in preview %}
+    <tr>
+      <td data-label="РЦ">{{ p.rc }}</td>
+      <td data-label="Рейсов" class="num">{{ p.trips }}</td>
+      <td data-label="Сумма" class="num">{{ "{:,.0f}".format(p.total).replace(',', ' ') }} ₽</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p style="color:var(--text-muted); font-size:.9rem; margin-top:.5rem;">В файле — отдельный лист на каждый РЦ: рейсы за период, ИТОГО и сумма прописью.</p>
+{% else %}
+<p style="margin-top:1rem;">За период завершённых рейсов с указанной выручкой нет.</p>
+{% endif %}
+{% endblock %}

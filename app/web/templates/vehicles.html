@@ -4,8 +4,17 @@
 {% block content %}
 <div class="page-head">
   <h1>Машины</h1>
-  <p class="sub">P&L и пробег по каждой машине за текущий месяц.</p>
+  <p class="sub">P&L и пробег по каждой машине за текущий месяц. Кнопка 📊 — вся статистика по машине.</p>
 </div>
+
+{% if totals %}
+<section class="kpi-grid" style="margin-bottom:1.25rem;">
+  <div class="kpi"><small>Всего машин</small><strong>{{ totals.count }}</strong></div>
+  <div class="kpi"><small>Сейчас в рейсе</small><strong>{{ totals.in_work }}</strong></div>
+  <div class="kpi"><small>Выручка за месяц</small><strong>{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi"><small>Прибыль за месяц</small><strong>{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} ₽</strong></div>
+</section>
+{% endif %}
 
 {% if notice %}
   <div class="add-banner add-banner--warn">

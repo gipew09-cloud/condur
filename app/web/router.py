@@ -44,7 +44,7 @@ from app.models import (
     Vehicle,
 )
 from app.config import settings
-from app.services import auth_service, billing
+from app.services import act_service, auth_service, billing
 from app.services.timeutil import owner_tz
 from app.web.insights import generate_insights
 
@@ -643,6 +643,17 @@ async def trips_page(
     has_next = len(rows_all) > page_size
     rows = rows_all[:page_size]
 
+    # Сводка по фильтру (для KPI-карточек на странице).
+    agg = await session.execute(
+        select(
+            func.count(Trip.id),
+            func.coalesce(func.sum(Trip.revenue_rub), 0),
+            func.coalesce(func.sum(Trip.profit_rub), 0),
+        ).where(and_(*conditions))
+    )
+    t_count, t_rev, t_profit = agg.one()
+    totals = {"count": t_count or 0, "revenue": Decimal(t_rev or 0), "profit": Decimal(t_profit or 0)}
+
     drivers_res = await session.execute(
         select(Driver).where(Driver.owner_id == owner.id).order_by(Driver.full_name)
     )
@@ -667,6 +678,7 @@ async def trips_page(
         "active_page": "trips",
         "page": page,
         "has_next": has_next,
+        "totals": totals,
     }
     template = "_trips_table.html" if _is_htmx(request) else "trips.html"
     return templates.TemplateResponse(template, ctx)
@@ -694,11 +706,16 @@ async def drivers_page(
             except Exception:
                 link = None
             invite = {"name": created.full_name, "link": link}
+    totals = {
+        "count": len(rows),
+        "in_shift": sum(1 for r in rows if r.get("active_shift")),
+        "idle": sum(1 for r in rows if not r.get("active_shift")),
+    }
     return templates.TemplateResponse(
         "drivers.html",
         {
             "request": request, "owner": owner, "rows": rows,
-            "active_page": "drivers", "invite": invite,
+            "active_page": "drivers", "invite": invite, "totals": totals,
         },
     )
 
@@ -1005,6 +1022,19 @@ async def vehicles_page(
     vehicles = list(vehicles_res.scalars().all())
     rows = [await _vehicle_row_dict(session, v, month_start) for v in vehicles]
     in_minus = sum(1 for r in rows if r["profit"] < 0)
+    in_work = (
+        await session.execute(
+            select(func.count(Shift.id)).where(
+                Shift.owner_id == owner.id, Shift.status == "started"
+            )
+        )
+    ).scalar_one() or 0
+    totals = {
+        "count": len(rows),
+        "in_work": in_work,
+        "revenue": sum((r["revenue"] for r in rows), Decimal(0)),
+        "profit": sum((r["profit"] for r in rows), Decimal(0)),
+    }
     notice = None
     if limit is not None:
         notice = {"kind": "limit", "limit": limit}
@@ -1015,6 +1045,32 @@ async def vehicles_page(
         {
             "request": request, "owner": owner, "rows": rows,
             "active_page": "vehicles", "in_minus": in_minus, "notice": notice,
+            "totals": totals,
+        },
+    )
+
+
+@app.get("/vehicles/{vehicle_id}/stats", response_class=HTMLResponse)
+async def vehicle_stats(
+    request: Request,
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Полная статистика по одной машине — только для владельца: пробег,
+    рейсы, выручка, расходы, прибыль, маржа за месяц и за всё время."""
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    month_start, _ = _month_window()
+    epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    month = await _vehicle_row_dict(session, vehicle, month_start)
+    alltime = await _vehicle_row_dict(session, vehicle, epoch)
+    return templates.TemplateResponse(
+        "vehicle_stats.html",
+        {
+            "request": request, "owner": owner, "vehicle": vehicle,
+            "month": month, "alltime": alltime, "active_page": "vehicles",
         },
     )
 
@@ -1314,6 +1370,99 @@ async def finances_export(
     wb.save(buf)
     buf.seek(0)
     filename = f"finances_{df.isoformat()}_{dt.isoformat()}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# =========================================================================
+# /acts — акты оказанных услуг по РЦ за период (форма 101 РС, .xlsx)
+# =========================================================================
+def _acts_range(df: date, dt: date) -> tuple[datetime, datetime]:
+    start = datetime(df.year, df.month, df.day, tzinfo=timezone.utc)
+    end = datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc) + timedelta(days=1)
+    return start, end
+
+
+@app.get("/acts", response_class=HTMLResponse)
+async def acts_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    period_from: Annotated[str | None, Query()] = None,
+    period_to: Annotated[str | None, Query()] = None,
+):
+    df, dt = _parse_period(period_from, period_to)
+    start, end = _acts_range(df, dt)
+    rows_res = await session.execute(
+        select(
+            Trip.destination,
+            func.count(Trip.id),
+            func.coalesce(func.sum(Trip.revenue_rub), 0),
+        )
+        .where(
+            Trip.owner_id == owner.id,
+            Trip.status == "completed",
+            Trip.completed_at >= start,
+            Trip.completed_at < end,
+            Trip.revenue_rub.is_not(None),
+        )
+        .group_by(Trip.destination)
+        .order_by(func.coalesce(func.sum(Trip.revenue_rub), 0).desc())
+    )
+    preview = [
+        {"rc": dest or "—", "trips": cnt, "total": Decimal(total or 0)}
+        for dest, cnt, total in rows_res.all()
+    ]
+    return templates.TemplateResponse(
+        "acts.html",
+        {
+            "request": request, "owner": owner, "preview": preview,
+            "period_from": df.isoformat(), "period_to": dt.isoformat(),
+            "active_page": "finances",
+        },
+    )
+
+
+@app.get("/acts/export.xlsx")
+async def acts_export(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    period_from: Annotated[str | None, Query()] = None,
+    period_to: Annotated[str | None, Query()] = None,
+):
+    df, dt = _parse_period(period_from, period_to)
+    start, end = _acts_range(df, dt)
+    rows_res = await session.execute(
+        select(Trip, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Trip.driver_id)
+        .join(Vehicle, Vehicle.id == Trip.vehicle_id)
+        .where(
+            Trip.owner_id == owner.id,
+            Trip.status == "completed",
+            Trip.completed_at >= start,
+            Trip.completed_at < end,
+            Trip.revenue_rub.is_not(None),
+        )
+        .order_by(Trip.destination, Trip.completed_at)
+    )
+    groups: dict[str, list[dict]] = {}
+    for trip, driver_name, plate in rows_res.all():
+        rc = trip.destination or "Без РЦ"
+        groups.setdefault(rc, []).append({
+            "date": trip.completed_at,
+            "origin": trip.origin,
+            "destination": trip.destination,
+            "plate": plate,
+            "driver": driver_name,
+            "revenue": trip.revenue_rub,
+        })
+
+    wb = act_service.build_acts_workbook(groups, df, dt, owner.company_name or "Перевозчик")
+    buf = act_service.workbook_bytes(wb)
+    filename = f"akty_RC_{df.isoformat()}_{dt.isoformat()}.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2043,6 +2192,12 @@ async def expenses_page(
         .limit(300)
     )
     rows = list(rows_res.all())
+    totals = {
+        "count": len(rows),
+        "sum": sum((e.amount_rub or Decimal(0) for e, _, _ in rows), Decimal(0)),
+        "pending": sum(1 for e, _, _ in rows if e.status == "pending"),
+        "approved": sum(1 for e, _, _ in rows if e.status == "approved"),
+    }
     return templates.TemplateResponse(
         "expenses.html",
         {
@@ -2050,7 +2205,7 @@ async def expenses_page(
             "filter_category": category or "",
             "filter_status": status or "",
             "categories": _EXPENSE_CATEGORIES,
-            "active_page": "trips",
+            "active_page": "trips", "totals": totals,
         },
     )
 
