@@ -783,7 +783,7 @@ async def create_driver(
 ):
     """Создать водителя из веб-кабинета. Генерируем invite-токен — ссылку
     для подключения показываем владельцу на странице после редиректа."""
-    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift"):
+    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift", "fixed_per_month"):
         raise HTTPException(status_code=400, detail="Bad salary_type")
     if len(full_name.strip()) < 2:
         raise HTTPException(status_code=400, detail="Bad name")
@@ -831,7 +831,7 @@ async def update_driver(
     driver = await session.get(Driver, driver_id)
     if driver is None or driver.owner_id != owner.id:
         raise HTTPException(status_code=404, detail="Driver not found")
-    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift"):
+    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift", "fixed_per_month"):
         raise HTTPException(status_code=400, detail="Bad salary_type")
     if len(full_name.strip()) < 2:
         raise HTTPException(status_code=400, detail="Bad name")

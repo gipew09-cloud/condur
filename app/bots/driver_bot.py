@@ -28,6 +28,7 @@ from app.config import settings
 from app.bots.states import (
     AddManualShift,
     AddManualTrip,
+    DriverTripRevenue,
     EndShift,
     EndTripLocation,
     HandedCash,
@@ -38,7 +39,7 @@ from app.bots.states import (
     UnloadingLocation,
     UploadWaybill,
 )
-from app.models import Driver, Expense, Owner, RouteTemplate, Shift, Vehicle
+from app.models import Driver, Expense, Owner, RouteTemplate, Shift, Trip, Vehicle
 from app.services import (
     expense_service,
     receipt_ocr,
@@ -562,17 +563,19 @@ async def _do_end_shift(
 
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
-        await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_SHIFT_COMPLETED.format(
-                driver=driver.full_name,
-                distance=shift.distance_km or 0,
-                trips=len(trips),
-                revenue=f"{revenue:.0f}",
-                expenses=f"{expenses_total:.0f}",
-                salary=f"{salary:.0f}",
-            ),
-        )
+        # В фото-режиме пробег/зарплата ещё не известны — не показываем нули.
+        if odometer_end is None:
+            owner_text = msg.NOTIFY_SHIFT_COMPLETED_PENDING.format(
+                driver=driver.full_name, trips=len(trips),
+                revenue=f"{revenue:.0f}", expenses=f"{expenses_total:.0f}",
+            )
+        else:
+            owner_text = msg.NOTIFY_SHIFT_COMPLETED.format(
+                driver=driver.full_name, distance=shift.distance_km or 0,
+                trips=len(trips), revenue=f"{revenue:.0f}",
+                expenses=f"{expenses_total:.0f}", salary=f"{salary:.0f}",
+            )
+        await notify_owner(owner_bot, session, owner, owner_text)
         # Контроль топлива: сумма fuel-расходов смены vs норма
         await _maybe_fuel_overrun_alert(session, owner_bot, owner, driver, shift, approved_list)
         # Фото-режим: фото одометра конца смены → владельцу с кнопкой «Указать пробег».
@@ -1243,6 +1246,12 @@ async def _do_end_trip(
         message, session, driver,
         msg.TRIP_COMPLETED_DRIVER.format(fuel_cost=f"{fuel:.0f}", liters=float(liters)),
     )
+    # Водитель отдал груз — он лучше знает сумму. Даём ему по желанию указать
+    # выручку; владельцу придёт «Одобрить/Изменить» (выручка — одно поле,
+    # владелец всегда главный, двойного счёта нет).
+    await message.answer(
+        msg.TRIP_DRIVER_REVENUE_ASK, reply_markup=kb.driver_revenue_keyboard(trip.id)
+    )
 
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
@@ -1254,6 +1263,70 @@ async def _do_end_trip(
                 fuel=f"{fuel:.0f}",
             ),
             reply_markup=kb.trip_revenue_keyboard(trip.id),
+        )
+
+
+# =========================================================================
+# ВОДИТЕЛЬ указывает выручку рейса (по желанию) → владельцу на подтверждение
+# =========================================================================
+@driver_router.callback_query(F.data.startswith("drev:"))
+async def cb_driver_revenue(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        trip_id = int(call.data.split(":")[1])
+    except (IndexError, ValueError):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    trip = await session.get(Trip, trip_id)
+    if driver is None or trip is None or trip.driver_id != driver.id:
+        await call.answer("Рейс не найден", show_alert=True)
+        return
+    # убрать кнопку, чтобы не нажимали повторно
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    await state.set_state(DriverTripRevenue.waiting_for_amount)
+    await state.update_data(trip_id=trip_id)
+    await call.message.answer(msg.TRIP_DRIVER_REVENUE_ENTER)
+    await call.answer()
+
+
+@driver_router.message(DriverTripRevenue.waiting_for_amount)
+async def driver_revenue_amount(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    amount = _parse_decimal(message.text)
+    if amount is None or amount < 0:
+        await message.answer(msg.TRIP_AMOUNT_INVALID)
+        return
+    data = await state.get_data()
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    trip = await session.get(Trip, data.get("trip_id"))
+    if driver is None or trip is None or trip.driver_id != driver.id:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    await trip_service.set_trip_revenue(session, trip=trip, revenue_rub=amount)
+    await log_event(
+        session, owner_id=driver.owner_id, driver_id=driver.id,
+        shift_id=trip.shift_id, trip_id=trip.id,
+        event_type="trip_revenue_from_driver", payload={"revenue": str(amount)},
+    )
+    await session.commit()
+    await state.clear()
+    await _refresh_ui(
+        message, session, driver, msg.TRIP_DRIVER_REVENUE_DONE.format(amount=f"{amount:.0f}")
+    )
+    owner = await session.get(Owner, driver.owner_id)
+    if owner is not None:
+        await notify_owner(
+            owner_bot, session, owner,
+            msg.NOTIFY_TRIP_REVENUE_FROM_DRIVER.format(
+                driver=driver.full_name, origin=trip.origin or "—",
+                destination=trip.destination or "—", amount=f"{amount:.0f}",
+            ),
+            reply_markup=kb.trip_revenue_decision_keyboard(trip.id),
         )
 
 

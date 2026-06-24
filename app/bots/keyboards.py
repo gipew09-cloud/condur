@@ -101,6 +101,7 @@ def driver_salary_type_keyboard() -> InlineKeyboardMarkup:
     kb.button(text="За рейс", callback_data="salary:per_trip")
     kb.button(text="Процент с выручки", callback_data="salary:percent")
     kb.button(text="Фикс за смену", callback_data="salary:fixed_per_shift")
+    kb.button(text="Оклад за месяц", callback_data="salary:fixed_per_month")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -342,6 +343,22 @@ def downtime_reason_keyboard() -> InlineKeyboardMarkup:
 def trip_revenue_keyboard(trip_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="💰 Указать выручку", callback_data=f"trip:revenue:{trip_id}")
+    return kb.as_markup()
+
+
+def driver_revenue_keyboard(trip_id: int) -> InlineKeyboardMarkup:
+    """Кнопка водителю под завершённым рейсом — по желанию указать выручку."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💰 Указать выручку", callback_data=f"drev:{trip_id}")
+    return kb.as_markup()
+
+
+def trip_revenue_decision_keyboard(trip_id: int) -> InlineKeyboardMarkup:
+    """Владельцу: одобрить выручку от водителя или изменить сумму."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Одобрить", callback_data=f"trev:ok:{trip_id}")
+    kb.button(text="✏️ Изменить", callback_data=f"trev:edit:{trip_id}")
+    kb.adjust(2)
     return kb.as_markup()
 
 

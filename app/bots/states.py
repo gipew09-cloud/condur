@@ -122,6 +122,11 @@ class UnloadingLocation(StatesGroup):
     waiting_for_location = State()
 
 
+class DriverTripRevenue(StatesGroup):
+    """Водитель по желанию указывает выручку завершённого рейса (он отдал груз)."""
+    waiting_for_amount = State()
+
+
 class NewExpense(StatesGroup):
     """Создание расхода: категория → сумма → (для «Прочее» — описание) → фото чека."""
     selecting_category = State()

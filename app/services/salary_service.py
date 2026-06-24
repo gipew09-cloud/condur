@@ -6,6 +6,8 @@
   per_trip        : ставка × число завершённых рейсов + per_diem
   percent         : % × сумма выручки + per_diem
   fixed_per_shift : фиксированная ставка + per_diem
+  fixed_per_month : помесячный оклад — за смену НЕ начисляется (0), платится
+                    отдельно раз в месяц; ставка хранится как сумма оклада.
 
 per_diem — суточные × число календарных дней, на которые пришлась смена.
 Например, смена 30 мая 22:00 → 31 мая 06:00 — это 2 дня.
@@ -58,6 +60,8 @@ def estimate_trip_salary(
         return rate.quantize(Decimal("0.01"))
     if driver.salary_type == "percent":
         return ((trip.revenue_rub or Decimal(0)) * rate / Decimal(100)).quantize(Decimal("0.01"))
+    if driver.salary_type == "fixed_per_month":
+        return Decimal(0)  # помесячный оклад не привязан к рейсу
     # fixed_per_shift
     return (rate / Decimal(trips_in_shift)).quantize(Decimal("0.01"))
 
@@ -65,6 +69,10 @@ def estimate_trip_salary(
 def calculate_salary(driver: Driver, shift: Shift, trips: list[Trip]) -> Decimal:
     rate = driver.salary_rate or Decimal(0)
     completed = _completed_trips(trips)
+
+    # Помесячный оклад за смену не начисляется (платится раз в месяц отдельно).
+    if driver.salary_type == "fixed_per_month":
+        return Decimal(0)
 
     if driver.salary_type == "per_km":
         base = Decimal(shift.distance_km or 0) * rate

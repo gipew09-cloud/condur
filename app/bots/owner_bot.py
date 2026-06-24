@@ -504,7 +504,7 @@ async def add_driver_phone(message: Message, state: FSMContext) -> None:
 @owner_router.callback_query(AddDriver.waiting_for_salary_type, F.data.startswith("salary:"))
 async def add_driver_salary_type(call: CallbackQuery, state: FSMContext) -> None:
     salary_type = call.data.split(":", 1)[1]
-    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift"):
+    if salary_type not in ("per_km", "per_trip", "percent", "fixed_per_shift", "fixed_per_month"):
         await call.answer("Неизвестный тип", show_alert=True)
         return
     await state.update_data(salary_type=salary_type)
@@ -515,6 +515,7 @@ async def add_driver_salary_type(call: CallbackQuery, state: FSMContext) -> None
         "per_trip": msg.ADD_DRIVER_RATE_PER_TRIP,
         "percent": msg.ADD_DRIVER_RATE_PERCENT,
         "fixed_per_shift": msg.ADD_DRIVER_RATE_FIXED,
+        "fixed_per_month": "Введите оклад водителя за месяц (₽):",
     }[salary_type]
     await call.message.edit_text(prompt)
     await call.answer()
@@ -1066,6 +1067,52 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.answer("Введите выручку по рейсу в рублях:")
 
 
+@owner_router.callback_query(F.data.startswith("trev:ok:"))
+async def cb_trip_revenue_approve(call: CallbackQuery, session: AsyncSession) -> None:
+    """Владелец одобряет выручку, указанную водителем (значение уже в БД)."""
+    try:
+        trip_id = int(call.data.split(":")[2])
+    except (IndexError, ValueError):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+    owner = await _get_owner(session, call.from_user.id)
+    trip = await session.get(Trip, trip_id)
+    if owner is None or trip is None or trip.owner_id != owner.id:
+        await call.answer("Рейс не найден", show_alert=True)
+        return
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    await call.message.answer(
+        msg.NOTIFY_TRIP_REVENUE_APPROVED.format(amount=f"{(trip.revenue_rub or 0):.0f}")
+    )
+    await call.answer("Готово")
+
+
+@owner_router.callback_query(F.data.startswith("trev:edit:"))
+async def cb_trip_revenue_edit(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Владелец хочет изменить сумму, указанную водителем."""
+    try:
+        trip_id = int(call.data.split(":")[2])
+    except (IndexError, ValueError):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+    owner = await _get_owner(session, call.from_user.id)
+    trip = await session.get(Trip, trip_id)
+    if owner is None or trip is None or trip.owner_id != owner.id:
+        await call.answer("Рейс не найден", show_alert=True)
+        return
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    await state.set_state(SetTripRevenue.waiting_for_amount)
+    await state.update_data(trip_id=trip_id)
+    await call.answer()
+    await call.message.answer("Введите правильную выручку по рейсу в рублях:")
+
+
 @owner_router.message(SetTripRevenue.waiting_for_amount)
 async def set_trip_revenue(
     message: Message,
@@ -1353,16 +1400,26 @@ async def cb_odo_set(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     if owner is None or shift is None or shift.owner_id != owner.id:
         await call.answer("Смена не найдена", show_alert=True)
         return
+    # Одноразовость: если пробег уже вписан — не даём вписать снова (баг «сколько угодно»).
+    already = shift.odometer_start if which == "start" else shift.odometer_end
+    if already is not None:
+        await call.answer(f"Пробег уже указан: {already} км", show_alert=True)
+        return
     await state.set_state(SetOdometer.waiting_for_value)
-    await state.update_data(shift_id=shift_id, which=which)
+    await state.update_data(
+        shift_id=shift_id, which=which,
+        odo_chat=call.message.chat.id, odo_msg=call.message.message_id,
+    )
     await call.message.answer(msg.ODOMETER_OWNER_ASK_VALUE)
     await call.answer()
 
 
 @owner_router.message(SetOdometer.waiting_for_value)
-async def odo_value(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def odo_value(
+    message: Message, state: FSMContext, session: AsyncSession, bot: Bot
+) -> None:
     raw = (message.text or "").strip().replace(" ", "")
-    if not raw.isdigit():
+    if not raw.isdigit() or len(raw) > 7:
         await message.answer(msg.ODOMETER_OWNER_INVALID)
         return
     value = int(raw)
@@ -1375,6 +1432,21 @@ async def odo_value(message: Message, state: FSMContext, session: AsyncSession) 
         await message.answer(msg.SOMETHING_WRONG)
         return
 
+    # Валидация конца смены относительно начала (защита от отрицательного пробега).
+    if which == "end" and shift.odometer_start is not None:
+        if value < shift.odometer_start:
+            await message.answer(
+                f"Конец ({value}) не может быть меньше начала ({shift.odometer_start}). "
+                "Введите ещё раз."
+            )
+            return
+        if value - shift.odometer_start > 5000:
+            await message.answer(
+                f"За смену не могло быть {value - shift.odometer_start} км — похоже на опечатку. "
+                "Введите ещё раз."
+            )
+            return
+
     if which == "start":
         shift.odometer_start = value
     else:
@@ -1383,12 +1455,28 @@ async def odo_value(message: Message, state: FSMContext, session: AsyncSession) 
     await session.refresh(shift)  # distance_km — computed-колонка, перечитываем
     await state.clear()
 
+    # Убираем кнопку «Указать пробег» с фото — чтобы не нажимали повторно.
+    if data.get("odo_chat") and data.get("odo_msg"):
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=data["odo_chat"], message_id=data["odo_msg"], reply_markup=None
+            )
+        except Exception:  # noqa: BLE001 — telegram капризен с edit, не критично
+            pass
+
     if which == "start":
         await message.answer(msg.ODOMETER_OWNER_DONE_START.format(km=value))
     else:
+        # Пересчитываем зарплату с учётом известного пробега.
+        driver = await session.get(Driver, shift.driver_id)
+        trips_res = await session.execute(select(Trip).where(Trip.shift_id == shift.id))
+        trips = list(trips_res.scalars().all())
+        salary = salary_service.calculate_salary(driver, shift, trips) if driver else 0
         await message.answer(
             msg.ODOMETER_OWNER_DONE_END.format(
-                km=value, distance=shift.distance_km if shift.distance_km is not None else "—"
+                km=value,
+                distance=shift.distance_km if shift.distance_km is not None else "—",
+                salary=f"{salary:.0f}",
             )
         )
 

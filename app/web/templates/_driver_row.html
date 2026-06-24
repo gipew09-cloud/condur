@@ -3,7 +3,8 @@
     'per_km': 'За км',
     'per_trip': 'За рейс',
     'percent': 'Процент',
-    'fixed_per_shift': 'Фикс/смена'
+    'fixed_per_shift': 'Фикс/смена',
+    'fixed_per_month': 'Оклад/мес'
 } %}
 {% if edit %}
 <tr id="driver-row-{{ d.id }}">
@@ -24,6 +25,7 @@
           <option value="per_trip" {% if d.salary_type == 'per_trip' %}selected{% endif %}>За рейс</option>
           <option value="percent" {% if d.salary_type == 'percent' %}selected{% endif %}>Процент</option>
           <option value="fixed_per_shift" {% if d.salary_type == 'fixed_per_shift' %}selected{% endif %}>Фикс/смена</option>
+          <option value="fixed_per_month" {% if d.salary_type == 'fixed_per_month' %}selected{% endif %}>Оклад/мес</option>
         </select>
       </label>
       <label>

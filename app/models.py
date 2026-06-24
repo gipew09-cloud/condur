@@ -38,7 +38,7 @@ class Driver(Base):
     __tablename__ = "drivers"
     __table_args__ = (
         CheckConstraint(
-            "salary_type IN ('per_km','per_trip','percent','fixed_per_shift')",
+            "salary_type IN ('per_km','per_trip','percent','fixed_per_shift','fixed_per_month')",
             name="ck_driver_salary_type",
         ),
     )
