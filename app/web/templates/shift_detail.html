@@ -6,7 +6,10 @@
 {% include "_history_nav.html" %}
 <p><a href="/shifts">← к списку смен</a></p>
 
-<h2>Смена #{{ shift.id }}</h2>
+<div class="page-head">
+  <h1>Смена #{{ shift.id }}{% if shift.is_manual %} <span class="badge badge--neutral" style="font-size:.55em; vertical-align:middle;">вручную</span>{% endif %}</h1>
+  <p class="sub">{{ driver.full_name if driver else '—' }} · {{ vehicle.license_plate if vehicle else '—' }}</p>
+</div>
 <section class="kpi-grid">
   <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
   <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
@@ -15,7 +18,7 @@
   <div class="kpi"><small>Одометр начало</small><strong>{{ shift.odometer_start or '—' }} км</strong></div>
   <div class="kpi"><small>Одометр конец</small><strong>{{ shift.odometer_end or '—' }} км</strong></div>
   <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km or '—' }} км</strong></div>
-  <div class="kpi"><small>Статус</small><strong>{{ shift.status }}</strong></div>
+  <div class="kpi"><small>Статус</small><strong><span class="pill {{ shift.status | pillclass }}">{% if shift.status == 'started' %}в смене{% elif shift.status == 'completed' %}завершена{% elif shift.status == 'cancelled' %}отменена{% else %}{{ shift.status }}{% endif %}</span></strong></div>
 </section>
 
 <h3 style="margin-top:1.5rem;">📸 Фото одометров</h3>
@@ -57,7 +60,7 @@
     {% for t in trips %}
     <tr onclick="location.href='/trips/{{ t.id }}'" style="cursor:pointer;">
       <td data-label="Маршрут">{{ t.origin or '—' }} → {{ t.destination or '—' }}</td>
-      <td data-label="Статус"><span class="pill">{{ t.status | tstatus }}</span></td>
+      <td data-label="Статус"><span class="pill {{ t.status | pillclass }}">{{ t.status | tstatus }}</span></td>
       <td data-label="Выручка" class="num">{{ "{:,.0f}".format(t.revenue_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(t.profit_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="ТТН">{% if t.waybill_photo_url %}📷{% else %}—{% endif %}</td>
@@ -77,7 +80,7 @@
       <td data-label="Дата">{{ e.created_at.strftime('%d.%m %H:%M') if e.created_at else '—' }}</td>
       <td data-label="Категория">{{ e.category }}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
-      <td data-label="Статус"><span class="pill">{{ e.status }}</span></td>
+      <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
       <td data-label="Чек">
         {% if e.receipt_photo_url %}
           <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">📷</a>

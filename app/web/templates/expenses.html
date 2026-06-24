@@ -13,7 +13,10 @@
 
 {% block content %}
 {% include "_history_nav.html" %}
-<h2>💳 Все расходы</h2>
+<div class="page-head">
+  <h1>Все расходы</h1>
+  <p class="sub">Расходы водителей по сменам и рейсам. Фильтр по категории и статусу.</p>
+</div>
 
 <form method="GET" action="/expenses">
   <div class="grid">
@@ -51,6 +54,7 @@
       <th class="num">Сумма</th>
       <th>Статус</th>
       <th>Чек</th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
@@ -58,15 +62,18 @@
     <tr>
       <td data-label="Дата">{{ expense.created_at.strftime('%d.%m %H:%M') if expense.created_at else '—' }}</td>
       <td data-label="Водитель">{{ driver_name }}</td>
-      <td data-label="Машина">{{ plate }}</td>
+      <td data-label="Машина">{{ plate or '—' }}</td>
       <td data-label="Категория">{{ category_labels.get(expense.category, expense.category) }}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(expense.amount_rub or 0).replace(',', ' ') }} ₽</td>
-      <td data-label="Статус"><span class="pill">{{ expense.status }}</span></td>
+      <td data-label="Статус"><span class="pill {{ expense.status | pillclass }}">{{ expense.status | statusru }}</span></td>
       <td data-label="Чек">
-        {% if expense.receipt_photo_url %}
+        {% if expense.receipt_web_data %}
+          <a href="/api/expense-receipt/{{ expense.id }}" target="_blank">📷 Открыть</a>
+        {% elif expense.receipt_photo_url %}
           <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank">📷 Открыть</a>
         {% else %}—{% endif %}
       </td>
+      <td><a href="/expenses/{{ expense.id }}">✏️ Изменить</a></td>
     </tr>
     {% endfor %}
   </tbody>

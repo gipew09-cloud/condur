@@ -185,24 +185,35 @@ main.container h3 {
   font-size: 1.05rem;
 }
 
-/* ============ обычные таблицы ============ */
+/* ============ обычные таблицы → карточка (стиль «Свежий путь») ============ */
 table {
   background: var(--surface);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
+  width: 100%;
+  margin-bottom: 1rem;
 }
 table thead th {
-  background: #f8fafc;
+  background: #f6f7f9;
   font-weight: 600;
-  font-size: .78rem;
+  font-size: .72rem;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: .05em;
+  padding: 11px 16px;
+  border-bottom: 1px solid #eef1f5;
 }
+table tbody td, table tbody th {
+  padding: 13px 16px;
+  border-bottom: 1px solid #eef1f5;
+  border-top: 0;
+  vertical-align: middle;
+}
+table tbody tr:last-child td, table tbody tr:last-child th { border-bottom: 0; }
 table tbody tr { transition: background .12s; }
-table tbody tr:hover { background: #f8fafc; }
+table tbody tr:hover { background: #f6f7f9; }
 
 /* ============ кнопки ============ */
 button[type="submit"],
@@ -230,36 +241,53 @@ button[type="submit"]:hover {
   background: transparent;
 }
 
-/* ============ pill / badge ============ */
+/* ============ статусные плашки (точные токены «Свежий путь») ============ */
 .pill {
   display: inline-flex;
   align-items: center;
   gap: .3rem;
-  padding: .15rem .55rem;
-  border-radius: 999px;
-  font-size: .78em;
-  font-weight: 600;
-  background: var(--accent-soft);
-  color: var(--accent);
+  padding: 4px 10px;
+  border-radius: 7px;
+  font-size: .76em;
+  font-weight: 700;
+  background: #e8f0fe;
+  color: #2563eb;
   white-space: nowrap;
 }
+.pill--success, .badge--success { background: #e7f6ec; color: #147a3d; }
+.pill--warn,    .badge--warning { background: #fdf0d3; color: #9a5b00; }
+.pill--danger,  .badge--danger  { background: #fde8e6; color: #c5362b; }
+.pill--info,    .badge--info    { background: #e8f0fe; color: #2563eb; }
+.pill--neutral, .badge--neutral { background: #f1f4f9; color: #5b6573; }
 .badge {
   display: inline-flex;
   align-items: center;
   gap: .35rem;
-  padding: .15rem .6rem;
-  border-radius: 999px;
+  padding: 4px 10px;
+  border-radius: 7px;
   font-size: .72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  font-weight: 700;
   white-space: nowrap;
 }
-.badge--success { background: #d1fae5; color: #065f46; }
-.badge--warning { background: #fef3c7; color: #92400e; }
-.badge--danger  { background: #fee2e2; color: #991b1b; }
-.badge--info    { background: #dbeafe; color: #1e40af; }
-.badge--neutral { background: #f1f5f9; color: #475569; }
+
+/* ============ единый заголовок страницы ============ */
+.page-head { margin: .25rem 0 1.25rem; }
+.page-head h1, .page-head h2 {
+  font-size: 24px; font-weight: 800; color: var(--text);
+  margin: 0; line-height: 1.2; letter-spacing: -.01em;
+}
+.page-head .sub { color: var(--text-muted); font-size: .9rem; margin: .3rem 0 0; }
+
+/* ============ универсальная карточка / панель ============ */
+.card, .panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+}
+.section { margin-top: 1.5rem; }
+.section > h3 { margin: 0 0 .75rem; font-size: 1rem; }
 
 /* ============ insights ============ */
 .insights {

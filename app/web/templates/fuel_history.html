@@ -4,8 +4,10 @@
 
 {% block content %}
 {% include "_history_nav.html" %}
-<h2>⛽️ История заправок</h2>
-<p><small>Все расходы категории «топливо». Сумма ÷ 68 ≈ литры.</small></p>
+<div class="page-head">
+  <h1>История заправок</h1>
+  <p class="sub">Все расходы категории «топливо». Сумма ÷ 68 ≈ литры.</p>
+</div>
 
 {% if not rows %}
   <p>Заправок ещё не было.</p>
@@ -27,7 +29,7 @@
       <td data-label="Машина">{{ plate }}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(expense.amount_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="≈ литров" class="num">~{{ "{:.0f}".format(liters) }}</td>
-      <td data-label="Статус"><span class="pill">{{ expense.status }}</span></td>
+      <td data-label="Статус"><span class="pill {{ expense.status | pillclass }}">{% if expense.status == 'approved' %}одобрен{% elif expense.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
       <td data-label="Чек">
         {% if expense.receipt_photo_url %}
           <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank">📷 Открыть</a>

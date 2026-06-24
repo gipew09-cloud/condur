@@ -30,7 +30,7 @@
         <td data-label="Выручка" class="num">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</td>
         <td data-label="Топливо" class="num">{{ "{:,.0f}".format(fuel).replace(',', ' ') }}</td>
         <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</td>
-        <td data-label="Статус"><span class="pill">{{ trip.status | tstatus }}</span></td>
+        <td data-label="Статус"><span class="pill {{ trip.status | pillclass }}">{{ trip.status | tstatus }}</span></td>
       </tr>
     {% endfor %}
     </tbody>

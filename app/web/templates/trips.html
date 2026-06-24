@@ -4,7 +4,10 @@
 
 {% block content %}
 {% include "_history_nav.html" %}
-<h2>🚛 Рейсы</h2>
+<div class="page-head">
+  <h1>Рейсы</h1>
+  <p class="sub">Все рейсы автопарка. Фильтруйте по водителю и датам или добавьте рейс вручную.</p>
+</div>
 
 <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
   <div class="grid">

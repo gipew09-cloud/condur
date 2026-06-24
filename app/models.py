@@ -191,7 +191,10 @@ class Expense(Base):
     driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id"))
     category: Mapped[str] = mapped_column(String(20))
     amount_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    receipt_photo_url: Mapped[str | None] = mapped_column(Text)
+    receipt_photo_url: Mapped[str | None] = mapped_column(Text)  # Telegram file_id (от водителя)
+    # Фото чека, загруженное ВЛАДЕЛЬЦЕМ на сайте (Правка 5) — байты в Postgres, без S3.
+    receipt_web_data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    receipt_web_type: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="pending")
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

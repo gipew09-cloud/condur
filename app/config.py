@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # ENV принимает on/off, true/false, 1/0 (pydantic парсит регистронезависимо).
     # =====================================================================
     feature_trip_cargo: bool = False            # вопрос «что везёте»
-    feature_odometer_photo: bool = False        # фото одометра + ввод значения
+    feature_odometer_photo: bool = True         # фото одометра (число км вписывает владелец)
     feature_trip_status_steps: bool = False     # промежуточные статусы рейса (выгрузка)
     feature_cargo_geolocation: bool = True      # геопозиция при сдаче груза (включена — наполняет карту)
     feature_cash_handover: bool = False         # «сдал деньги»

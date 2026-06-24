@@ -75,8 +75,35 @@ def _trip_status_label(code: str | None) -> str:
     return _TRIP_STATUS_LABELS.get(code or "", code or "—")
 
 
+# Цвет статусной плашки по значению статуса (рейс/расход/смена) — стиль «Свежий путь».
+_PILL_CLASS = {
+    "completed": "pill--success", "approved": "pill--success",
+    "created": "pill--info", "in_transit": "pill--info", "started": "pill--info",
+    "pending": "pill--warn", "unloading": "pill--warn",
+    "rejected": "pill--danger", "cancelled": "pill--danger",
+}
+
+
+def _pill_class(status: str | None) -> str:
+    return _PILL_CLASS.get((status or "").lower(), "pill--neutral")
+
+
+# Русские подписи статусов (расход/смена/рейс) на уровне отображения — Правка 6.
+_STATUS_RU = {
+    "approved": "одобрен", "pending": "на проверке", "rejected": "отклонён",
+    "started": "в смене", "completed": "завершён", "cancelled": "отменён",
+    "created": "создан", "in_transit": "в пути", "unloading": "на выгрузке",
+}
+
+
+def _status_ru(status: str | None) -> str:
+    return _STATUS_RU.get((status or "").lower(), status or "—")
+
+
 templates.env.filters["vtype"] = _vehicle_type_label
 templates.env.filters["tstatus"] = _trip_status_label
+templates.env.filters["pillclass"] = _pill_class
+templates.env.filters["statusru"] = _status_ru
 
 app = FastAPI(title="TMS Cabinet")
 
@@ -2009,8 +2036,8 @@ async def expenses_page(
     rows_res = await session.execute(
         select(Expense, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Expense.driver_id)
-        .join(Shift, Shift.id == Expense.shift_id)
-        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .outerjoin(Shift, Shift.id == Expense.shift_id)
+        .outerjoin(Vehicle, Vehicle.id == Shift.vehicle_id)
         .where(and_(*conditions))
         .order_by(desc(Expense.created_at))
         .limit(300)
@@ -2028,6 +2055,82 @@ async def expenses_page(
     )
 
 
+@app.get("/expenses/{expense_id}", response_class=HTMLResponse)
+async def expense_edit_page(
+    request: Request,
+    expense_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Страница правки расхода владельцем (Правка 5)."""
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    driver = await session.get(Driver, expense.driver_id)
+    return templates.TemplateResponse(
+        "expense_edit.html",
+        {
+            "request": request, "owner": owner, "expense": expense, "driver": driver,
+            "categories": _EXPENSE_CATEGORIES, "active_page": "trips",
+        },
+    )
+
+
+@app.post("/expenses/{expense_id}")
+async def expense_edit_save(
+    expense_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    amount_rub: Annotated[str, Form()],
+    category: Annotated[str, Form()],
+    status: Annotated[str, Form()],
+    file: Annotated[UploadFile | None, File()] = None,
+):
+    """Сохранить правку расхода: сумма, категория, статус, (опц.) фото чека."""
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    if category not in _EXPENSE_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Bad category")
+    if status not in ("pending", "approved", "rejected"):
+        raise HTTPException(status_code=400, detail="Bad status")
+    try:
+        amt = Decimal(amount_rub.replace(",", ".").replace(" ", ""))
+        if amt < 0:
+            raise InvalidOperation
+    except InvalidOperation:
+        raise HTTPException(status_code=400, detail="Bad amount")
+
+    expense.amount_rub = amt.quantize(Decimal("0.01"))
+    expense.category = category
+    if expense.status != status:
+        expense.status = status
+        expense.decided_at = (
+            datetime.now(timezone.utc) if status in ("approved", "rejected") else None
+        )
+    if file is not None and file.filename:
+        data = await file.read()
+        if data:
+            if len(data) > _MAX_DOC_BYTES:
+                raise HTTPException(status_code=400, detail="Файл слишком большой (макс 6 МБ)")
+            expense.receipt_web_data = data
+            expense.receipt_web_type = file.content_type or "image/jpeg"
+    await session.commit()
+    return RedirectResponse("/expenses", status_code=303)
+
+
+@app.get("/api/expense-receipt/{expense_id}")
+async def expense_receipt(
+    expense_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id or not expense.receipt_web_data:
+        raise HTTPException(status_code=404)
+    return Response(content=expense.receipt_web_data, media_type=expense.receipt_web_type or "image/jpeg")
+
+
 # =========================================================================
 # /fuel-history — все заправки с фото чеков
 # =========================================================================
@@ -2040,8 +2143,8 @@ async def fuel_history(
     rows_res = await session.execute(
         select(Expense, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Expense.driver_id)
-        .join(Shift, Shift.id == Expense.shift_id)
-        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .outerjoin(Shift, Shift.id == Expense.shift_id)
+        .outerjoin(Vehicle, Vehicle.id == Shift.vehicle_id)
         .where(
             Expense.owner_id == owner.id,
             Expense.category == "fuel",

@@ -47,6 +47,7 @@ from app.bots.states import (
     EditExpenseAmount,
     Onboarding,
     OwnerRegistration,
+    SetOdometer,
     SetTripRevenue,
     TripCalc,
 )
@@ -1335,6 +1336,61 @@ async def edit_expense_amount(call_message: Message, state: FSMContext, session:
         msg.EXPENSE_EDIT_DONE.format(category=category_label, amount=f"{expense.amount_rub:.0f}"),
         reply_markup=kb.expense_decision_keyboard(expense.id),
     )
+
+
+# =========================================================================
+# Пробег по фото одометра — владелец вписывает число (Правка 1)
+# =========================================================================
+@owner_router.callback_query(F.data.startswith("odo:"))
+async def cb_odo_set(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    if len(parts) != 3 or parts[1] not in ("start", "end"):
+        await call.answer("Некорректный запрос", show_alert=True)
+        return
+    which, shift_id = parts[1], int(parts[2])
+    owner = await _get_owner(session, call.from_user.id)
+    shift = await session.get(Shift, shift_id)
+    if owner is None or shift is None or shift.owner_id != owner.id:
+        await call.answer("Смена не найдена", show_alert=True)
+        return
+    await state.set_state(SetOdometer.waiting_for_value)
+    await state.update_data(shift_id=shift_id, which=which)
+    await call.message.answer(msg.ODOMETER_OWNER_ASK_VALUE)
+    await call.answer()
+
+
+@owner_router.message(SetOdometer.waiting_for_value)
+async def odo_value(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    raw = (message.text or "").strip().replace(" ", "")
+    if not raw.isdigit():
+        await message.answer(msg.ODOMETER_OWNER_INVALID)
+        return
+    value = int(raw)
+    data = await state.get_data()
+    shift_id, which = data.get("shift_id"), data.get("which")
+    owner = await _get_owner(session, message.from_user.id)
+    shift = await session.get(Shift, shift_id) if shift_id else None
+    if owner is None or shift is None or shift.owner_id != owner.id:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+
+    if which == "start":
+        shift.odometer_start = value
+    else:
+        shift.odometer_end = value
+    await session.commit()
+    await session.refresh(shift)  # distance_km — computed-колонка, перечитываем
+    await state.clear()
+
+    if which == "start":
+        await message.answer(msg.ODOMETER_OWNER_DONE_START.format(km=value))
+    else:
+        await message.answer(
+            msg.ODOMETER_OWNER_DONE_END.format(
+                km=value, distance=shift.distance_km if shift.distance_km is not None else "—"
+            )
+        )
 
 
 @owner_router.callback_query(F.data.startswith("expense:approve:"))

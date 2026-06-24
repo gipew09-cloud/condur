@@ -34,6 +34,7 @@ from app.bots.states import (
     NewExpense,
     NewTrip,
     StartShift,
+    TripDepartLocation,
     UnloadingLocation,
     UploadWaybill,
 )
@@ -291,9 +292,11 @@ async def _do_start_shift(
     vehicle: Vehicle,
     odometer_start: int | None,
     photo_file_id: str | None,
+    source_bot: Bot | None = None,
 ) -> None:
-    """Создать смену и уведомить. Общий хвост для всех путей старта
-    (с одометром / без одометра / авто-старт при одной машине)."""
+    """Создать смену и уведомить. Общий хвост для всех путей старта.
+    Фото-режим (Правка 1): водитель прислал только фото — оно уходит владельцу
+    с кнопкой «Указать пробег», число км вписывает владелец."""
     shift = await shift_service.start_shift(
         session,
         owner_id=driver.owner_id,
@@ -321,16 +324,28 @@ async def _do_start_shift(
     await _refresh_ui(reply_target, session, driver, driver_text)
 
     owner = await session.get(Owner, driver.owner_id)
-    if owner is not None:
-        if odometer_start is not None:
-            owner_text = msg.NOTIFY_SHIFT_STARTED.format(
-                driver=driver.full_name, plate=vehicle.license_plate, km=odometer_start
-            )
-        else:
-            owner_text = msg.NOTIFY_SHIFT_STARTED_SIMPLE.format(
+    if owner is None:
+        return
+    # Фото-режим: шлём владельцу фото одометра + кнопку «Указать пробег».
+    if photo_file_id and odometer_start is None and source_bot is not None:
+        await transfer_photo_to_owner(
+            source_bot=source_bot, owner_bot=owner_bot, session=session, owner=owner,
+            source_file_id=photo_file_id,
+            caption=msg.ODOMETER_PHOTO_TO_OWNER_START.format(
                 driver=driver.full_name, plate=vehicle.license_plate
-            )
-        await notify_owner(owner_bot, session, owner, owner_text)
+            ),
+            reply_markup=kb.odometer_set_keyboard(shift.id, "start"),
+        )
+        return
+    if odometer_start is not None:
+        owner_text = msg.NOTIFY_SHIFT_STARTED.format(
+            driver=driver.full_name, plate=vehicle.license_plate, km=odometer_start
+        )
+    else:
+        owner_text = msg.NOTIFY_SHIFT_STARTED_SIMPLE.format(
+            driver=driver.full_name, plate=vehicle.license_plate
+        )
+    await notify_owner(owner_bot, session, owner, owner_text)
 
 
 @driver_router.message(F.text == kb.BTN_START_SHIFT, StateFilter(any_state))
@@ -404,44 +419,31 @@ async def cb_shift_pick_vehicle(
 
 
 @driver_router.message(StartShift.waiting_for_odometer_photo, F.photo)
-async def shift_start_odometer_photo(message: Message, state: FSMContext) -> None:
-    file_id = _pick_photo_file_id(message)
-    await state.update_data(odometer_photo=file_id)
-    await state.set_state(StartShift.waiting_for_odometer_value)
-    await message.answer(msg.SHIFT_ASK_ODOMETER_VALUE)
-
-
-@driver_router.message(StartShift.waiting_for_odometer_photo)
-async def shift_start_odometer_photo_invalid(message: Message) -> None:
-    await message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_START + " 📷")
-
-
-@driver_router.message(StartShift.waiting_for_odometer_value)
-async def shift_start_odometer_value(
-    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+async def shift_start_odometer_photo(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot, bot: Bot
 ) -> None:
-    value = _parse_int(message.text)
-    if value is None or value < 0:
-        await message.answer(msg.SHIFT_ODOMETER_INVALID)
-        return
-
+    # Водитель шлёт ТОЛЬКО фото (Правка 1) — число км впишет владелец.
+    file_id = _pick_photo_file_id(message)
     driver = await _driver_by_telegram(session, message.from_user.id)
     if driver is None:
         await state.clear()
         await message.answer(msg.SOMETHING_WRONG)
         return
-
     data = await state.get_data()
-    vehicle = await session.get(Vehicle, data["vehicle_id"])
+    vehicle = await session.get(Vehicle, data.get("vehicle_id"))
     if vehicle is None:
         await state.clear()
         await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
         return
-
     await _do_start_shift(
         message, state, session, owner_bot, driver, vehicle,
-        odometer_start=value, photo_file_id=data.get("odometer_photo"),
+        odometer_start=None, photo_file_id=file_id, source_bot=bot,
     )
+
+
+@driver_router.message(StartShift.waiting_for_odometer_photo)
+async def shift_start_odometer_photo_invalid(message: Message) -> None:
+    await message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_START + " 📷")
 
 
 # =========================================================================
@@ -474,53 +476,31 @@ async def btn_end_shift(
 
 
 @driver_router.message(EndShift.waiting_for_odometer_photo, F.photo)
-async def shift_end_odometer_photo(message: Message, state: FSMContext) -> None:
-    file_id = _pick_photo_file_id(message)
-    await state.update_data(odometer_photo=file_id)
-    await state.set_state(EndShift.waiting_for_odometer_value)
-    await message.answer(msg.SHIFT_ASK_ODOMETER_VALUE)
-
-
-@driver_router.message(EndShift.waiting_for_odometer_photo)
-async def shift_end_odometer_photo_invalid(message: Message) -> None:
-    await message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_END + " 📷")
-
-
-@driver_router.message(EndShift.waiting_for_odometer_value)
-async def shift_end_odometer_value(
-    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+async def shift_end_odometer_photo(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot, bot: Bot
 ) -> None:
-    value = _parse_int(message.text)
-    if value is None or value < 0:
-        await message.answer(msg.SHIFT_ODOMETER_INVALID)
-        return
-
+    # Только фото (Правка 1): число км в конце смены впишет владелец.
+    file_id = _pick_photo_file_id(message)
     driver = await _driver_by_telegram(session, message.from_user.id)
     if driver is None:
         await state.clear()
         await message.answer(msg.SOMETHING_WRONG)
         return
-
     shift = await shift_service.get_active_shift(session, driver.id)
     if shift is None:
         await state.clear()
         await _refresh_ui(message, session, driver, msg.SHIFT_NO_ACTIVE)
         return
+    await state.update_data(odometer_photo=file_id)
+    await _do_end_shift(
+        message, state, session, owner_bot, driver, shift,
+        odometer_end=None, source_bot=bot,
+    )
 
-    start = shift.odometer_start or 0
-    if value < start:
-        await message.answer(
-            msg.SHIFT_ODOMETER_BELOW_START.format(end=value, start=start)
-        )
-        return
-    # защита от очевидных опечаток (типа 5621636 вместо 562163)
-    if value - start > 5000:
-        await message.answer(
-            msg.SHIFT_ODOMETER_TOO_FAR.format(diff=value - start, start=start)
-        )
-        return
 
-    await _do_end_shift(message, state, session, owner_bot, driver, shift, odometer_end=value)
+@driver_router.message(EndShift.waiting_for_odometer_photo)
+async def shift_end_odometer_photo_invalid(message: Message) -> None:
+    await message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_END + " 📷")
 
 
 async def _do_end_shift(
@@ -531,10 +511,12 @@ async def _do_end_shift(
     driver: Driver,
     shift: Shift,
     odometer_end: int | None,
+    source_bot: Bot | None = None,
 ) -> None:
     """Завершить смену и уведомить. Общий хвост для путей с одометром и без.
     Зарплату водителю показываем только при FEATURE_SHOW_SALARY."""
     data = await state.get_data()
+    end_photo = data.get("odometer_photo")
     await shift_service.end_shift(
         session,
         shift=shift,
@@ -593,6 +575,18 @@ async def _do_end_shift(
         )
         # Контроль топлива: сумма fuel-расходов смены vs норма
         await _maybe_fuel_overrun_alert(session, owner_bot, owner, driver, shift, approved_list)
+        # Фото-режим: фото одометра конца смены → владельцу с кнопкой «Указать пробег».
+        if odometer_end is None and end_photo and source_bot is not None:
+            vehicle = await session.get(Vehicle, shift.vehicle_id)
+            await transfer_photo_to_owner(
+                source_bot=source_bot, owner_bot=owner_bot, session=session, owner=owner,
+                source_file_id=end_photo,
+                caption=msg.ODOMETER_PHOTO_TO_OWNER_END.format(
+                    driver=driver.full_name,
+                    plate=vehicle.license_plate if vehicle else "—",
+                ),
+                reply_markup=kb.odometer_set_keyboard(shift.id, "end"),
+            )
 
 
 async def _maybe_fuel_overrun_alert(
@@ -884,7 +878,7 @@ async def trip_cargo(
 
 
 # =========================================================================
-# ВЫЕХАЛ (created → in_transit, без геопозиции)
+# ВЫЕХАЛ (created → in_transit) — с геопозицией (Правка 2)
 # =========================================================================
 @driver_router.message(F.text == kb.BTN_TRIP_DEPART, StateFilter(any_state))
 async def btn_trip_depart(
@@ -904,12 +898,68 @@ async def btn_trip_depart(
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
         return
 
+    # Просим геопозицию при выезде (скип возможен). Иначе — выезжаем сразу.
+    if not settings.feature_cargo_geolocation:
+        await _do_depart(message, state, session, owner_bot, location=None)
+        return
+    await state.set_state(TripDepartLocation.waiting_for_location)
+    await message.answer(msg.LOCATION_ASK, reply_markup=kb.location_request_keyboard())
+
+
+@driver_router.message(TripDepartLocation.waiting_for_location, F.location)
+async def depart_with_location(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    await _do_depart(
+        message, state, session, owner_bot,
+        location=(message.location.latitude, message.location.longitude),
+    )
+
+
+@driver_router.message(TripDepartLocation.waiting_for_location, F.text == kb.BTN_SKIP)
+async def depart_skip_location(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    await _do_depart(message, state, session, owner_bot, location=None)
+
+
+@driver_router.message(TripDepartLocation.waiting_for_location)
+async def depart_location_invalid(message: Message) -> None:
+    await message.answer(msg.LOCATION_ASK)
+
+
+async def _do_depart(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_bot: Bot,
+    location: tuple[float, float] | None,
+) -> None:
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    shift = await shift_service.get_active_shift(session, driver.id)
+    trip = await trip_service.get_active_trip(session, shift.id) if shift else None
+    if trip is None or trip.status != "created":
+        await state.clear()
+        await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
+        return
+
     await trip_service.set_trip_status(session, trip=trip, status="in_transit")
     await log_event(
         session, owner_id=driver.owner_id, driver_id=driver.id,
         shift_id=shift.id, trip_id=trip.id, event_type="trip_in_transit",
     )
+    if location is not None:
+        await log_event(
+            session, owner_id=driver.owner_id, driver_id=driver.id,
+            shift_id=shift.id, trip_id=trip.id, event_type="location_sent",
+            payload={"lat": location[0], "lon": location[1], "context": "depart"},
+        )
     await session.commit()
+    await state.clear()
     await _refresh_ui(message, session, driver, msg.TRIP_IN_TRANSIT_DRIVER)
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
@@ -1217,11 +1267,7 @@ async def btn_expense(message: Message, state: FSMContext, session: AsyncSession
     if driver is None:
         await message.answer(msg.DRIVER_LINK_EXPECTED)
         return
-    shift = await shift_service.get_active_shift(session, driver.id)
-    if shift is None:
-        await _refresh_ui(message, session, driver, msg.SHIFT_NO_ACTIVE)
-        return
-
+    # Расход можно вносить в любой момент — смена НЕ обязательна (Правка 3).
     await state.set_state(NewExpense.selecting_category)
     await message.answer(msg.EXPENSE_PICK_CATEGORY, reply_markup=kb.expense_category_keyboard())
 
@@ -1296,12 +1342,9 @@ async def _finalize_expense(
     reply_target: Message,
 ) -> None:
     data = await state.get_data()
+    # Смена не обязательна (Правка 3): расход может быть вне смены — shift_id=None.
     shift = await shift_service.get_active_shift(session, driver.id)
-    if shift is None:
-        await state.clear()
-        await _refresh_ui(reply_target, session, driver, msg.SHIFT_NO_ACTIVE)
-        return
-    trip = await trip_service.get_active_trip(session, shift.id)
+    trip = await trip_service.get_active_trip(session, shift.id) if shift else None
     amount = Decimal(data["amount"])
     category = data["category"]
     description = data.get("description")
@@ -1309,7 +1352,7 @@ async def _finalize_expense(
     expense = await expense_service.create_expense(
         session,
         owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id if trip else None,
+        shift_id=shift.id if shift else None, trip_id=trip.id if trip else None,
         category=category, amount_rub=amount,
         receipt_photo_id=receipt_file_id,
         description=description,
@@ -1317,7 +1360,7 @@ async def _finalize_expense(
     await session.flush()
     await log_event(
         session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id if trip else None,
+        shift_id=shift.id if shift else None, trip_id=trip.id if trip else None,
         event_type="expense_submitted",
         payload={"expense_id": expense.id, "category": category, "amount": str(amount)},
     )
@@ -1637,7 +1680,10 @@ async def cb_sos_confirm(
     vehicle = await session.get(Vehicle, shift.vehicle_id) if shift else None
 
     if trip is not None:
-        state_descr = f"рейс {trip.status}, {trip.origin or '—'} → {trip.destination or '—'}"
+        _st = {"created": "создан", "in_transit": "в пути", "unloading": "на выгрузке"}.get(
+            trip.status, trip.status
+        )
+        state_descr = f"рейс {_st}, {trip.origin or '—'} → {trip.destination or '—'}"
     elif shift is not None:
         state_descr = "в смене, без активного рейса"
     else:

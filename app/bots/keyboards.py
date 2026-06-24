@@ -137,6 +137,13 @@ def back_to_menu_keyboard() -> InlineKeyboardMarkup:
 # =========================================================================
 # ВЛАДЕЛЕЦ — одобрение расхода (inline под уведомлением)
 # =========================================================================
+def odometer_set_keyboard(shift_id: int, which: str) -> InlineKeyboardMarkup:
+    """Кнопка владельцу под фото одометра: вписать пробег. which = 'start'|'end'."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📍 Указать пробег", callback_data=f"odo:{which}:{shift_id}")
+    return kb.as_markup()
+
+
 def expense_decision_keyboard(expense_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Одобрить", callback_data=f"expense:approve:{expense_id}")
@@ -163,6 +170,8 @@ def _kb(*rows: list[str]) -> ReplyKeyboardMarkup:
 
 def driver_no_shift_kb() -> ReplyKeyboardMarkup:
     rows: list[list[str]] = [[BTN_START_SHIFT]]
+    # Расход доступен в любой момент, даже до открытия смены (Правка 3).
+    rows.append([BTN_EXPENSE])
     # Оффлайн-добавление задним числом (когда не было связи на складе).
     rows.append([BTN_ADD_SHIFT, BTN_ADD_TRIP])
     # «Простой» и «Сдал деньги» — по флагам (по умолчанию скрыты).

@@ -68,6 +68,12 @@ class EditExpenseAmount(StatesGroup):
     waiting_for_amount = State()
 
 
+class SetOdometer(StatesGroup):
+    """Владелец вписывает пробег по фото одометра от водителя (Правка 1).
+    В data храним shift_id и which ('start'/'end')."""
+    waiting_for_value = State()
+
+
 class TripCalc(StatesGroup):
     """Быстрый калькулятор рейса без записи в БД."""
     waiting_for_distance = State()
@@ -99,6 +105,11 @@ class NewTrip(StatesGroup):
 class UploadWaybill(StatesGroup):
     """Загрузка фото ТТН."""
     waiting_for_photo = State()
+
+
+class TripDepartLocation(StatesGroup):
+    """Перед выездом («Выехал») спрашиваем геопозицию (Правка 2)."""
+    waiting_for_location = State()
 
 
 class EndTripLocation(StatesGroup):

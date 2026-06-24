@@ -4,8 +4,10 @@
 
 {% block content %}
 {% include "_history_nav.html" %}
-<h2>🧭 История смен</h2>
-<p><small>Последние 200. Клик по строке — фото одометров, рейсы, расходы.</small></p>
+<div class="page-head">
+  <h1>История смен</h1>
+  <p class="sub">Последние 200 смен. Клик по строке — фото одометров, рейсы и расходы.</p>
+</div>
 
 {% if not rows %}
   <p>Смен ещё не было.</p>
@@ -27,9 +29,9 @@
       <td data-label="Начата">{{ shift.started_at.strftime('%d.%m %H:%M') if shift.started_at else '—' }}</td>
       <td data-label="Завершена">{{ shift.ended_at.strftime('%d.%m %H:%M') if shift.ended_at else '—' }}</td>
       <td data-label="Водитель">{{ driver_name }}</td>
-      <td data-label="Машина">{{ plate }}</td>
-      <td data-label="Пробег" class="num">{{ shift.distance_km or '—' }}</td>
-      <td data-label="Статус"><span class="pill">{{ shift.status }}</span></td>
+      <td data-label="Машина">{{ plate }}{% if shift.is_manual %} <span class="badge badge--neutral">вручную</span>{% endif %}</td>
+      <td data-label="Пробег" class="num">{{ shift.distance_km if shift.distance_km is not none else '—' }}</td>
+      <td data-label="Статус"><span class="pill {{ shift.status | pillclass }}">{% if shift.status == 'started' %}в смене{% elif shift.status == 'completed' %}завершена{% elif shift.status == 'cancelled' %}отменена{% else %}{{ shift.status }}{% endif %}</span></td>
     </tr>
     {% endfor %}
   </tbody>

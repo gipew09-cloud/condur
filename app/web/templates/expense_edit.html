@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Расход #{{ expense.id }}{% endblock %}
+
+{% block content %}
+<p><a href="/expenses">← ко всем расходам</a></p>
+<div class="page-head">
+  <h1>Правка расхода</h1>
+  <p class="sub">{{ driver.full_name if driver else '—' }} · {{ expense.created_at.strftime('%d.%m.%Y %H:%M') if expense.created_at else '' }}</p>
+</div>
+
+<div class="card" style="max-width: 560px;">
+  <form action="/expenses/{{ expense.id }}" method="post" enctype="multipart/form-data">
+    <label>Сумма, ₽
+      <input type="text" name="amount_rub" value="{{ (expense.amount_rub or 0) | int }}" inputmode="decimal" required>
+    </label>
+    {% set cat_labels = {'fuel':'Топливо','repair':'Ремонт','parking':'Парковка','fine':'Штраф','toll':'Платная дорога','other':'Прочее'} %}
+    <label>Категория
+      <select name="category">
+        {% for c in categories %}<option value="{{ c }}" {% if expense.category == c %}selected{% endif %}>{{ cat_labels.get(c, c) }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Статус
+      <select name="status">
+        <option value="pending" {% if expense.status == 'pending' %}selected{% endif %}>На проверке</option>
+        <option value="approved" {% if expense.status == 'approved' %}selected{% endif %}>Одобрен</option>
+        <option value="rejected" {% if expense.status == 'rejected' %}selected{% endif %}>Отклонён</option>
+      </select>
+    </label>
+    {% if expense.description %}<p style="color:var(--text-muted);font-size:.9rem;">Описание: {{ expense.description }}</p>{% endif %}
+
+    <p style="margin:1rem 0 .35rem; font-weight:600;">Фото чека</p>
+    {% if expense.receipt_web_data %}
+      <a href="/api/expense-receipt/{{ expense.id }}" target="_blank"><img src="/api/expense-receipt/{{ expense.id }}" style="max-width:100%;max-height:340px;border-radius:8px;border:1px solid var(--border);"></a>
+    {% elif expense.receipt_photo_url %}
+      <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank"><img src="/api/photo/{{ expense.receipt_photo_url }}" style="max-width:100%;max-height:340px;border-radius:8px;border:1px solid var(--border);"></a>
+    {% else %}
+      <p style="color:var(--text-muted);font-size:.9rem;">Чек не приложен.</p>
+    {% endif %}
+    <label style="margin-top:.5rem;">Заменить / добавить фото (до 6 МБ)
+      <input type="file" name="file" accept="image/*,application/pdf">
+    </label>
+
+    <button type="submit" style="margin-top:.75rem;">Сохранить</button>
+  </form>
+</div>
+{% endblock %}
