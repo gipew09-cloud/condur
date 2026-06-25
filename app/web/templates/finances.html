@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Финансы{% endblock %}
+{% block head %}{% include "_sp_styles.html" %}{% endblock %}
 
 {% block content %}
 {% macro rub(value) -%}{{ "{:,.0f}".format(value|float).replace(',', ' ') }}{%- endmacro %}
