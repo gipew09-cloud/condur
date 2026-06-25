@@ -8,12 +8,12 @@
 </div>
 
 {% if totals %}
-<section class="kpi-grid" style="margin-bottom:1.25rem;">
-  <div class="kpi"><small>Всего машин</small><strong>{{ totals.count }}</strong></div>
-  <div class="kpi"><small>Сейчас в рейсе</small><strong>{{ totals.in_work }}</strong></div>
-  <div class="kpi"><small>Выручка за месяц</small><strong>{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Прибыль за месяц</small><strong>{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} ₽</strong></div>
-</section>
+<div class="sp-kpi" style="margin-bottom:1.25rem;">
+  <div class="c"><div class="lbl">Всего машин</div><div class="val">{{ totals.count }}</div></div>
+  <div class="c"><div class="lbl">Сейчас в рейсе</div><div class="val">{{ totals.in_work }}</div></div>
+  <div class="c"><div class="lbl">Выручка за месяц</div><div class="val">{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} <span class="rub">₽</span></div></div>
+  <div class="c dark"><div class="lbl">Прибыль за месяц</div><div class="val">{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} <span class="rub">₽</span></div>{% if in_minus %}<div class="delta neg">машин в минусе: {{ in_minus }}</div>{% endif %}</div>
+</div>
 {% endif %}
 
 {% if notice %}
@@ -25,12 +25,6 @@
       <strong>⚠️ Машина с номером {{ notice.plate }} уже есть в автопарке.</strong>
     {% endif %}
   </div>
-{% endif %}
-
-{% if in_minus %}
-  <p style="color: var(--danger-text); font-weight: 600;">
-    ⚠️ Машин в минусе: {{ in_minus }}
-  </p>
 {% endif %}
 
 <details class="add-panel">
@@ -70,25 +64,10 @@
 {% if not rows %}
   <p>Машин пока нет. Добавьте первую кнопкой «➕ Добавить машину» выше или через бот владельца.</p>
 {% else %}
-  <table>
-    <thead>
-      <tr>
-        <th>Гос. номер</th>
-        <th>Марка</th>
-        <th class="num">Пробег, км</th>
-        <th class="num">Рейсов</th>
-        <th class="num">Выручка</th>
-        <th class="num">Расходы</th>
-        <th class="num">Прибыль</th>
-        <th class="num">Маржа</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody id="vehicles-tbody">
+  <div class="sp-cards" id="vehicles-tbody">
     {% for row in rows %}
       {% include "_vehicle_row.html" with context %}
     {% endfor %}
-    </tbody>
-  </table>
+  </div>
 {% endif %}
 {% endblock %}

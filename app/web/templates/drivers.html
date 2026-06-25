@@ -8,11 +8,11 @@
 </div>
 
 {% if totals %}
-<section class="kpi-grid" style="margin-bottom:1.25rem;">
-  <div class="kpi"><small>Всего водителей</small><strong>{{ totals.count }}</strong></div>
-  <div class="kpi"><small>Сейчас в смене</small><strong>{{ totals.in_shift }}</strong></div>
-  <div class="kpi"><small>Свободны</small><strong>{{ totals.idle }}</strong></div>
-</section>
+<div class="sp-kpi" style="margin-bottom:1.25rem; grid-template-columns: repeat(3, 1fr);">
+  <div class="c"><div class="lbl">Всего водителей</div><div class="val">{{ totals.count }}</div></div>
+  <div class="c"><div class="lbl">Сейчас в смене</div><div class="val">{{ totals.in_shift }}</div></div>
+  <div class="c"><div class="lbl">Свободны</div><div class="val">{{ totals.idle }}</div></div>
+</div>
 {% endif %}
 
 {% if invite %}
@@ -63,24 +63,10 @@
 {% if not rows %}
   <p>Водителей пока нет. Добавьте первого кнопкой «➕ Добавить водителя» выше или через бот владельца.</p>
 {% else %}
-  <table>
-    <thead>
-      <tr>
-        <th>Водитель</th>
-        <th>Тип / ставка</th>
-        <th class="num">Смен</th>
-        <th class="num">Рейсов</th>
-        <th class="num">Пробег, км</th>
-        <th class="num">Выручка</th>
-        <th class="num">Топливо</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody id="drivers-tbody">
-      {% for row in rows %}
-        {% include "_driver_row.html" with context %}
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="sp-cards" id="drivers-tbody">
+    {% for row in rows %}
+      {% include "_driver_row.html" with context %}
+    {% endfor %}
+  </div>
 {% endif %}
 {% endblock %}

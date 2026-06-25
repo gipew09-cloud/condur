@@ -2,9 +2,11 @@
 {% block title %}Финансы{% endblock %}
 
 {% block content %}
+{% macro rub(value) -%}{{ "{:,.0f}".format(value|float).replace(',', ' ') }}{%- endmacro %}
+
 <div class="page-head">
   <h1>Финансы</h1>
-  <p class="sub">Доходы и расходы за период, ручные записи и выгрузка в Excel.</p>
+  <p class="sub">Доходы, расходы и прибыль за период. Денежный поток за 6 месяцев и прибыльность направлений.</p>
 </div>
 
 <form method="GET" action="/finances">
@@ -12,17 +14,73 @@
     <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
     <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
     <label>&nbsp;<button type="submit">Показать</button></label>
-    <label>&nbsp;<a role="button" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Скачать Excel</a></label>
-    <label>&nbsp;<a role="button" class="secondary outline" href="/acts?period_from={{ period_from }}&period_to={{ period_to }}">📄 Акты по РЦ</a></label>
+    <label>&nbsp;<a role="button" class="secondary outline" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Excel</a></label>
+    <label>&nbsp;<a role="button" class="secondary outline" href="/acts?period_from={{ period_from }}&period_to={{ period_to }}">📄 Акт 101 РС</a></label>
   </div>
 </form>
 
-<section class="kpi-grid" style="margin-top: 1rem;">
-  <div class="kpi"><small>Доход (рейсы + ручной)</small><strong>{{ "{:,.0f}".format(summary.total_income).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Расход (топливо + одобренные + ручной)</small><strong>{{ "{:,.0f}".format(summary.total_expense).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(summary.profit).replace(',', ' ') }} ₽</strong></div>
-</section>
+<div class="sp" style="margin-top: 1rem;">
 
+  <!-- KPI -->
+  <div class="sp-kpi">
+    <div class="c">
+      <div class="lbl">Доход за период</div>
+      <div class="val">{{ rub(summary.total_income) }} <span class="rub">₽</span></div>
+    </div>
+    <div class="c">
+      <div class="lbl">Расход за период</div>
+      <div class="val">{{ rub(summary.total_expense) }} <span class="rub">₽</span></div>
+    </div>
+    <div class="c dark">
+      <div class="lbl">Прибыль за период</div>
+      <div class="val">{{ rub(summary.profit) }} <span class="rub">₽</span></div>
+      <div class="delta {{ 'neg' if summary.profit < 0 else '' }}">маржа {{ "%.0f"|format(margin) }}%</div>
+    </div>
+    <div class="c">
+      <div class="lbl">В т.ч. топливо</div>
+      <div class="val">{{ rub(summary.fuel) }} <span class="rub">₽</span></div>
+    </div>
+  </div>
+
+  <!-- Графики -->
+  <div class="sp-charts">
+    <div class="sp-card">
+      <div class="sp-panel__head">
+        <div class="l">
+          <span class="ttl">Денежный поток · 6 месяцев</span>
+          <span class="sp-leg"><span class="sq"></span>Доход</span>
+          <span class="sp-leg"><span class="sq red"></span>Расход</span>
+          <span class="sp-leg"><span class="line"></span>Прибыль</span>
+        </div>
+      </div>
+      <div style="padding: 2px 16px 14px;">
+        <div style="position: relative; height: 240px;"><canvas id="cashflowChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="sp-card">
+      <div class="sp-panel__head"><span class="ttl">Прибыльность направлений</span></div>
+      {% if directions %}
+        <div class="sp-rank">
+          {% for d in directions %}
+          <div class="sp-rank__row">
+            <div class="sp-rank__top">
+              <span class="sp-rank__name" title="{{ d.route }}">{{ d.route }}</span>
+              <span class="sp-rank__val {{ 'neg' if d.profit < 0 else '' }}">{{ rub(d.profit) }} ₽</span>
+            </div>
+            <div class="sp-rank__bar"><i class="{{ 'neg' if d.profit < 0 else '' }}" style="width: {{ d.bar }}%;"></i></div>
+            <div class="sp-rank__meta">{{ d.trips }} рейс(ов) · выручка {{ rub(d.revenue) }} ₽</div>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="sp-empty">За период нет завершённых рейсов с выручкой.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ===== Ручные записи (функционал без изменений) ===== -->
 <h3 style="margin-top: 2rem;">Добавить запись вручную</h3>
 <form hx-post="/finances/add" hx-target="#entries-tbody" hx-swap="afterbegin" hx-on::after-request="this.reset()">
   <div class="grid">
@@ -54,4 +112,29 @@
 <p>Записей нет.</p>
 <table style="display:none;"><tbody id="entries-tbody"></tbody></table>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+  const fmtShort = (v) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v);
+  const cf = {{ cashflow | tojson }};
+  new Chart(document.getElementById('cashflowChart'), {
+    data: {
+      labels: cf.labels,
+      datasets: [
+        { type: 'bar', label: 'Доход', data: cf.revenue, backgroundColor: '#2f74f5', borderRadius: 4, maxBarThickness: 26, order: 2 },
+        { type: 'bar', label: 'Расход', data: cf.expenses, backgroundColor: 'rgba(197,54,43,.72)', borderRadius: 4, maxBarThickness: 26, order: 2 },
+        { type: 'line', label: 'Прибыль', data: cf.profit, borderColor: '#1f9d57', backgroundColor: 'rgba(31,157,87,.10)', borderWidth: 2, tension: .35, fill: false, pointRadius: 3, order: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } } },
+      scales: { x: { grid: { display: false } }, y: { ticks: { callback: fmtShort }, grid: { color: '#f1f3f6' } } },
+    },
+  });
+</script>
 {% endblock %}

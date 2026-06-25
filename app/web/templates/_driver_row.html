@@ -7,61 +7,52 @@
     'fixed_per_month': 'Оклад/мес'
 } %}
 {% if edit %}
-<tr id="driver-row-{{ d.id }}">
-  <td colspan="8">
-    <form hx-post="/drivers/{{ d.id }}" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="edit-form">
-      <label>
-        ФИО
-        <input type="text" name="full_name" value="{{ d.full_name }}" required>
-      </label>
-      <label>
-        Телефон
-        <input type="text" name="phone" value="{{ d.phone or '' }}" placeholder="+7XXXXXXXXXX">
-      </label>
-      <label>
-        Тип ЗП
-        <select name="salary_type">
-          <option value="per_km" {% if d.salary_type == 'per_km' %}selected{% endif %}>За км</option>
-          <option value="per_trip" {% if d.salary_type == 'per_trip' %}selected{% endif %}>За рейс</option>
-          <option value="percent" {% if d.salary_type == 'percent' %}selected{% endif %}>Процент</option>
-          <option value="fixed_per_shift" {% if d.salary_type == 'fixed_per_shift' %}selected{% endif %}>Фикс/смена</option>
-          <option value="fixed_per_month" {% if d.salary_type == 'fixed_per_month' %}selected{% endif %}>Оклад/мес</option>
-        </select>
-      </label>
-      <label>
-        Ставка
-        <input type="text" name="salary_rate" value="{{ d.salary_rate }}">
-      </label>
-      <label>
-        Суточные, ₽
-        <input type="text" name="per_diem_rub" value="{{ d.per_diem_rub }}">
-      </label>
-      <label>
-        Старт смены
-        <input type="text" name="shift_start_time" value="{{ d.shift_start_time or '' }}" placeholder="08:00">
-      </label>
-      <button type="submit">Сохранить</button>
-      <a href="#" hx-get="/drivers/{{ d.id }}/cancel" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
-      <a href="#" hx-delete="/drivers/{{ d.id }}" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML"
-         hx-confirm="Удалить водителя {{ d.full_name }}? История смен сохранится."
-         role="button" class="contrast outline">🗑 Удалить</a>
-    </form>
-  </td>
-</tr>
+<div class="sp-vcard sp-vcard--edit" id="driver-row-{{ d.id }}" style="grid-column: 1 / -1;">
+  <form hx-post="/drivers/{{ d.id }}" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" class="edit-form">
+    <label>ФИО <input type="text" name="full_name" value="{{ d.full_name }}" required></label>
+    <label>Телефон <input type="text" name="phone" value="{{ d.phone or '' }}" placeholder="+7XXXXXXXXXX"></label>
+    <label>Тип ЗП
+      <select name="salary_type">
+        <option value="per_km" {% if d.salary_type == 'per_km' %}selected{% endif %}>За км</option>
+        <option value="per_trip" {% if d.salary_type == 'per_trip' %}selected{% endif %}>За рейс</option>
+        <option value="percent" {% if d.salary_type == 'percent' %}selected{% endif %}>Процент</option>
+        <option value="fixed_per_shift" {% if d.salary_type == 'fixed_per_shift' %}selected{% endif %}>Фикс/смена</option>
+        <option value="fixed_per_month" {% if d.salary_type == 'fixed_per_month' %}selected{% endif %}>Оклад/мес</option>
+      </select>
+    </label>
+    <label>Ставка <input type="text" name="salary_rate" value="{{ d.salary_rate }}"></label>
+    <label>Суточные, ₽ <input type="text" name="per_diem_rub" value="{{ d.per_diem_rub }}"></label>
+    <label>Старт смены <input type="text" name="shift_start_time" value="{{ d.shift_start_time or '' }}" placeholder="08:00"></label>
+    <button type="submit">Сохранить</button>
+    <a href="#" hx-get="/drivers/{{ d.id }}/cancel" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
+    <a href="#" hx-delete="/drivers/{{ d.id }}" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML"
+       hx-confirm="Удалить водителя {{ d.full_name }}? История смен сохранится."
+       role="button" class="contrast outline">🗑 Удалить</a>
+  </form>
+</div>
 {% else %}
-<tr id="driver-row-{{ d.id }}">
-  <td data-label="Водитель">{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill">не активирован</span>{% endif %}
-    {% if row.active_shift %}<span class="badge badge--success">🟢 в смене</span>
-    {% elif row.idle_label %}<span class="badge badge--warning">простаивает с {{ row.idle_label }}</span>{% endif %}
-  </td>
-  <td data-label="Тип / ставка">{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}</td>
-  <td data-label="Смен" class="num">{{ row.shifts }}</td>
-  <td data-label="Рейсов" class="num">{{ row.trips }}</td>
-  <td data-label="Пробег, км" class="num">{{ row.km }}</td>
-  <td data-label="Выручка" class="num">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }}</td>
-  <td data-label="Топливо" class="num">{{ "{:,.0f}".format(row.fuel_cost).replace(',', ' ') }}</td>
-  <td>
+{% set parts = d.full_name.split() %}
+{% set initials = ((parts[0][:1] if parts else '') ~ (parts[1][:1] if parts|length > 1 else '')) | upper %}
+<div class="sp-vcard" id="driver-row-{{ d.id }}">
+  <div class="sp-vcard__top">
+    <span class="sp-ava">{{ initials or '—' }}</span>
+    <div class="grow">
+      <div class="sp-vcard__title">{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill pill--neutral">не активирован</span>{% endif %}</div>
+      <div class="sp-vcard__sub">{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}</div>
+    </div>
+    {% if row.active_shift %}<span class="pill pill--success">в смене</span>
+    {% elif row.idle_label %}<span class="pill pill--warn">простой</span>
+    {% else %}<span class="pill pill--neutral">свободен</span>{% endif %}
+  </div>
+  <div class="sp-vcard__stats">
+    <div class="sp-stat"><div class="k">Смен</div><div class="v">{{ row.shifts }}</div></div>
+    <div class="sp-stat"><div class="k">Рейсов</div><div class="v">{{ row.trips }}</div></div>
+    <div class="sp-stat"><div class="k">Пробег</div><div class="v">{{ row.km }} <span class="u">км</span></div></div>
+    <div class="sp-stat"><div class="k">Выручка</div><div class="v">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }} <span class="u">₽</span></div></div>
+  </div>
+  <div class="sp-vcard__foot">
+    <span class="sp-vcard__sub">{% if row.idle_label %}простаивает с {{ row.idle_label }}{% else %}топливо {{ "{:,.0f}".format(row.fuel_cost).replace(',', ' ') }} ₽{% endif %}</span>
     <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">✎ Изменить</a>
-  </td>
-</tr>
+  </div>
+</div>
 {% endif %}

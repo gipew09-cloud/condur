@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Реквизиты{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Реквизиты</h1>
+  <p class="sub">Данные Исполнителя и заказчиков для шапки акта 101 РС: наименование, ИНН/КПП, адрес, банк. Заполни один раз — подставятся во все акты.</p>
+</div>
+
+<article>
+  <header><strong>Исполнитель (вы)</strong></header>
+  <form method="POST" action="/requisites/executor">
+    <label>Полное наименование
+      <input name="executor_name" value="{{ owner.executor_name or '' }}"
+             placeholder="Индивидуальный предприниматель Иванов Иван Иванович">
+    </label>
+    <div class="grid">
+      <label>ИНН <input name="inn" value="{{ owner.inn or '' }}" placeholder="781699567368"></label>
+      <label>ОГРНИП <input name="ogrnip" value="{{ owner.ogrnip or '' }}" placeholder="319784700204223"></label>
+    </div>
+    <label>Юридический адрес
+      <textarea name="legal_address" rows="2" placeholder="РФ, 192283, г. Санкт-Петербург, ул. ...">{{ owner.legal_address or '' }}</textarea>
+    </label>
+    <label>Банк <input name="bank_name" value="{{ owner.bank_name or '' }}" placeholder='ФИЛИАЛ ПАО "БАНК УРАЛСИБ" ...'></label>
+    <div class="grid">
+      <label>Расчётный счёт (р/с) <input name="bank_account" value="{{ owner.bank_account or '' }}"></label>
+      <label>Корр. счёт (к/с) <input name="corr_account" value="{{ owner.corr_account or '' }}"></label>
+      <label>БИК <input name="bik" value="{{ owner.bik or '' }}" placeholder="044030706"></label>
+    </div>
+    <label>Подписант (кто подписывает акт)
+      <input name="signer_name" value="{{ owner.signer_name or '' }}" placeholder="Иванов И. И.">
+    </label>
+    <button type="submit">Сохранить реквизиты Исполнителя</button>
+  </form>
+</article>
+
+<article>
+  <header><strong>Заказчики</strong> <span style="color:var(--text-muted);">({{ customers|length }})</span></header>
+
+  {% for c in customers %}
+  <details>
+    <summary>{{ c.name }}{% if c.inn %} · ИНН {{ c.inn }}{% endif %}</summary>
+    <form method="POST" action="/customers/{{ c.id }}">
+      <label>Наименование <input name="name" value="{{ c.name }}" required></label>
+      <div class="grid">
+        <label>ИНН <input name="inn" value="{{ c.inn or '' }}"></label>
+        <label>КПП <input name="kpp" value="{{ c.kpp or '' }}"></label>
+      </div>
+      <label>Юридический адрес
+        <textarea name="legal_address" rows="2">{{ c.legal_address or '' }}</textarea>
+      </label>
+      <label>Банк <input name="bank_name" value="{{ c.bank_name or '' }}"></label>
+      <div class="grid">
+        <label>Расчётный счёт (р/с) <input name="bank_account" value="{{ c.bank_account or '' }}"></label>
+        <label>Корр. счёт (к/с) <input name="corr_account" value="{{ c.corr_account or '' }}"></label>
+        <label>БИК <input name="bik" value="{{ c.bik or '' }}"></label>
+      </div>
+      <div class="grid">
+        <label>Договор № <input name="contract_number" value="{{ c.contract_number or '' }}" placeholder="№521"></label>
+        <label>Дата договора <input type="date" name="contract_date" value="{{ c.contract_date.isoformat() if c.contract_date else '' }}"></label>
+        <label>Подписант <input name="signer_name" value="{{ c.signer_name or '' }}"></label>
+      </div>
+      <div class="actions">
+        <button type="submit">Сохранить</button>
+        <button type="submit" formaction="/customers/{{ c.id }}/delete" class="secondary outline"
+                onclick="return confirm('Удалить заказчика «{{ c.name }}»?')">Удалить</button>
+      </div>
+    </form>
+  </details>
+  {% else %}
+  <p style="color:var(--text-muted);">Пока нет ни одного заказчика. Добавьте первого ниже.</p>
+  {% endfor %}
+
+  <details>
+    <summary><strong>+ Добавить заказчика</strong></summary>
+    <form method="POST" action="/customers/add">
+      <label>Наименование <input name="name" placeholder='ООО "Рузисеть"' required></label>
+      <div class="grid">
+        <label>ИНН <input name="inn" placeholder="7802533479"></label>
+        <label>КПП <input name="kpp" placeholder="781701001"></label>
+      </div>
+      <label>Юридический адрес <textarea name="legal_address" rows="2"></textarea></label>
+      <label>Банк <input name="bank_name"></label>
+      <div class="grid">
+        <label>Расчётный счёт (р/с) <input name="bank_account"></label>
+        <label>Корр. счёт (к/с) <input name="corr_account"></label>
+        <label>БИК <input name="bik"></label>
+      </div>
+      <div class="grid">
+        <label>Договор № <input name="contract_number" placeholder="№521"></label>
+        <label>Дата договора <input type="date" name="contract_date"></label>
+        <label>Подписант <input name="signer_name"></label>
+      </div>
+      <button type="submit">Добавить заказчика</button>
+    </form>
+  </details>
+</article>
+{% endblock %}

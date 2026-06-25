@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, AsyncIterator
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -33,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models import (
+    Customer,
     Driver,
     Event,
     Expense,
@@ -509,13 +511,14 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
     расход = одобренные expenses + ручные расходы. fuel_cost_rub отдельно
     НЕ суммируем — иначе двойной счёт. profit = доход − расход.
     """
-    period = period if period in ("7d", "30d", "12m") else "7d"
+    period = period if period in ("7d", "30d", "6m", "12m") else "7d"
     today = date.today()
 
-    if period == "12m":
-        first = _add_months(_month_floor(today), -11)
+    if period in ("6m", "12m"):
+        months = 12 if period == "12m" else 6
+        first = _add_months(_month_floor(today), -(months - 1))
         start = first
-        keys = [_add_months(first, i) for i in range(12)]
+        keys = [_add_months(first, i) for i in range(months)]
         labels = [f"{_RU_MON[k.month - 1]} {k:%y}" for k in keys]
         bucket_keys = [(k.year, k.month) for k in keys]
 
@@ -994,6 +997,14 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
     total_expense = approved
     profit = revenue - total_expense
     margin = (profit / revenue * Decimal(100)) if revenue > 0 else Decimal(0)
+    # машина сейчас в работе? (есть открытая смена) — для бейджа на карточке
+    active = (
+        await session.execute(
+            select(func.count(Shift.id)).where(
+                Shift.vehicle_id == vehicle.id, Shift.status == "started"
+            )
+        )
+    ).scalar_one() or 0
     return {
         "vehicle": vehicle,
         "km": km, "fuel": fuel,
@@ -1002,6 +1013,7 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
         "expense": total_expense,
         "profit": profit,
         "margin": margin,
+        "active": bool(active),
     }
 
 
@@ -1271,6 +1283,43 @@ async def finances_page(
     df, dt = _parse_period(period_from, period_to)
     summary = await _finance_summary(session, owner.id, df, dt)
 
+    # Денежный поток за 6 месяцев (тот же датасет дохода/расхода, что у дашборда).
+    cashflow = await _dashboard_chart(session, owner.id, "6m")
+
+    # Прибыльность направлений: прибыль завершённых рейсов по маршруту за период.
+    dir_res = await session.execute(
+        select(
+            Trip.origin,
+            Trip.destination,
+            func.count(Trip.id),
+            func.coalesce(func.sum(Trip.revenue_rub), 0),
+            func.coalesce(func.sum(Trip.profit_rub), 0),
+        )
+        .where(
+            Trip.owner_id == owner.id,
+            Trip.status == "completed",
+            func.date(Trip.completed_at) >= df,
+            func.date(Trip.completed_at) <= dt,
+        )
+        .group_by(Trip.origin, Trip.destination)
+        .order_by(func.coalesce(func.sum(Trip.profit_rub), 0).desc())
+        .limit(8)
+    )
+    dir_rows = dir_res.all()
+    max_abs = max((abs(Decimal(r[4] or 0)) for r in dir_rows), default=Decimal(0)) or Decimal(1)
+    directions = [
+        {
+            "route": f"{o or '—'} → {d or '—'}",
+            "trips": cnt,
+            "revenue": Decimal(rev or 0),
+            "profit": Decimal(pr or 0),
+            "bar": int(abs(Decimal(pr or 0)) / max_abs * 100),
+        }
+        for o, d, cnt, rev, pr in dir_rows
+    ]
+    inc = summary["total_income"]
+    margin = float(summary["profit"] / inc * 100) if inc > 0 else 0.0
+
     entries_res = await session.execute(
         select(ManualEntry)
         .where(
@@ -1289,6 +1338,9 @@ async def finances_page(
             "owner": owner,
             "entries": entries,
             "summary": summary,
+            "cashflow": cashflow,
+            "directions": directions,
+            "margin": margin,
             "period_from": df.isoformat(),
             "period_to": dt.isoformat(),
             "today": date.today().isoformat(),
@@ -1386,6 +1438,44 @@ def _acts_range(df: date, dt: date) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _executor_from_owner(owner: Owner) -> dict:
+    """Реквизиты Исполнителя для шапки акта (берём с owner)."""
+    return {
+        "full_name": owner.executor_name or owner.company_name or "",
+        "inn": owner.inn or "",
+        "ogrnip": owner.ogrnip or "",
+        "address": owner.legal_address or "",
+        "bank_name": owner.bank_name or "",
+        "account": owner.bank_account or "",
+        "corr_account": owner.corr_account or "",
+        "bik": owner.bik or "",
+        "signer_name": owner.signer_name or owner.full_name or "",
+    }
+
+
+def _customer_to_dict(c: Customer | None) -> dict:
+    """Реквизиты Заказчика для шапки акта."""
+    if c is None:
+        return {
+            "name": "", "inn": "", "kpp": "", "address": "", "bank_name": "",
+            "account": "", "corr_account": "", "bik": "", "contract_number": "",
+            "contract_date": None, "signer_name": "",
+        }
+    return {
+        "name": c.name or "",
+        "inn": c.inn or "",
+        "kpp": c.kpp or "",
+        "address": c.legal_address or "",
+        "bank_name": c.bank_name or "",
+        "account": c.bank_account or "",
+        "corr_account": c.corr_account or "",
+        "bik": c.bik or "",
+        "contract_number": c.contract_number or "",
+        "contract_date": c.contract_date,
+        "signer_name": c.signer_name or "",
+    }
+
+
 @app.get("/acts", response_class=HTMLResponse)
 async def acts_page(
     request: Request,
@@ -1416,11 +1506,27 @@ async def acts_page(
         {"rc": dest or "—", "trips": cnt, "total": Decimal(total or 0)}
         for dest, cnt, total in rows_res.all()
     ]
+    total_amount = sum((p["total"] for p in preview), Decimal(0))
+    total_trips = sum(p["trips"] for p in preview)
+
+    customers_res = await session.execute(
+        select(Customer)
+        .where(Customer.owner_id == owner.id, Customer.is_active.is_(True))
+        .order_by(Customer.name)
+    )
+    customers = list(customers_res.scalars().all())
+    # реквизиты Исполнителя считаем заполненными, если есть ИНН и наименование
+    requisites_ready = bool(owner.inn and (owner.executor_name or owner.company_name))
+
     return templates.TemplateResponse(
         "acts.html",
         {
             "request": request, "owner": owner, "preview": preview,
             "period_from": df.isoformat(), "period_to": dt.isoformat(),
+            "customers": customers,
+            "total_amount": total_amount, "total_trips": total_trips,
+            "act_date": date.today().isoformat(),
+            "requisites_ready": requisites_ready,
             "active_page": "finances",
         },
     )
@@ -1432,9 +1538,32 @@ async def acts_export(
     session: Annotated[AsyncSession, Depends(get_session)],
     period_from: Annotated[str | None, Query()] = None,
     period_to: Annotated[str | None, Query()] = None,
+    customer_id: Annotated[str | None, Query()] = None,
+    act_number: Annotated[str, Query()] = "",
+    act_date: Annotated[str | None, Query()] = None,
 ):
+    """Акт оказанных услуг (форма 101 РС): один лист со всеми рейсами за период,
+    с реквизитами Исполнителя/Заказчика, итогом и суммой прописью."""
     df, dt = _parse_period(period_from, period_to)
     start, end = _acts_range(df, dt)
+
+    # Заказчик: явно выбранный или первый активный у владельца.
+    # customer_id приходит строкой (пустая, если заказчиков нет) — парсим мягко.
+    customer: Customer | None = None
+    cid = int(customer_id) if (customer_id or "").strip().isdigit() else None
+    if cid is not None:
+        cand = await session.get(Customer, cid)
+        if cand is not None and cand.owner_id == owner.id:
+            customer = cand
+    if customer is None:
+        res = await session.execute(
+            select(Customer)
+            .where(Customer.owner_id == owner.id, Customer.is_active.is_(True))
+            .order_by(Customer.id)
+            .limit(1)
+        )
+        customer = res.scalar_one_or_none()
+
     rows_res = await session.execute(
         select(Trip, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Trip.driver_id)
@@ -1446,28 +1575,170 @@ async def acts_export(
             Trip.completed_at < end,
             Trip.revenue_rub.is_not(None),
         )
-        .order_by(Trip.destination, Trip.completed_at)
+        .order_by(Trip.completed_at, Trip.id)
     )
-    groups: dict[str, list[dict]] = {}
-    for trip, driver_name, plate in rows_res.all():
-        rc = trip.destination or "Без РЦ"
-        groups.setdefault(rc, []).append({
+    rows = [
+        {
             "date": trip.completed_at,
             "origin": trip.origin,
             "destination": trip.destination,
             "plate": plate,
             "driver": driver_name,
-            "revenue": trip.revenue_rub,
-        })
+            "amount": trip.revenue_rub,
+        }
+        for trip, driver_name, plate in rows_res.all()
+    ]
 
-    wb = act_service.build_acts_workbook(groups, df, dt, owner.company_name or "Перевозчик")
+    try:
+        adate = date.fromisoformat(act_date) if act_date else date.today()
+    except ValueError:
+        adate = date.today()
+    number = (act_number or "").strip() or "б/н"
+
+    wb = act_service.build_act_101rs(
+        act_number=number,
+        act_date=adate,
+        period_from=df,
+        period_to=dt,
+        executor=_executor_from_owner(owner),
+        customer=_customer_to_dict(customer),
+        rows=rows,
+    )
     buf = act_service.workbook_bytes(wb)
-    filename = f"akty_RC_{df.isoformat()}_{dt.isoformat()}.xlsx"
+    # Имя файла может содержать кириллицу (напр. «101РС») — заголовок ставим по
+    # RFC 5987: ascii-фолбэк + filename* в UTF-8.
+    utf8_name = quote(f"Акт_{number}_{adate.isoformat()}.xlsx")
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="akt_{adate.isoformat()}.xlsx"; '
+                f"filename*=UTF-8''{utf8_name}"
+            )
+        },
     )
+
+
+# =====================================================================
+# РЕКВИЗИТЫ: Исполнитель (owner) + заказчики (customers) — шапка акта 101 РС
+# =====================================================================
+def _norm(v: str | None) -> str | None:
+    v = (v or "").strip()
+    return v or None
+
+
+def _apply_customer_form(c: Customer, form: dict) -> None:
+    c.name = (form.get("name") or "").strip()
+    c.inn = _norm(form.get("inn"))
+    c.kpp = _norm(form.get("kpp"))
+    c.legal_address = _norm(form.get("legal_address"))
+    c.bank_name = _norm(form.get("bank_name"))
+    c.bank_account = _norm(form.get("bank_account"))
+    c.corr_account = _norm(form.get("corr_account"))
+    c.bik = _norm(form.get("bik"))
+    c.contract_number = _norm(form.get("contract_number"))
+    c.signer_name = _norm(form.get("signer_name"))
+    cd = (form.get("contract_date") or "").strip()
+    try:
+        c.contract_date = date.fromisoformat(cd) if cd else None
+    except ValueError:
+        c.contract_date = None
+
+
+@app.get("/requisites", response_class=HTMLResponse)
+async def requisites_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    res = await session.execute(
+        select(Customer).where(Customer.owner_id == owner.id).order_by(Customer.name)
+    )
+    customers = list(res.scalars().all())
+    return templates.TemplateResponse(
+        "requisites.html",
+        {
+            "request": request, "owner": owner, "customers": customers,
+            "active_page": "requisites",
+        },
+    )
+
+
+@app.post("/requisites/executor")
+async def requisites_save_executor(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    executor_name: Annotated[str, Form()] = "",
+    inn: Annotated[str, Form()] = "",
+    ogrnip: Annotated[str, Form()] = "",
+    legal_address: Annotated[str, Form()] = "",
+    bank_name: Annotated[str, Form()] = "",
+    bank_account: Annotated[str, Form()] = "",
+    corr_account: Annotated[str, Form()] = "",
+    bik: Annotated[str, Form()] = "",
+    signer_name: Annotated[str, Form()] = "",
+):
+    owner.executor_name = _norm(executor_name)
+    owner.inn = _norm(inn)
+    owner.ogrnip = _norm(ogrnip)
+    owner.legal_address = _norm(legal_address)
+    owner.bank_name = _norm(bank_name)
+    owner.bank_account = _norm(bank_account)
+    owner.corr_account = _norm(corr_account)
+    owner.bik = _norm(bik)
+    owner.signer_name = _norm(signer_name)
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
+
+
+@app.post("/customers/add")
+async def customers_add(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    form = dict(await request.form())
+    name = (form.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Не указано наименование заказчика")
+    customer = Customer(owner_id=owner.id)
+    _apply_customer_form(customer, form)
+    session.add(customer)
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
+
+
+@app.post("/customers/{customer_id}")
+async def customers_edit(
+    customer_id: int,
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    customer = await session.get(Customer, customer_id)
+    if customer is None or customer.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    form = dict(await request.form())
+    if not (form.get("name") or "").strip():
+        raise HTTPException(status_code=400, detail="Не указано наименование заказчика")
+    _apply_customer_form(customer, form)
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
+
+
+@app.post("/customers/{customer_id}/delete")
+async def customers_delete(
+    customer_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    customer = await session.get(Customer, customer_id)
+    if customer is None or customer.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    await session.delete(customer)
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
 
 
 # --------- Excel formatting helpers ---------
@@ -2198,6 +2469,16 @@ async def expenses_page(
         "pending": sum(1 for e, _, _ in rows if e.status == "pending"),
         "approved": sum(1 for e, _, _ in rows if e.status == "approved"),
     }
+    # Разбивка по категориям для доната (из уже загруженных строк).
+    _cat_ru = {"fuel": "Топливо", "repair": "Ремонт", "parking": "Парковка",
+               "fine": "Штрафы", "toll": "Платные дороги", "other": "Прочее"}
+    cat_sums: dict[str, Decimal] = {}
+    for e, _, _ in rows:
+        cat_sums[e.category] = cat_sums.get(e.category, Decimal(0)) + (e.amount_rub or Decimal(0))
+    breakdown = [
+        {"label": _cat_ru.get(c, c), "amount": float(v)}
+        for c, v in sorted(cat_sums.items(), key=lambda kv: kv[1], reverse=True)
+    ]
     return templates.TemplateResponse(
         "expenses.html",
         {
@@ -2206,6 +2487,7 @@ async def expenses_page(
             "filter_status": status or "",
             "categories": _EXPENSE_CATEGORIES,
             "active_page": "trips", "totals": totals,
+            "breakdown": breakdown,
         },
     )
 

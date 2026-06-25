@@ -1,24 +1,49 @@
 {% extends "base.html" %}
-{% block title %}Акты по РЦ{% endblock %}
+{% block title %}Акт 101 РС{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <h1>Акты по РЦ</h1>
-  <p class="sub">Акт оказанных услуг (форма 101 РС) по каждому распределительному центру за период — отдельным листом, с итогом и суммой прописью. Скачивается в Excel.</p>
+  <h1>Акт оказанных услуг (101 РС)</h1>
+  <p class="sub">Один акт за период со всеми рейсами, реквизитами Исполнителя и Заказчика, итогом и суммой прописью. Скачивается в Excel.</p>
 </div>
 
-<form method="GET" action="/acts">
+{% if not requisites_ready %}
+<article style="border-left:4px solid var(--danger); background:var(--danger-bg);">
+  Не заполнены реквизиты Исполнителя — в шапке акта будут пропуски.
+  <a href="/requisites">Заполнить реквизиты →</a>
+</article>
+{% endif %}
+{% if not customers %}
+<article style="border-left:4px solid var(--warn); background:var(--warn-bg);">
+  Нет ни одного заказчика. <a href="/requisites">Добавить заказчика →</a> — без него акт выйдет без реквизитов Заказчика.
+</article>
+{% endif %}
+
+<form method="GET">
   <div class="grid">
     <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
     <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
-    <label>&nbsp;<button type="submit">Показать</button></label>
-    <label>&nbsp;<a role="button" href="/acts/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Скачать акты (.xlsx)</a></label>
+    <label>Заказчик
+      <select name="customer_id">
+        {% for c in customers %}
+        <option value="{{ c.id }}">{{ c.name }}</option>
+        {% else %}
+        <option value="">— нет заказчиков —</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <div class="grid">
+    <label>№ акта <input name="act_number" placeholder="102РС"></label>
+    <label>Дата акта <input type="date" name="act_date" value="{{ act_date }}"></label>
+    <label>&nbsp;<button type="submit" formaction="/acts" class="secondary">Показать</button></label>
+    <label>&nbsp;<button type="submit" formaction="/acts/export.xlsx">⬇ Скачать акт (.xlsx)</button></label>
   </div>
 </form>
 
 {% if preview %}
 <table style="margin-top:1rem;">
-  <thead><tr><th>РЦ (пункт назначения)</th><th class="num">Рейсов</th><th class="num">Сумма</th></tr></thead>
+  <thead><tr><th>Пункт назначения (РЦ)</th><th class="num">Рейсов</th><th class="num">Сумма</th></tr></thead>
   <tbody>
     {% for p in preview %}
     <tr>
@@ -27,9 +52,14 @@
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(p.total).replace(',', ' ') }} ₽</td>
     </tr>
     {% endfor %}
+    <tr style="font-weight:600;">
+      <td>ИТОГО за период</td>
+      <td class="num">{{ total_trips }}</td>
+      <td class="num">{{ "{:,.0f}".format(total_amount).replace(',', ' ') }} ₽</td>
+    </tr>
   </tbody>
 </table>
-<p style="color:var(--text-muted); font-size:.9rem; margin-top:.5rem;">В файле — отдельный лист на каждый РЦ: рейсы за период, ИТОГО и сумма прописью.</p>
+<p style="color:var(--text-muted); font-size:.9rem; margin-top:.5rem;">В акте все эти рейсы идут одним списком (1, 2, 3…). Таблица выше — предпросмотр итогов по РЦ.</p>
 {% else %}
 <p style="margin-top:1rem;">За период завершённых рейсов с указанной выручкой нет.</p>
 {% endif %}

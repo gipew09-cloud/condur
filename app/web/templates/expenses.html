@@ -19,12 +19,25 @@
 </div>
 
 {% if totals %}
-<section class="kpi-grid" style="margin-bottom:1.25rem;">
-  <div class="kpi"><small>Записей</small><strong>{{ totals.count }}</strong></div>
-  <div class="kpi"><small>Сумма</small><strong>{{ "{:,.0f}".format(totals.sum).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>На проверке</small><strong>{{ totals.pending }}</strong></div>
-  <div class="kpi"><small>Одобрено</small><strong>{{ totals.approved }}</strong></div>
-</section>
+<div class="sp-kpi" style="margin-bottom:1.25rem;">
+  <div class="c"><div class="lbl">Записей</div><div class="val">{{ totals.count }}</div></div>
+  <div class="c dark"><div class="lbl">Сумма</div><div class="val">{{ "{:,.0f}".format(totals.sum).replace(',', ' ') }} <span class="rub">₽</span></div></div>
+  <div class="c"><div class="lbl">На проверке</div><div class="val">{{ totals.pending }}</div></div>
+  <div class="c"><div class="lbl">Одобрено</div><div class="val">{{ totals.approved }}</div></div>
+</div>
+{% endif %}
+
+{% if breakdown %}
+<div class="sp-card" style="margin-bottom:1.25rem;">
+  <div class="sp-panel__head"><span class="ttl">Структура расходов по категориям</span></div>
+  <div class="sp-donut__body">
+    <div class="sp-donut__wrap">
+      <canvas id="expenseChart"></canvas>
+      <div class="sp-donut__center"><b id="donutTotal">—</b><small>₽ всего</small></div>
+    </div>
+    <div class="sp-donut__legend" id="donutLegend"></div>
+  </div>
+</div>
 {% endif %}
 
 <form method="GET" action="/expenses">
@@ -87,5 +100,36 @@
     {% endfor %}
   </tbody>
 </table>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if breakdown %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+  const breakdown = {{ breakdown | tojson }};
+  const DONUT_COLORS = { 'Топливо':'#2563eb','Ремонт':'#e0a32e','Парковка':'#22a565','Штрафы':'#c5362b','Платные дороги':'#cbd2db','Прочее':'#5b6573' };
+  const expEl = document.getElementById('expenseChart');
+  if (expEl && breakdown.length) {
+    const total = breakdown.reduce((s, b) => s + b.amount, 0);
+    const colors = breakdown.map((b, i) => DONUT_COLORS[b.label] || ['#2563eb','#22a565','#e0a32e','#cbd2db','#c5362b','#5b6573'][i % 6]);
+    new Chart(expEl, {
+      type: 'doughnut',
+      data: { labels: breakdown.map(b => b.label), datasets: [{ data: breakdown.map(b => b.amount), backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '70%',
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtRub(c.parsed)}` } } } },
+    });
+    document.getElementById('donutTotal').textContent = total >= 1000 ? Math.round(total / 1000) + 'к' : Math.round(total);
+    const legend = document.getElementById('donutLegend');
+    breakdown.forEach((b, i) => {
+      const pct = total > 0 ? Math.round(b.amount / total * 100) : 0;
+      const row = document.createElement('div');
+      row.className = 'sp-lg-row';
+      row.innerHTML = `<span class="nm"><span class="sq" style="background:${colors[i]}"></span>${b.label}</span><span class="pc">${pct}%</span>`;
+      legend.appendChild(row);
+    });
+  }
+</script>
 {% endif %}
 {% endblock %}

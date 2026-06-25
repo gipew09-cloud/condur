@@ -30,6 +30,47 @@ class Owner(Base):
     company_name: Mapped[str | None] = mapped_column(String(255))
     timezone: Mapped[str] = mapped_column(String(50), default="Europe/Moscow")
     notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # --- Реквизиты Исполнителя для акта 101 РС (заполняются на /requisites) ---
+    # executor_name — полное юр. наименование (для шапки акта), напр.
+    # «Индивидуальный предприниматель Кибиткина Елена Викторовна».
+    # Если пусто — в акте используется company_name.
+    executor_name: Mapped[str | None] = mapped_column(String(500))
+    inn: Mapped[str | None] = mapped_column(String(12))
+    ogrnip: Mapped[str | None] = mapped_column(String(20))
+    legal_address: Mapped[str | None] = mapped_column(Text)
+    bank_name: Mapped[str | None] = mapped_column(String(255))
+    bank_account: Mapped[str | None] = mapped_column(String(34))   # р/с
+    corr_account: Mapped[str | None] = mapped_column(String(34))   # к/с
+    bik: Mapped[str | None] = mapped_column(String(9))
+    signer_name: Mapped[str | None] = mapped_column(String(255))   # кто подписывает
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ========== ЗАКАЗЧИКИ (контрагенты для актов) ==========
+class Customer(Base):
+    """
+    Заказчик услуг (ООО, к которому выставляется акт 101 РС).
+    У владельца может быть несколько. Реквизиты вводятся на /requisites
+    и подставляются в шапку акта.
+    """
+    __tablename__ = "customers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(500))            # ООО "Рузисеть"
+    inn: Mapped[str | None] = mapped_column(String(12))
+    kpp: Mapped[str | None] = mapped_column(String(9))
+    legal_address: Mapped[str | None] = mapped_column(Text)
+    bank_name: Mapped[str | None] = mapped_column(String(255))
+    bank_account: Mapped[str | None] = mapped_column(String(34))   # р/с
+    corr_account: Mapped[str | None] = mapped_column(String(34))   # к/с
+    bik: Mapped[str | None] = mapped_column(String(9))
+    contract_number: Mapped[str | None] = mapped_column(String(100))  # №521
+    contract_date: Mapped[date | None] = mapped_column(Date)
+    signer_name: Mapped[str | None] = mapped_column(String(255))   # подписант со стороны заказчика
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

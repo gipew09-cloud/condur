@@ -10,11 +10,11 @@
 </div>
 
 {% if totals %}
-<section class="kpi-grid" style="margin-bottom:1.25rem;">
-  <div class="kpi"><small>Рейсов по фильтру</small><strong>{{ totals.count }}</strong></div>
-  <div class="kpi"><small>Выручка</small><strong>{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} ₽</strong></div>
-</section>
+<div class="sp-kpi" style="margin-bottom:1.25rem; grid-template-columns: repeat(3, 1fr);">
+  <div class="c"><div class="lbl">Рейсов по фильтру</div><div class="val">{{ totals.count }}</div></div>
+  <div class="c"><div class="lbl">Выручка</div><div class="val">{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} <span class="rub">₽</span></div></div>
+  <div class="c dark"><div class="lbl">Прибыль</div><div class="val">{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} <span class="rub">₽</span></div></div>
+</div>
 {% endif %}
 
 <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">

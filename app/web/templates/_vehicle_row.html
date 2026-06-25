@@ -1,62 +1,49 @@
 {% set v = row.vehicle %}
 {% if edit %}
-<tr id="vehicle-row-{{ v.id }}">
-  <td colspan="9">
-    <form hx-post="/vehicles/{{ v.id }}" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" class="edit-form">
-      <label>
-        Гос. номер
-        <input type="text" name="license_plate" value="{{ v.license_plate }}" required>
-      </label>
-      <label>
-        Марка
-        <input type="text" name="brand" value="{{ v.brand or '' }}">
-      </label>
-      <label>
-        Тип
-        <select name="type">
-          <option value="truck" {% if v.type == 'truck' %}selected{% endif %}>Грузовик</option>
-          <option value="gazelle" {% if v.type == 'gazelle' %}selected{% endif %}>Газель / фургон</option>
-          <option value="refrigerator" {% if v.type == 'refrigerator' %}selected{% endif %}>Рефрижератор</option>
-        </select>
-      </label>
-      <label>
-        Норма л/100км
-        <input type="text" name="fuel_norm_per_100km" value="{{ v.fuel_norm_per_100km or '' }}">
-      </label>
-      <label>
-        ОСАГО до
-        <input type="date" name="osago_expires" value="{{ v.osago_expires.isoformat() if v.osago_expires else '' }}">
-      </label>
-      <label>
-        ТО до
-        <input type="date" name="inspection_expires" value="{{ v.inspection_expires.isoformat() if v.inspection_expires else '' }}">
-      </label>
-      <label>
-        Тахограф до
-        <input type="date" name="tacho_expires" value="{{ v.tacho_expires.isoformat() if v.tacho_expires else '' }}">
-      </label>
-      <button type="submit">Сохранить</button>
-      <a href="#" hx-get="/vehicles/{{ v.id }}/cancel" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
-      <a href="#" hx-delete="/vehicles/{{ v.id }}" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML"
-         hx-confirm="Удалить машину {{ v.license_plate }}? История смен и рейсов сохранится."
-         role="button" class="contrast outline">🗑 Удалить</a>
-    </form>
-  </td>
-</tr>
+<div class="sp-vcard sp-vcard--edit" id="vehicle-row-{{ v.id }}" style="grid-column: 1 / -1;">
+  <form hx-post="/vehicles/{{ v.id }}" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" class="edit-form">
+    <label>Гос. номер <input type="text" name="license_plate" value="{{ v.license_plate }}" required></label>
+    <label>Марка <input type="text" name="brand" value="{{ v.brand or '' }}"></label>
+    <label>Тип
+      <select name="type">
+        <option value="truck" {% if v.type == 'truck' %}selected{% endif %}>Грузовик</option>
+        <option value="gazelle" {% if v.type == 'gazelle' %}selected{% endif %}>Газель / фургон</option>
+        <option value="refrigerator" {% if v.type == 'refrigerator' %}selected{% endif %}>Рефрижератор</option>
+      </select>
+    </label>
+    <label>Норма л/100км <input type="text" name="fuel_norm_per_100km" value="{{ v.fuel_norm_per_100km or '' }}"></label>
+    <label>ОСАГО до <input type="date" name="osago_expires" value="{{ v.osago_expires.isoformat() if v.osago_expires else '' }}"></label>
+    <label>ТО до <input type="date" name="inspection_expires" value="{{ v.inspection_expires.isoformat() if v.inspection_expires else '' }}"></label>
+    <label>Тахограф до <input type="date" name="tacho_expires" value="{{ v.tacho_expires.isoformat() if v.tacho_expires else '' }}"></label>
+    <button type="submit">Сохранить</button>
+    <a href="#" hx-get="/vehicles/{{ v.id }}/cancel" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" role="button" class="secondary outline">Отмена</a>
+    <a href="#" hx-delete="/vehicles/{{ v.id }}" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML"
+       hx-confirm="Удалить машину {{ v.license_plate }}? История смен и рейсов сохранится."
+       role="button" class="contrast outline">🗑 Удалить</a>
+  </form>
+</div>
 {% else %}
-{% set profit_cls = 'row-loss' if row.profit < 0 else 'row-profit' if row.profit > 0 else '' %}
-<tr id="vehicle-row-{{ v.id }}" class="{{ profit_cls }}">
-  <td data-label="Номер">{{ v.license_plate }}</td>
-  <td data-label="Марка">{{ v.brand or '—' }}</td>
-  <td data-label="Пробег, км" class="num">{{ row.km }}</td>
-  <td data-label="Рейсов" class="num">{{ row.trips }}</td>
-  <td data-label="Выручка" class="num">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }}</td>
-  <td data-label="Расходы" class="num">{{ "{:,.0f}".format(row.expense).replace(',', ' ') }}</td>
-  <td data-label="Прибыль" class="num"><b>{{ "{:,.0f}".format(row.profit).replace(',', ' ') }}</b></td>
-  <td data-label="Маржа" class="num">{{ "{:.0f}".format(row.margin) }}%</td>
-  <td style="white-space:nowrap;">
-    <a href="/vehicles/{{ v.id }}/stats" title="Статистика">📊</a>
-    <a href="#" hx-get="/vehicles/{{ v.id }}/edit" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML">✎</a>
-  </td>
-</tr>
+<div class="sp-vcard" id="vehicle-row-{{ v.id }}">
+  <div class="sp-vcard__top">
+    <span class="sp-plate">{{ v.license_plate }}</span>
+    <div class="grow">
+      <div class="sp-vcard__title">{{ v.brand or 'Машина' }}</div>
+      <div class="sp-vcard__sub">{{ v.type | vtype }} · {{ row.trips }} рейс(ов) за месяц</div>
+    </div>
+    {% if row.active %}<span class="pill pill--success">в рейсе</span>{% else %}<span class="pill pill--neutral">свободна</span>{% endif %}
+  </div>
+  <div class="sp-vcard__stats">
+    <div class="sp-stat"><div class="k">Пробег</div><div class="v">{{ row.km }} <span class="u">км</span></div></div>
+    <div class="sp-stat"><div class="k">Выручка</div><div class="v">{{ "{:,.0f}".format(row.revenue).replace(',', ' ') }} <span class="u">₽</span></div></div>
+    <div class="sp-stat"><div class="k">Расходы</div><div class="v">{{ "{:,.0f}".format(row.expense).replace(',', ' ') }} <span class="u">₽</span></div></div>
+    <div class="sp-stat"><div class="k">Прибыль</div><div class="v {{ 'pos' if row.profit > 0 else 'neg' if row.profit < 0 else '' }}">{{ "{:,.0f}".format(row.profit).replace(',', ' ') }} <span class="u">₽</span></div></div>
+  </div>
+  <div class="sp-vcard__foot">
+    <span class="sp-vcard__sub">Маржа {{ "%.0f"|format(row.margin) }}%{% if v.osago_expires %} · ОСАГО до {{ v.osago_expires.strftime('%d.%m.%y') }}{% endif %}</span>
+    <span style="white-space:nowrap;">
+      <a href="/vehicles/{{ v.id }}/stats" title="Статистика">📊</a>
+      <a href="#" hx-get="/vehicles/{{ v.id }}/edit" hx-target="#vehicle-row-{{ v.id }}" hx-swap="outerHTML" title="Изменить">✎</a>
+    </span>
+  </div>
+</div>
 {% endif %}

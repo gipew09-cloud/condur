@@ -87,9 +87,10 @@ def rubles_in_words(amount: Decimal) -> str:
         if ones:
             parts += _triplet(ones)
     rub_word = _plural(rub, ("рубль", "рубля", "рублей"))
+    kop_word = _plural(kop, ("копейка", "копейки", "копеек"))
     s = " ".join(w for w in parts if w)
     s = s[:1].upper() + s[1:]
-    return f"{s} {rub_word} {kop:02d} коп."
+    return f"{s} {rub_word} {kop:02d} {kop_word}."
 
 
 def _safe_sheet_title(name: str, used: set[str]) -> str:
@@ -166,6 +167,210 @@ def build_acts_workbook(
         widths = [5, 13, 38, 14, 22, 15]
         for col, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(col)].width = w
+
+    return wb
+
+
+# =====================================================================
+# НАСТОЯЩАЯ ФОРМА АКТА (101 РС): один лист, шапка с реквизитами сторон,
+# колонки № · Наименование · Кол-во · Ед. · Цена · Сумма, итог прописью,
+# подписи. Реплика образца «Рузисеть ИП Кибиткина № 101 РС».
+# executor/customer — словари реквизитов; rows — плоский список рейсов.
+# =====================================================================
+_ACT_NCOL = 6  # A..F
+_LABEL_FONT = Font(bold=True)
+_TITLE_BIG = Font(bold=True, size=14)
+_ACT_WIDTHS = {"A": 5, "B": 62, "C": 9, "D": 7, "E": 14, "F": 16}
+
+
+def _money_str(amount: Decimal) -> str:
+    """292000 → '292 000,00' (пробел — разряды, запятая — копейки)."""
+    s = f"{Decimal(amount):,.2f}"            # '292,000.00'
+    return s.replace(",", " ").replace(".", ",")
+
+
+def _executor_text(e: dict) -> str:
+    parts = [e.get("full_name") or ""]
+    if e.get("inn"):
+        parts.append(f"ИНН {e['inn']}")
+    if e.get("ogrnip"):
+        parts.append(f"ОГРНИП {e['ogrnip']}")
+    if e.get("address"):
+        parts.append(e["address"])
+    if e.get("bank_name"):
+        parts.append(f"в банке {e['bank_name']}")
+    if e.get("account"):
+        parts.append(f"р/с {e['account']}")
+    if e.get("corr_account"):
+        parts.append(f"к/с {e['corr_account']}")
+    if e.get("bik"):
+        parts.append(f"БИК {e['bik']}")
+    return ", ".join(p for p in parts if p)
+
+
+def _customer_text(c: dict) -> str:
+    parts = [c.get("name") or ""]
+    if c.get("inn"):
+        parts.append(f"ИНН {c['inn']}")
+    if c.get("kpp"):
+        parts.append(f"КПП {c['kpp']}")
+    if c.get("address"):
+        parts.append(c["address"])
+    if c.get("account"):
+        parts.append(f"р/с {c['account']}")
+    if c.get("bank_name"):
+        parts.append(f"в банке {c['bank_name']}")
+    if c.get("bik"):
+        parts.append(f"БИК {c['bik']}")
+    if c.get("corr_account"):
+        parts.append(f"к/с {c['corr_account']}")
+    return ", ".join(p for p in parts if p)
+
+
+def _contract_text(c: dict) -> str:
+    num = c.get("contract_number")
+    d = c.get("contract_date")
+    if num and d:
+        ds = d.strftime("%d.%m.%Y") if hasattr(d, "strftime") else str(d)
+        return f"Договор {num} от {ds}"
+    return f"Договор {num}" if num else "—"
+
+
+def _row_description(row: dict) -> str:
+    """'05.05.2026. Агропарк Софийская 151- РЦ ..., Т 557 ОС 178, Саломов Диер.'"""
+    d = row.get("date")
+    ds = d.strftime("%d.%m.%Y") if hasattr(d, "strftime") else str(d or "")
+    origin = (row.get("origin") or "").strip()
+    dest = (row.get("destination") or "").strip()
+    plate = (row.get("plate") or "").strip()
+    driver = (row.get("driver") or "").strip()
+    route = f"{origin}- {dest}" if origin else dest
+    tail = ", ".join(x for x in (plate, driver) if x)
+    s = f"{ds}. {route}" if ds else route
+    if tail:
+        s += f", {tail}"
+    return s + "."
+
+
+def build_act_101rs(
+    *,
+    act_number: str,
+    act_date: date,
+    period_from: date,
+    period_to: date,
+    executor: dict,
+    customer: dict,
+    rows: list[dict],
+) -> Workbook:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Акт"
+    last = get_column_letter(_ACT_NCOL)
+    for col, w in _ACT_WIDTHS.items():
+        ws.column_dimensions[col].width = w
+
+    def block(rng: str, value: str, *, font=None, align="left", wrap=False, vtop=False):
+        ws.merge_cells(rng)
+        c = ws[rng.split(":")[0]]
+        c.value = value
+        if font:
+            c.font = font
+        c.alignment = Alignment(
+            horizontal=align, vertical="top" if vtop else "center", wrap_text=wrap
+        )
+        return c
+
+    r = 1
+    block(
+        f"A{r}:{last}{r}",
+        f"Акт № {act_number} от {act_date.strftime('%d.%m.%Y')} г.",
+        font=_TITLE_BIG, align="center",
+    )
+    ws.row_dimensions[r].height = 22
+    r += 2
+
+    for label, text, height in (
+        ("Исполнитель:", _executor_text(executor), 46),
+        ("Заказчик:", _customer_text(customer), 46),
+        ("Основание:", _contract_text(customer), 16),
+    ):
+        cell = ws.cell(row=r, column=1, value=label)
+        cell.font = _LABEL_FONT
+        cell.alignment = Alignment(vertical="top")
+        block(f"B{r}:{last}{r}", text, wrap=True, vtop=True)
+        ws.row_dimensions[r].height = height
+        r += 1
+    r += 1
+
+    headers = ["№", "Наименование работ, услуг", "Кол-во", "Ед.", "Цена, руб", "Сумма, руб"]
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(row=r, column=i, value=h)
+        c.font = _HEADER_FONT
+        c.fill = _HEADER_FILL
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = _BORDER
+    r += 1
+
+    total = Decimal(0)
+    for idx, row in enumerate(rows, start=1):
+        amount = Decimal(row.get("amount") or 0)
+        total += amount
+        ws.cell(row=r, column=1, value=idx)
+        ws.cell(row=r, column=2, value=_row_description(row))
+        ws.cell(row=r, column=3, value=1)
+        ws.cell(row=r, column=4, value="усл.")
+        ws.cell(row=r, column=5, value=float(amount))
+        ws.cell(row=r, column=6, value=float(amount))
+        for col in range(1, _ACT_NCOL + 1):
+            cell = ws.cell(row=r, column=col)
+            cell.border = _BORDER
+            if col == 2:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            elif col in (1, 3, 4):
+                cell.alignment = Alignment(horizontal="center", vertical="top")
+            else:
+                cell.alignment = Alignment(horizontal="right", vertical="top")
+                cell.number_format = _MONEY
+        r += 1
+
+    lbl = ws.cell(row=r, column=5, value="Итого:")
+    lbl.font = _LABEL_FONT
+    lbl.alignment = Alignment(horizontal="right")
+    tot = ws.cell(row=r, column=6, value=float(total))
+    tot.font = _LABEL_FONT
+    tot.number_format = _MONEY
+    tot.alignment = Alignment(horizontal="right")
+    tot.border = _BORDER
+    r += 2
+
+    block(
+        f"A{r}:{last}{r}",
+        f"Всего оказано услуг {len(rows)}. На сумму {_money_str(total)} руб. "
+        f"{rubles_in_words(total)}",
+        font=_LABEL_FONT, wrap=True, vtop=True,
+    )
+    ws.row_dimensions[r].height = 30
+    r += 1
+    block(f"A{r}:{last}{r}", "Без налога (НДС)")
+    r += 2
+
+    block(
+        f"A{r}:{last}{r}",
+        "Вышеперечисленные услуги выполнены полностью и в срок. "
+        "Заказчик по объёму, качеству и срокам претензий не имеет.",
+        wrap=True, vtop=True,
+    )
+    ws.row_dimensions[r].height = 28
+    r += 2
+
+    ws.cell(row=r, column=1, value="Исполнитель").font = _LABEL_FONT
+    ws.cell(row=r, column=5, value="Заказчик").font = _LABEL_FONT
+    r += 1
+    ws.cell(row=r, column=1, value=executor.get("full_name") or "")
+    ws.cell(row=r, column=5, value=customer.get("name") or "")
+    r += 2
+    ws.cell(row=r, column=1, value=f"__________ / {executor.get('signer_name') or ''}")
+    ws.cell(row=r, column=5, value=f"__________ / {customer.get('signer_name') or ''}")
 
     return wb
 
