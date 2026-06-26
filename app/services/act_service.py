@@ -178,8 +178,14 @@ def build_acts_workbook(
 # executor/customer — словари реквизитов; rows — плоский список рейсов.
 # =====================================================================
 _ACT_NCOL = 6  # A..F
-_LABEL_FONT = Font(bold=True)
-_TITLE_BIG = Font(bold=True, size=14)
+# Стиль «как у образца 101 РС»: мелкий шрифт (9 пт), чёрные тонкие рамки,
+# шапка таблицы — без заливки (жирный чёрный текст), деньги «#,##0.00» без ₽.
+_LABEL_FONT = Font(name="Calibri", bold=True, size=9)
+_ACT_BASE = Font(name="Calibri", size=9)
+_TITLE_BIG = Font(name="Calibri", bold=True, size=13)
+_ACT_MONEY = "#,##0.00"
+_ACT_THIN = Side(style="thin", color="000000")
+_ACT_BORDER = Border(left=_ACT_THIN, right=_ACT_THIN, top=_ACT_THIN, bottom=_ACT_THIN)
 _ACT_WIDTHS = {"A": 5, "B": 62, "C": 9, "D": 7, "E": 14, "F": 16}
 
 
@@ -254,6 +260,7 @@ def _row_description(row: dict) -> str:
 
 def build_act_101rs(
     *,
+    title: str = "Акт",
     act_number: str,
     act_date: date,
     period_from: date,
@@ -264,7 +271,7 @@ def build_act_101rs(
 ) -> Workbook:
     wb = Workbook()
     ws = wb.active
-    ws.title = "Акт"
+    ws.title = (title or "Акт")[:31]
     last = get_column_letter(_ACT_NCOL)
     for col, w in _ACT_WIDTHS.items():
         ws.column_dimensions[col].width = w
@@ -273,8 +280,7 @@ def build_act_101rs(
         ws.merge_cells(rng)
         c = ws[rng.split(":")[0]]
         c.value = value
-        if font:
-            c.font = font
+        c.font = font or _ACT_BASE
         c.alignment = Alignment(
             horizontal=align, vertical="top" if vtop else "center", wrap_text=wrap
         )
@@ -283,7 +289,7 @@ def build_act_101rs(
     r = 1
     block(
         f"A{r}:{last}{r}",
-        f"Акт № {act_number} от {act_date.strftime('%d.%m.%Y')} г.",
+        f"{title or 'Акт'} № {act_number} от {act_date.strftime('%d.%m.%Y')} г.",
         font=_TITLE_BIG, align="center",
     )
     ws.row_dimensions[r].height = 22
@@ -305,10 +311,9 @@ def build_act_101rs(
     headers = ["№", "Наименование работ, услуг", "Кол-во", "Ед.", "Цена, руб", "Сумма, руб"]
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=r, column=i, value=h)
-        c.font = _HEADER_FONT
-        c.fill = _HEADER_FILL
+        c.font = _LABEL_FONT
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = _BORDER
+        c.border = _ACT_BORDER
     r += 1
 
     total = Decimal(0)
@@ -323,14 +328,15 @@ def build_act_101rs(
         ws.cell(row=r, column=6, value=float(amount))
         for col in range(1, _ACT_NCOL + 1):
             cell = ws.cell(row=r, column=col)
-            cell.border = _BORDER
+            cell.border = _ACT_BORDER
+            cell.font = _ACT_BASE
             if col == 2:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
             elif col in (1, 3, 4):
                 cell.alignment = Alignment(horizontal="center", vertical="top")
             else:
                 cell.alignment = Alignment(horizontal="right", vertical="top")
-                cell.number_format = _MONEY
+                cell.number_format = _ACT_MONEY
         r += 1
 
     lbl = ws.cell(row=r, column=5, value="Итого:")
@@ -338,9 +344,9 @@ def build_act_101rs(
     lbl.alignment = Alignment(horizontal="right")
     tot = ws.cell(row=r, column=6, value=float(total))
     tot.font = _LABEL_FONT
-    tot.number_format = _MONEY
+    tot.number_format = _ACT_MONEY
     tot.alignment = Alignment(horizontal="right")
-    tot.border = _BORDER
+    tot.border = _ACT_BORDER
     r += 2
 
     block(
@@ -366,11 +372,11 @@ def build_act_101rs(
     ws.cell(row=r, column=1, value="Исполнитель").font = _LABEL_FONT
     ws.cell(row=r, column=5, value="Заказчик").font = _LABEL_FONT
     r += 1
-    ws.cell(row=r, column=1, value=executor.get("full_name") or "")
-    ws.cell(row=r, column=5, value=customer.get("name") or "")
+    ws.cell(row=r, column=1, value=executor.get("full_name") or "").font = _ACT_BASE
+    ws.cell(row=r, column=5, value=customer.get("name") or "").font = _ACT_BASE
     r += 2
-    ws.cell(row=r, column=1, value=f"__________ / {executor.get('signer_name') or ''}")
-    ws.cell(row=r, column=5, value=f"__________ / {customer.get('signer_name') or ''}")
+    ws.cell(row=r, column=1, value=f"__________ / {executor.get('signer_name') or ''}").font = _ACT_BASE
+    ws.cell(row=r, column=5, value=f"__________ / {customer.get('signer_name') or ''}").font = _ACT_BASE
 
     return wb
 

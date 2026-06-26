@@ -1483,15 +1483,21 @@ async def acts_page(
     session: Annotated[AsyncSession, Depends(get_session)],
     period_from: Annotated[str | None, Query()] = None,
     period_to: Annotated[str | None, Query()] = None,
+    customer_id: Annotated[str | None, Query()] = None,
+    title: Annotated[str | None, Query()] = None,
+    act_number: Annotated[str | None, Query()] = None,
+    act_date: Annotated[str | None, Query()] = None,
 ):
     df, dt = _parse_period(period_from, period_to)
     start, end = _acts_range(df, dt)
+    # Отдельные рейсы за период — для чек-листа «какие включить в акт».
     rows_res = await session.execute(
         select(
-            Trip.destination,
-            func.count(Trip.id),
-            func.coalesce(func.sum(Trip.revenue_rub), 0),
+            Trip.id, Trip.completed_at, Trip.origin, Trip.destination,
+            Driver.full_name, Vehicle.license_plate, Trip.revenue_rub,
         )
+        .join(Driver, Driver.id == Trip.driver_id)
+        .join(Vehicle, Vehicle.id == Trip.vehicle_id)
         .where(
             Trip.owner_id == owner.id,
             Trip.status == "completed",
@@ -1499,15 +1505,22 @@ async def acts_page(
             Trip.completed_at < end,
             Trip.revenue_rub.is_not(None),
         )
-        .group_by(Trip.destination)
-        .order_by(func.coalesce(func.sum(Trip.revenue_rub), 0).desc())
+        .order_by(Trip.completed_at, Trip.id)
     )
-    preview = [
-        {"rc": dest or "—", "trips": cnt, "total": Decimal(total or 0)}
-        for dest, cnt, total in rows_res.all()
+    trips = [
+        {
+            "id": tid,
+            "date": cat,
+            "origin": orig,
+            "destination": dest,
+            "driver": drv,
+            "plate": plate,
+            "revenue": Decimal(rev or 0),
+        }
+        for tid, cat, orig, dest, drv, plate, rev in rows_res.all()
     ]
-    total_amount = sum((p["total"] for p in preview), Decimal(0))
-    total_trips = sum(p["trips"] for p in preview)
+    total_amount = sum((t["revenue"] for t in trips), Decimal(0))
+    total_trips = len(trips)
 
     customers_res = await session.execute(
         select(Customer)
@@ -1521,11 +1534,14 @@ async def acts_page(
     return templates.TemplateResponse(
         "acts.html",
         {
-            "request": request, "owner": owner, "preview": preview,
+            "request": request, "owner": owner, "trips": trips,
             "period_from": df.isoformat(), "period_to": dt.isoformat(),
             "customers": customers,
             "total_amount": total_amount, "total_trips": total_trips,
-            "act_date": date.today().isoformat(),
+            "act_date": act_date or date.today().isoformat(),
+            "act_title": title or "Акт сверки",
+            "act_number_val": act_number or "",
+            "sel_customer_id": customer_id or "",
             "requisites_ready": requisites_ready,
             "active_page": "finances",
         },
@@ -1541,9 +1557,12 @@ async def acts_export(
     customer_id: Annotated[str | None, Query()] = None,
     act_number: Annotated[str, Query()] = "",
     act_date: Annotated[str | None, Query()] = None,
+    title: Annotated[str, Query()] = "Акт сверки",
+    trip_ids: Annotated[list[int], Query()] = [],
 ):
-    """Акт оказанных услуг (форма 101 РС): один лист со всеми рейсами за период,
-    с реквизитами Исполнителя/Заказчика, итогом и суммой прописью."""
+    """Акт (форма 101 РС): один лист с выбранными рейсами за период,
+    с реквизитами Исполнителя/Заказчика, итогом и суммой прописью.
+    title — название в шапке; trip_ids — какие рейсы включить (пусто = все)."""
     df, dt = _parse_period(period_from, period_to)
     start, end = _acts_range(df, dt)
 
@@ -1564,7 +1583,7 @@ async def acts_export(
         )
         customer = res.scalar_one_or_none()
 
-    rows_res = await session.execute(
+    trip_q = (
         select(Trip, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Trip.driver_id)
         .join(Vehicle, Vehicle.id == Trip.vehicle_id)
@@ -1575,8 +1594,11 @@ async def acts_export(
             Trip.completed_at < end,
             Trip.revenue_rub.is_not(None),
         )
-        .order_by(Trip.completed_at, Trip.id)
     )
+    # Пустой trip_ids = все рейсы периода (прямая ссылка без чек-листа).
+    if trip_ids:
+        trip_q = trip_q.where(Trip.id.in_(trip_ids))
+    rows_res = await session.execute(trip_q.order_by(Trip.completed_at, Trip.id))
     rows = [
         {
             "date": trip.completed_at,
@@ -1596,6 +1618,7 @@ async def acts_export(
     number = (act_number or "").strip() or "б/н"
 
     wb = act_service.build_act_101rs(
+        title=(title or "Акт").strip() or "Акт",
         act_number=number,
         act_date=adate,
         period_from=df,
