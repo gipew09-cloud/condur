@@ -33,6 +33,7 @@
 {% endif %}
 
 <form method="GET" id="act-form">
+  <input type="hidden" name="selection_mode" value="checklist">
   <div class="grid">
     <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
     <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
@@ -65,14 +66,15 @@
     <label class="trip-pick">
       <input type="checkbox" name="trip_ids" value="{{ t.id }}" data-sum="{{ t.revenue }}" checked>
       <span class="d">{{ t.date.strftime('%d.%m.%Y') if t.date else '—' }}</span>
-      <span class="r">{{ t.origin or '—' }} → {{ t.destination or '—' }}</span>
+      <span class="r">{{ t.origin or '—' }} → {{ t.destination_address or t.destination or '—' }}</span>
       <span class="m">{{ t.driver }} · {{ t.plate }}</span>
       <span class="s">{{ "{:,.0f}".format(t.revenue).replace(',', ' ') }} ₽</span>
     </label>
     {% endfor %}
   </div>
   <div style="margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap;">
-    <button type="submit" formaction="/acts/export.xlsx">⬇ Скачать акт (.xlsx)</button>
+    <button type="submit" formaction="/acts/export.xlsx" id="download-act">⬇ Скачать акт (.xlsx)</button>
+    <span id="empty-pick-note" style="display:none; color:var(--danger-text); align-self:center; font-size:.9rem;">Выберите хотя бы один рейс.</span>
   </div>
   <p style="color:var(--text-muted); font-size:.85rem; margin-top:.5rem;">В акт попадут только отмеченные рейсы, одним списком (1, 2, 3…).</p>
   {% else %}
@@ -92,10 +94,14 @@
     const sum = document.getElementById('pick-sum');
     function recalc() {
       const checked = boxes().filter(b => b.checked);
+      const download = document.getElementById('download-act');
+      const emptyNote = document.getElementById('empty-pick-note');
       if (cnt) cnt.textContent = checked.length;
       if (sum) sum.textContent = new Intl.NumberFormat('ru-RU').format(
         Math.round(checked.reduce((s, b) => s + parseFloat(b.dataset.sum || 0), 0)));
       if (all) all.checked = checked.length === boxes().length && boxes().length > 0;
+      if (download) download.disabled = checked.length === 0;
+      if (emptyNote) emptyNote.style.display = checked.length === 0 ? 'inline-flex' : 'none';
     }
     if (all) all.addEventListener('change', () => {
       boxes().forEach(b => { b.checked = all.checked; });

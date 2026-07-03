@@ -12,6 +12,8 @@ In-memory dict — норм для MVP. При перезапуске проце
 но они и так живут 5 минут. JWT в cookie уже выданные при этом не сгорают —
 их подписывает JWT_SECRET, и они валидны до собственного истечения.
 """
+from __future__ import annotations
+
 import logging
 import secrets
 from dataclasses import dataclass
@@ -61,20 +63,27 @@ def consume_code(telegram_id: int, code: str) -> bool:
     return True
 
 
-def create_jwt(owner_id: int) -> str:
+def create_jwt(owner_id: int, tid: int | None = None) -> str:
+    """JWT для доступа к кабинету owner_id. tid — telegram_id того, кто вошёл
+    (владелец или админ); нужен, чтобы уметь мгновенно отзывать доступ админа."""
     payload = {
         "sub": str(owner_id),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + JWT_TTL,
     }
+    if tid is not None:
+        payload["tid"] = int(tid)
     return jwt.encode(payload, settings.jwt_secret, algorithm=JWT_ALGO)
 
 
-def decode_jwt(token: str) -> int | None:
-    """Вернуть owner_id или None при ошибке/истечении."""
+def decode_jwt(token: str) -> tuple[int, int | None] | None:
+    """Вернуть (owner_id, tid) или None при ошибке/истечении.
+    tid = None для старых токенов (до ввода админов) — трактуем как владельца."""
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[JWT_ALGO])
-        return int(payload["sub"])
+        owner_id = int(payload["sub"])
+        raw_tid = payload.get("tid")
+        return owner_id, (int(raw_tid) if raw_tid is not None else None)
     except (jwt.PyJWTError, KeyError, ValueError) as exc:
         logger.debug("JWT decode failed: %s", exc)
         return None

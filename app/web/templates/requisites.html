@@ -95,4 +95,42 @@
     </form>
   </details>
 </article>
+
+<article>
+  <header>
+    <strong>Администраторы</strong>
+    <span style="color:var(--text-muted);">({{ admins|length }})</span>
+  </header>
+  <p class="sub" style="margin-top:-.3rem;">
+    Полный доступ к кабинету, как у вас. Админ открывает бот владельца, шлёт <code>/login</code>,
+    получает код и входит на странице входа. Свой Telegram ID он может узнать в боте
+    (он написан рядом с кодом) или у @userinfobot.
+  </p>
+
+  {% for a in admins %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--border);">
+    <div>
+      <strong>{{ a.name or 'Админ' }}</strong>
+      <span style="color:var(--text-muted); font-size:.85rem;"> · Telegram ID {{ a.telegram_id }}</span>
+    </div>
+    <form method="POST" action="/admins/{{ a.id }}/delete" style="margin:0;">
+      <button type="submit" class="secondary outline"
+              onclick="return confirm('Убрать доступ у «{{ a.name or a.telegram_id }}»?')">Убрать</button>
+    </form>
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted);">Пока нет ни одного администратора.</p>
+  {% endfor %}
+
+  <details style="margin-top:.75rem;">
+    <summary><strong>+ Добавить администратора</strong></summary>
+    <form method="POST" action="/admins/add">
+      <div class="grid">
+        <label>Имя (для себя) <input name="name" placeholder="Бухгалтер Анна"></label>
+        <label>Telegram ID <input name="telegram_id" inputmode="numeric" placeholder="123456789" required></label>
+      </div>
+      <button type="submit">Добавить администратора</button>
+    </form>
+  </details>
+</article>
 {% endblock %}

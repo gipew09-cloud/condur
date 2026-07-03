@@ -12,6 +12,7 @@
       </select>
     </label>
     <label>Норма л/100км <input type="text" name="fuel_norm_per_100km" value="{{ v.fuel_norm_per_100km or '' }}"></label>
+    <label>Stavtrack ID <input type="text" name="stavtrack_object_id" value="{{ v.stavtrack_object_id or '' }}" placeholder="129772"></label>
     <label>ОСАГО до <input type="date" name="osago_expires" value="{{ v.osago_expires.isoformat() if v.osago_expires else '' }}"></label>
     <label>ТО до <input type="date" name="inspection_expires" value="{{ v.inspection_expires.isoformat() if v.inspection_expires else '' }}"></label>
     <label>Тахограф до <input type="date" name="tacho_expires" value="{{ v.tacho_expires.isoformat() if v.tacho_expires else '' }}"></label>
@@ -26,11 +27,11 @@
 <div class="sp-vcard" id="vehicle-row-{{ v.id }}">
   <div class="sp-vcard__top">
     <span class="sp-plate">{{ v.license_plate }}</span>
-    <div class="grow">
-      <div class="sp-vcard__title">{{ v.brand or 'Машина' }}</div>
-      <div class="sp-vcard__sub">{{ v.type | vtype }} · {{ row.trips }} рейс(ов) за месяц</div>
-    </div>
     {% if row.active %}<span class="pill pill--success">в рейсе</span>{% else %}<span class="pill pill--neutral">свободна</span>{% endif %}
+  </div>
+  <div>
+    <div class="sp-vcard__title">{{ v.brand or 'Машина' }}</div>
+    <div class="sp-vcard__sub">{{ v.type | vtype }} · {{ row.trips }} рейс(ов) за месяц{% if v.stavtrack_object_id %} · GPS {{ v.stavtrack_object_id }}{% endif %}</div>
   </div>
   <div class="sp-vcard__stats">
     <div class="sp-stat"><div class="k">Пробег</div><div class="v">{{ row.km }} <span class="u">км</span></div></div>

@@ -247,7 +247,7 @@ def _row_description(row: dict) -> str:
     d = row.get("date")
     ds = d.strftime("%d.%m.%Y") if hasattr(d, "strftime") else str(d or "")
     origin = (row.get("origin") or "").strip()
-    dest = (row.get("destination") or "").strip()
+    dest = (row.get("destination_address") or row.get("destination") or "").strip()
     plate = (row.get("plate") or "").strip()
     driver = (row.get("driver") or "").strip()
     route = f"{origin}- {dest}" if origin else dest

@@ -24,6 +24,8 @@
       <p>Чтобы добавить больше, обновите тариф: команда <code>/tariffs</code> в боте владельца.</p>
     {% elif notice.kind == 'dup' %}
       <strong>⚠️ Машина с номером {{ notice.plate }} уже есть в автопарке.</strong>
+    {% elif notice.kind == 'gps_dup' %}
+      <strong>⚠️ Stavtrack ID {{ notice.stavtrack_object_id }} уже привязан к другой машине.</strong>
     {% endif %}
   </div>
 {% endif %}
@@ -47,6 +49,9 @@
       </label>
       <label>Норма л/100км
         <input type="text" name="fuel_norm_per_100km" placeholder="32" inputmode="decimal">
+      </label>
+      <label>Stavtrack ID
+        <input type="text" name="stavtrack_object_id" placeholder="129772">
       </label>
       <label>ОСАГО до
         <input type="date" name="osago_expires">

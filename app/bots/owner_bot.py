@@ -53,7 +53,7 @@ from app.bots.states import (
 )
 from app.config import settings
 from app.models import (
-    Driver, Expense, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
+    Admin, Driver, Expense, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
 )
 from app.services import auth_service, billing, expense_service, salary_service, trip_service
 from app.services.cash_pending import PENDING as CASH_PENDING
@@ -87,6 +87,20 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) 
     owner = await _get_owner(session, message.from_user.id)
     if owner is not None:
         await _show_main_menu(message, owner)
+        return
+
+    # Админ чьего-то кабинета? Не регистрируем как нового владельца —
+    # направляем на вход через /login.
+    admin = (
+        await session.execute(
+            select(Admin).where(Admin.telegram_id == message.from_user.id)
+        )
+    ).scalar_one_or_none()
+    if admin is not None:
+        await message.answer(
+            "Вы добавлены администратором кабинета. Для входа отправьте /login "
+            "и введите код на странице входа."
+        )
         return
 
     # новый владелец → 5-шаговый онбординг
@@ -473,7 +487,13 @@ async def cb_drivers(call: CallbackQuery, session: AsyncSession) -> None:
 # Водители — добавление
 # =========================================================================
 @owner_router.callback_query(F.data == "driver:add")
-async def cb_add_driver(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_add_driver(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    # Проверяем владельца СРАЗУ, а не после ввода всех данных: если аккаунт не
+    # зарегистрирован владельцем (напр. тестовый/второй), даём понятное сообщение.
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала пройдите регистрацию владельца: /start", show_alert=True)
+        return
     await state.set_state(AddDriver.waiting_for_name)
     await call.message.edit_text(msg.ADD_DRIVER_NAME)
     await call.answer()
@@ -1608,13 +1628,20 @@ async def cmd_tariffs(message: Message, state: FSMContext, session: AsyncSession
 
 @owner_router.message(Command("login"), StateFilter(any_state))
 async def cmd_login(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    """Сгенерировать одноразовый код для входа в веб-кабинет."""
+    """Сгенерировать одноразовый код для входа в веб-кабинет.
+    Работает для владельца и для добавленного им администратора."""
     await state.clear()
-    owner = await _get_owner(session, message.from_user.id)
+    tid = message.from_user.id
+    owner = await _get_owner(session, tid)
     if owner is None:
-        await message.answer("Сначала /start — нужно зарегистрироваться.")
-        return
-    code = auth_service.issue_code(message.from_user.id)
+        # Может это администратор чьего-то кабинета?
+        admin = (
+            await session.execute(select(Admin).where(Admin.telegram_id == tid))
+        ).scalar_one_or_none()
+        if admin is None:
+            await message.answer("Сначала /start — нужно зарегистрироваться.")
+            return
+    code = auth_service.issue_code(tid)
     await message.answer(
         msg.OWNER_LOGIN_CODE.format(code=code, telegram_id=message.from_user.id)
     )

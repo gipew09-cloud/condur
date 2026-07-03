@@ -18,8 +18,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    owner_bot_token: str
-    driver_bot_token: str
+    # GPS/EGTS worker uses the same project settings but does not need Telegram.
+    # app.main validates these tokens before starting the bots.
+    owner_bot_token: str = ""
+    driver_bot_token: str = ""
     database_url: str
     redis_url: str = ""  # необязателен пока используем MemoryStorage
 

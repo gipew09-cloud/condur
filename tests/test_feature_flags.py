@@ -1,11 +1,13 @@
 """
 Короткие тесты гейтинга фича-флагов бота водителя (Блоки A/B).
 
-Запуск: `pip install pytest` затем `pytest` в корне проекта.
+Запуск: `pip install pytest aiogram` затем `pytest` в корне проекта.
 ENV-переменные ботов/БД здесь фиктивные — нужны только чтобы импортировать
 настройки; до сети/БД тесты не доходят (проверяют сборку клавиатур).
 """
 import os
+
+import pytest
 
 os.environ.setdefault("OWNER_BOT_TOKEN", "test")
 os.environ.setdefault("DRIVER_BOT_TOKEN", "test")
@@ -13,6 +15,9 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
 os.environ.setdefault("JWT_SECRET", "test")
 
 from app.config import settings  # noqa: E402
+
+pytest.importorskip("aiogram")
+
 from app.bots import keyboards as kb  # noqa: E402
 
 

@@ -34,7 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models import (
+    Admin,
     Customer,
+    DistributionCenter,
     Driver,
     Event,
     Expense,
@@ -46,7 +48,7 @@ from app.models import (
     Vehicle,
 )
 from app.config import settings
-from app.services import act_service, auth_service, billing
+from app.services import act_service, auth_service, billing, rc_service
 from app.services.timeutil import owner_tz
 from app.web.insights import generate_insights
 
@@ -128,12 +130,23 @@ async def current_owner(
     token = request.cookies.get("auth")
     if not token:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
-    owner_id = auth_service.decode_jwt(token)
-    if owner_id is None:
+    decoded = auth_service.decode_jwt(token)
+    if decoded is None:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
+    owner_id, tid = decoded
     owner = await session.get(Owner, owner_id)
     if owner is None:
         raise HTTPException(status_code=303, headers={"Location": "/login"})
+    # Если вошёл админ (tid не совпадает с владельцем) — проверяем, что доступ
+    # ещё не отозван. Так удаление админа срабатывает сразу, а не через 7 дней.
+    if tid is not None and tid != owner.telegram_id:
+        admin = (
+            await session.execute(
+                select(Admin).where(Admin.telegram_id == tid, Admin.owner_id == owner_id)
+            )
+        ).scalar_one_or_none()
+        if admin is None:
+            raise HTTPException(status_code=303, headers={"Location": "/login"})
     return owner
 
 
@@ -255,14 +268,26 @@ async def login_submit(
 
     result = await session.execute(select(Owner).where(Owner.telegram_id == tg_id))
     owner = result.scalar_one_or_none()
-    if owner is None:
+    owner_id = owner.id if owner is not None else None
+    if owner_id is None:
+        # Не владелец — может быть админ чьего-то кабинета (полный доступ).
+        admin = (
+            await session.execute(select(Admin).where(Admin.telegram_id == tg_id))
+        ).scalar_one_or_none()
+        if admin is not None:
+            owner_id = admin.owner_id
+    if owner_id is None:
         return templates.TemplateResponse(
             "login.html",
-            {"request": request, "error": "Владелец не найден. Сначала /start в боте."},
+            {
+                "request": request,
+                "error": "Доступ не найден. Владельцу — /start в боте; "
+                "админа добавляет владелец в разделе «Реквизиты».",
+            },
             status_code=400,
         )
 
-    token = auth_service.create_jwt(owner.id)
+    token = auth_service.create_jwt(owner_id, tid=tg_id)
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         "auth", token, httponly=True, samesite="lax", max_age=7 * 24 * 3600
@@ -724,7 +749,8 @@ async def drivers_page(
 
 
 async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
-    month_start, _ = _month_window()
+    # Показатели за ВСЁ ВРЕМЯ (не за месяц): в карточке водителя нужны его
+    # суммарные смены / рейсы / пробег / выручка, а не только текущий месяц.
     owner = await session.get(Owner, owner_id)
     tz_name = owner.timezone if owner else None
     drivers_res = await session.execute(
@@ -758,7 +784,6 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
             ).where(
                 Shift.driver_id == d.id,
                 Shift.status == "completed",
-                Shift.ended_at >= month_start,
             )
         )
         km, shifts_count = agg.one()
@@ -770,7 +795,6 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
             ).where(
                 Trip.driver_id == d.id,
                 Trip.status == "completed",
-                Trip.completed_at >= month_start,
             )
         )
         trips_count, revenue, fuel_cost = trips_agg.one()
@@ -1017,6 +1041,11 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
     }
 
 
+def _clean_stavtrack_object_id(value: str) -> str | None:
+    cleaned = value.strip()
+    return cleaned or None
+
+
 @app.get("/vehicles", response_class=HTMLResponse)
 async def vehicles_page(
     request: Request,
@@ -1024,6 +1053,7 @@ async def vehicles_page(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: Annotated[int | None, Query()] = None,
     dup: Annotated[str | None, Query()] = None,
+    gps_dup: Annotated[str | None, Query()] = None,
 ):
     month_start, _ = _month_window()
     vehicles_res = await session.execute(
@@ -1052,6 +1082,8 @@ async def vehicles_page(
         notice = {"kind": "limit", "limit": limit}
     elif dup:
         notice = {"kind": "dup", "plate": dup}
+    elif gps_dup:
+        notice = {"kind": "gps_dup", "stavtrack_object_id": gps_dup}
     return templates.TemplateResponse(
         "vehicles.html",
         {
@@ -1095,6 +1127,7 @@ async def create_vehicle(
     brand: Annotated[str, Form()] = "",
     type: Annotated[str, Form()] = "truck",
     fuel_norm_per_100km: Annotated[str, Form()] = "",
+    stavtrack_object_id: Annotated[str, Form()] = "",
     osago_expires: Annotated[str, Form()] = "",
     inspection_expires: Annotated[str, Form()] = "",
     tacho_expires: Annotated[str, Form()] = "",
@@ -1139,10 +1172,25 @@ async def create_vehicle(
     if existing is not None and existing.is_active:
         return RedirectResponse(f"/vehicles?dup={plate_clean}", status_code=303)
 
+    stavtrack_id = _clean_stavtrack_object_id(stavtrack_object_id)
+    if stavtrack_id:
+        gps_existing = (
+            await session.execute(
+                select(Vehicle).where(
+                    Vehicle.owner_id == owner.id,
+                    Vehicle.stavtrack_object_id == stavtrack_id,
+                    Vehicle.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if gps_existing is not None and (existing is None or gps_existing.id != existing.id):
+            return RedirectResponse(f"/vehicles?gps_dup={stavtrack_id}", status_code=303)
+
     target = existing if existing is not None else Vehicle(owner_id=owner.id)
     target.license_plate = plate_clean
     target.brand = brand.strip() or None
     target.type = type
+    target.stavtrack_object_id = stavtrack_id
     target.fuel_norm_per_100km = norm
     target.osago_expires = _parse_date(osago_expires)
     target.inspection_expires = _parse_date(inspection_expires)
@@ -1205,6 +1253,7 @@ async def vehicle_update(
     brand: Annotated[str, Form()] = "",
     type: Annotated[str, Form()] = "truck",
     fuel_norm_per_100km: Annotated[str, Form()] = "",
+    stavtrack_object_id: Annotated[str, Form()] = "",
     osago_expires: Annotated[str, Form()] = "",
     inspection_expires: Annotated[str, Form()] = "",
     tacho_expires: Annotated[str, Form()] = "",
@@ -1221,6 +1270,21 @@ async def vehicle_update(
     vehicle.license_plate = plate_clean
     vehicle.brand = brand.strip() or None
     vehicle.type = type
+    stavtrack_id = _clean_stavtrack_object_id(stavtrack_object_id)
+    if stavtrack_id:
+        gps_existing = (
+            await session.execute(
+                select(Vehicle).where(
+                    Vehicle.owner_id == owner.id,
+                    Vehicle.stavtrack_object_id == stavtrack_id,
+                    Vehicle.id != vehicle.id,
+                    Vehicle.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if gps_existing is not None:
+            raise HTTPException(status_code=400, detail="Stavtrack ID уже занят")
+    vehicle.stavtrack_object_id = stavtrack_id
     if fuel_norm_per_100km.strip():
         try:
             vehicle.fuel_norm_per_100km = Decimal(fuel_norm_per_100km.replace(",", "."))
@@ -1476,6 +1540,17 @@ def _customer_to_dict(c: Customer | None) -> dict:
     }
 
 
+async def _active_distribution_centers(
+    session: AsyncSession, owner_id: int
+) -> list[DistributionCenter]:
+    res = await session.execute(
+        select(DistributionCenter)
+        .where(DistributionCenter.owner_id == owner_id, DistributionCenter.is_active.is_(True))
+        .order_by(DistributionCenter.name)
+    )
+    return list(res.scalars().all())
+
+
 @app.get("/acts", response_class=HTMLResponse)
 async def acts_page(
     request: Request,
@@ -1507,12 +1582,14 @@ async def acts_page(
         )
         .order_by(Trip.completed_at, Trip.id)
     )
+    rc_lookup = rc_service.distribution_center_lookup(await _active_distribution_centers(session, owner.id))
     trips = [
         {
             "id": tid,
             "date": cat,
             "origin": orig,
             "destination": dest,
+            "destination_address": rc_service.canonical_rc_address(dest, rc_lookup),
             "driver": drv,
             "plate": plate,
             "revenue": Decimal(rev or 0),
@@ -1559,6 +1636,7 @@ async def acts_export(
     act_date: Annotated[str | None, Query()] = None,
     title: Annotated[str, Query()] = "Акт сверки",
     trip_ids: Annotated[list[int], Query()] = [],
+    selection_mode: Annotated[str, Query()] = "",
 ):
     """Акт (форма 101 РС): один лист с выбранными рейсами за период,
     с реквизитами Исполнителя/Заказчика, итогом и суммой прописью.
@@ -1595,15 +1673,20 @@ async def acts_export(
             Trip.revenue_rub.is_not(None),
         )
     )
-    # Пустой trip_ids = все рейсы периода (прямая ссылка без чек-листа).
+    # Пустой trip_ids = все рейсы периода для прямой ссылки.
+    # Если запрос пришёл из чек-листа, пустой выбор должен остаться пустым.
     if trip_ids:
         trip_q = trip_q.where(Trip.id.in_(trip_ids))
+    elif selection_mode == "checklist":
+        trip_q = trip_q.where(Trip.id.in_([]))
     rows_res = await session.execute(trip_q.order_by(Trip.completed_at, Trip.id))
+    rc_lookup = rc_service.distribution_center_lookup(await _active_distribution_centers(session, owner.id))
     rows = [
         {
             "date": trip.completed_at,
             "origin": trip.origin,
             "destination": trip.destination,
+            "destination_address": rc_service.canonical_rc_address(trip.destination, rc_lookup),
             "plate": plate,
             "driver": driver_name,
             "amount": trip.revenue_rub,
@@ -1679,11 +1762,15 @@ async def requisites_page(
         select(Customer).where(Customer.owner_id == owner.id).order_by(Customer.name)
     )
     customers = list(res.scalars().all())
+    admins_res = await session.execute(
+        select(Admin).where(Admin.owner_id == owner.id).order_by(Admin.created_at)
+    )
+    admins = list(admins_res.scalars().all())
     return templates.TemplateResponse(
         "requisites.html",
         {
             "request": request, "owner": owner, "customers": customers,
-            "active_page": "requisites",
+            "admins": admins, "active_page": "requisites",
         },
     )
 
@@ -1760,6 +1847,47 @@ async def customers_delete(
     if customer is None or customer.owner_id != owner.id:
         raise HTTPException(status_code=404)
     await session.delete(customer)
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
+
+
+@app.post("/admins/add")
+async def admins_add(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    telegram_id: Annotated[str, Form()],
+    name: Annotated[str, Form()] = "",
+):
+    """Добавить администратора кабинета по Telegram ID (полный доступ)."""
+    try:
+        tid = int(telegram_id.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Telegram ID должен быть числом")
+    # нельзя добавить самого владельца или уже существующего админа
+    if tid == owner.telegram_id:
+        raise HTTPException(status_code=400, detail="Это Telegram ID владельца")
+    exists = (
+        await session.execute(select(Admin).where(Admin.telegram_id == tid))
+    ).scalar_one_or_none()
+    if exists is None:
+        session.add(Admin(owner_id=owner.id, telegram_id=tid, name=_norm(name)))
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+    return RedirectResponse("/requisites", status_code=303)
+
+
+@app.post("/admins/{admin_id}/delete")
+async def admins_delete(
+    admin_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    admin = await session.get(Admin, admin_id)
+    if admin is None or admin.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    await session.delete(admin)
     await session.commit()
     return RedirectResponse("/requisites", status_code=303)
 
@@ -1981,11 +2109,23 @@ async def _finance_summary(
 # =========================================================================
 # /routes — прибыль по направлениям (группировка по origin → destination)
 # =========================================================================
+def _apply_distribution_center_form(center: DistributionCenter, form: dict) -> None:
+    center.name = (form.get("name") or "").strip()
+    center.address = (form.get("address") or "").strip()
+    center.aliases = _norm(form.get("aliases"))
+    try:
+        center.latitude = rc_service.decimal_or_none(form.get("latitude"))
+        center.longitude = rc_service.decimal_or_none(form.get("longitude"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/routes", response_class=HTMLResponse)
 async def routes_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    rc_imported: Annotated[int | None, Query()] = None,
 ):
     # Один запрос: GROUP BY origin, destination для completed рейсов с заполненной выручкой
     rows_res = await session.execute(
@@ -2023,10 +2163,127 @@ async def routes_page(
         })
     # сортировка: от самых прибыльных к убыточным
     rows.sort(key=lambda r: r["avg_profit"], reverse=True)
+    centers = await _active_distribution_centers(session, owner.id)
     return templates.TemplateResponse(
         "routes.html",
-        {"request": request, "owner": owner, "rows": rows, "active_page": "routes"},
+        {
+            "request": request,
+            "owner": owner,
+            "rows": rows,
+            "centers": centers,
+            "rc_imported": rc_imported,
+            "active_page": "routes",
+        },
     )
+
+
+@app.post("/routes/rc/add")
+async def routes_rc_add(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    name: Annotated[str, Form()],
+    address: Annotated[str, Form()],
+    aliases: Annotated[str, Form()] = "",
+    latitude: Annotated[str, Form()] = "",
+    longitude: Annotated[str, Form()] = "",
+):
+    if not name.strip() or not address.strip():
+        raise HTTPException(status_code=400, detail="Укажите название и адрес РЦ")
+    existing_res = await session.execute(
+        select(DistributionCenter).where(DistributionCenter.owner_id == owner.id)
+    )
+    key = rc_service.route_key(name)
+    center = next(
+        (c for c in existing_res.scalars().all() if rc_service.route_key(c.name) == key),
+        None,
+    )
+    if center is None:
+        center = DistributionCenter(owner_id=owner.id, name=name.strip(), address=address.strip())
+        session.add(center)
+    _apply_distribution_center_form(center, {
+        "name": name, "address": address, "aliases": aliases,
+        "latitude": latitude, "longitude": longitude,
+    })
+    center.is_active = True
+    await session.commit()
+    return RedirectResponse("/routes", status_code=303)
+
+
+@app.post("/routes/rc/import")
+async def routes_rc_import(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    file: Annotated[UploadFile, File()],
+):
+    data = await file.read()
+    try:
+        items = rc_service.distribution_centers_from_xlsx(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    existing_res = await session.execute(
+        select(DistributionCenter).where(DistributionCenter.owner_id == owner.id)
+    )
+    existing = {
+        rc_service.route_key(center.name): center
+        for center in existing_res.scalars().all()
+    }
+    imported = 0
+    for item in items:
+        key = rc_service.route_key(item["name"])
+        if not key:
+            continue
+        center = existing.get(key)
+        if center is None:
+            center = DistributionCenter(owner_id=owner.id, name=item["name"], address=item["address"])
+            session.add(center)
+            existing[key] = center
+        _apply_distribution_center_form(center, item)
+        center.is_active = True
+        imported += 1
+    await session.commit()
+    return RedirectResponse(f"/routes?rc_imported={imported}", status_code=303)
+
+
+@app.post("/routes/rc/{center_id}")
+async def routes_rc_edit(
+    center_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    name: Annotated[str, Form()],
+    address: Annotated[str, Form()],
+    aliases: Annotated[str, Form()] = "",
+    latitude: Annotated[str, Form()] = "",
+    longitude: Annotated[str, Form()] = "",
+):
+    center = await session.get(DistributionCenter, center_id)
+    if center is None or center.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    if not name.strip() or not address.strip():
+        raise HTTPException(status_code=400, detail="Укажите название и адрес РЦ")
+    _apply_distribution_center_form(center, {
+        "name": name, "address": address, "aliases": aliases,
+        "latitude": latitude, "longitude": longitude,
+    })
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail="РЦ с таким названием уже есть") from exc
+    return RedirectResponse("/routes", status_code=303)
+
+
+@app.post("/routes/rc/{center_id}/delete")
+async def routes_rc_delete(
+    center_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    center = await session.get(DistributionCenter, center_id)
+    if center is None or center.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    center.is_active = False
+    await session.commit()
+    return RedirectResponse("/routes", status_code=303)
 
 
 # =========================================================================

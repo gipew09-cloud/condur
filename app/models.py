@@ -74,6 +74,23 @@ class Customer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ========== АДМИНИСТРАТОРЫ КАБИНЕТА ==========
+class Admin(Base):
+    """
+    Дополнительный администратор кабинета владельца. Полный доступ — работает
+    с данными владельца так же, как сам владелец (JWT выдаётся с owner_id).
+    Владелец добавляет админа по Telegram ID на странице /requisites; вход —
+    через /login в боте владельца (код) и на веб-странице /login.
+    """
+    __tablename__ = "admins"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 # ========== ВОДИТЕЛИ ==========
 class Driver(Base):
     __tablename__ = "drivers"
@@ -108,6 +125,7 @@ class Vehicle(Base):
     __tablename__ = "vehicles"
     __table_args__ = (
         UniqueConstraint("owner_id", "license_plate", name="uq_vehicle_plate"),
+        UniqueConstraint("owner_id", "stavtrack_object_id", name="uq_vehicle_stavtrack_object"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -116,6 +134,8 @@ class Vehicle(Base):
     brand: Mapped[str | None] = mapped_column(String(100))
     type: Mapped[str | None] = mapped_column(String(50))
     fuel_norm_per_100km: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    # ID объекта из Stavtrack. Его видно в окне ретрансляции рядом с машиной.
+    stavtrack_object_id: Mapped[str | None] = mapped_column(String(64))
 
     # документы — для алертов APScheduler за 30 дней до истечения
     osago_expires: Mapped[date | None] = mapped_column(Date)
@@ -274,6 +294,29 @@ class RouteTemplate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ========== СПРАВОЧНИК РЦ ==========
+class DistributionCenter(Base):
+    """
+    Канонические адреса распределительных центров владельца.
+    Нужны для актов: водитель/владелец может ввести пункт назначения свободным
+    текстом, а в Excel подставляется официальный адрес из справочника.
+    """
+    __tablename__ = "distribution_centers"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_distribution_centers_owner_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    address: Mapped[str] = mapped_column(Text)
+    aliases: Mapped[str | None] = mapped_column(Text)
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 # ========== РУЧНЫЕ ДОХОДЫ И РАСХОДЫ ВЛАДЕЛЬЦА ==========
 class ManualEntry(Base):
     """
@@ -337,3 +380,81 @@ class DailySummary(Base):
     total_revenue: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     total_fuel_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ========== GPS / STAVTRACK ==========
+class VehicleTelemetryRawPacket(Base):
+    """
+    Сырые TCP-данные, которые присылает Stavtrack по EGTS.
+    Первый этап интеграции: подтвердить, что Railway реально принимает поток,
+    и сохранить реальные пакеты для последующего парсинга и ACK.
+    """
+    __tablename__ = "vehicle_telemetry_raw_packets"
+    __table_args__ = (
+        CheckConstraint(
+            "parse_status IN ('raw','parsed','failed','ignored')",
+            name="ck_telemetry_raw_parse_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(32), default="egts", server_default="egts")
+    source: Mapped[str] = mapped_column(String(64), default="stavtrack", server_default="stavtrack")
+    peer_host: Mapped[str | None] = mapped_column(String(255))
+    peer_port: Mapped[int | None] = mapped_column(Integer)
+    terminal_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(ForeignKey("vehicles.id", ondelete="SET NULL"), index=True)
+    payload: Mapped[bytes] = mapped_column(LargeBinary)
+    payload_size: Mapped[int] = mapped_column(Integer)
+    parse_status: Mapped[str] = mapped_column(String(20), default="raw", server_default="raw")
+    parse_error: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VehicleTelemetryPoint(Base):
+    """
+    Нормализованная GPS-точка после будущего парсинга EGTS.
+    Здесь будем хранить координаты, скорость, зажигание и признак доверия к GPS.
+    """
+    __tablename__ = "vehicle_telemetry_points"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    raw_packet_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vehicle_telemetry_raw_packets.id", ondelete="SET NULL"), index=True
+    )
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("owners.id", ondelete="SET NULL"), index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(ForeignKey("vehicles.id", ondelete="SET NULL"), index=True)
+    terminal_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
+    speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    course: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    ignition: Mapped[bool | None] = mapped_column(Boolean)
+    mileage_km: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    anomaly_reason: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(64), default="stavtrack", server_default="stavtrack")
+
+
+class VehicleState(Base):
+    """
+    Последнее известное состояние машины. Это быстрый слой для кабинета/бота:
+    где авто сейчас, когда последний раз видели, включено ли зажигание.
+    """
+    __tablename__ = "vehicle_states"
+
+    vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id", ondelete="CASCADE"), primary_key=True)
+    terminal_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    last_point_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vehicle_telemetry_points.id", ondelete="SET NULL")
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
+    longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
+    speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
+    ignition: Mapped[bool | None] = mapped_column(Boolean)
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    anomaly_reason: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

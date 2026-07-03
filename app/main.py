@@ -71,7 +71,20 @@ def _redact_url(url: str) -> str:
     return _re.sub(r"(://[^:@/]+:)[^@/]+(@)", r"\1***\2", url)
 
 
+def _require_bot_tokens() -> None:
+    missing = []
+    if not settings.owner_bot_token:
+        missing.append("OWNER_BOT_TOKEN")
+    if not settings.driver_bot_token:
+        missing.append("DRIVER_BOT_TOKEN")
+    if missing:
+        raise RuntimeError(
+            "Не заданы Telegram-токены для запуска ботов: " + ", ".join(missing)
+        )
+
+
 async def main() -> None:
+    _require_bot_tokens()
     storage = _build_storage()
     default = DefaultBotProperties(parse_mode=ParseMode.HTML)
 

@@ -1,10 +1,42 @@
 {% extends "base.html" %}
 {% block title %}Направления{% endblock %}
+{% block head %}
+<style>
+  .rc-tools { display: grid; gap: 14px; margin: 1.25rem 0; }
+  .rc-import { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .rc-import label { margin: 0; min-width: min(100%, 320px); }
+  .rc-list { display: grid; gap: 10px; margin-top: .75rem; }
+  .rc-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) minmax(240px, 2fr) minmax(160px, 1fr) 110px 110px auto;
+    gap: 10px;
+    align-items: end;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .rc-row label { margin: 0; font-size: .78rem; color: var(--text-muted); font-weight: 600; }
+  .rc-row input, .rc-row textarea { margin: .25rem 0 0; }
+  .rc-row textarea { min-height: 44px; resize: vertical; }
+  .rc-row__actions { display: flex; gap: 8px; align-items: center; }
+  .rc-row__actions button { margin: 0; white-space: nowrap; }
+  @media (max-width: 980px) {
+    .rc-row { grid-template-columns: 1fr 1fr; }
+    .rc-row__actions { grid-column: 1 / -1; }
+  }
+  @media (max-width: 640px) {
+    .rc-row { grid-template-columns: 1fr; }
+    .rc-row__actions { flex-wrap: wrap; }
+  }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="page-head">
   <h1>Прибыль по направлениям</h1>
-  <p class="sub">Завершённые рейсы с выручкой, сгруппированные по маршруту — от самых прибыльных к убыточным.</p>
+  <p class="sub">Завершённые рейсы с выручкой, сгруппированные по маршруту. Ниже — справочник РЦ для канонических адресов в актах.</p>
 </div>
 
 {% if not rows %}
@@ -36,4 +68,73 @@
     </tbody>
   </table>
 {% endif %}
+
+<section class="section">
+  <h3>Справочник РЦ</h3>
+  <p class="sub">Название и алиасы помогают найти свободный текст из рейса, а адрес подставляется в акт сверки.</p>
+
+  {% if rc_imported is not none %}
+  <article class="add-banner">
+    Импортировано или обновлено РЦ: <b>{{ rc_imported }}</b>.
+  </article>
+  {% endif %}
+
+  <div class="rc-tools">
+    <details class="add-panel">
+      <summary class="add-toggle">Добавить РЦ вручную</summary>
+      <form method="post" action="/routes/rc/add" class="add-form">
+        <div class="add-grid">
+          <label>Название РЦ <input name="name" placeholder="РЦ Шушары" required></label>
+          <label>Адрес <input name="address" placeholder="Санкт-Петербург, ..." required></label>
+          <label>Алиасы <input name="aliases" placeholder="Шушары; РЦ СПб"></label>
+          <label>Широта <input name="latitude" inputmode="decimal" placeholder="59.8"></label>
+          <label>Долгота <input name="longitude" inputmode="decimal" placeholder="30.3"></label>
+        </div>
+        <button type="submit"><i class="ph ph-plus"></i> Добавить</button>
+      </form>
+    </details>
+
+    <details class="add-panel">
+      <summary class="add-toggle">Импортировать из Excel</summary>
+      <form method="post" action="/routes/rc/import" enctype="multipart/form-data" class="add-form rc-import">
+        <label>Файл .xlsx
+          <input type="file" name="file" accept=".xlsx" required>
+        </label>
+        <button type="submit"><i class="ph ph-upload-simple"></i> Импорт</button>
+      </form>
+    </details>
+  </div>
+
+  {% if centers %}
+  <div class="rc-list">
+    {% for c in centers %}
+    <form method="post" action="/routes/rc/{{ c.id }}" class="rc-row">
+      <label>Название
+        <input name="name" value="{{ c.name }}" required>
+      </label>
+      <label>Адрес
+        <textarea name="address" required>{{ c.address }}</textarea>
+      </label>
+      <label>Алиасы
+        <input name="aliases" value="{{ c.aliases or '' }}" placeholder="через ; или с новой строки">
+      </label>
+      <label>Широта
+        <input name="latitude" inputmode="decimal" value="{{ c.latitude or '' }}">
+      </label>
+      <label>Долгота
+        <input name="longitude" inputmode="decimal" value="{{ c.longitude or '' }}">
+      </label>
+      <div class="rc-row__actions">
+        <button type="submit"><i class="ph ph-check"></i> Сохранить</button>
+        <button type="submit" formaction="/routes/rc/{{ c.id }}/delete" class="secondary">
+          <i class="ph ph-eye-slash"></i> Скрыть
+        </button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p>Справочник РЦ пока пуст. Добавь вручную или импортируй таблицу с колонками «Название/РЦ» и «Адрес».</p>
+  {% endif %}
+</section>
 {% endblock %}
