@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "alembic upgrade head && python -m app.main",
+    "startCommand": "python -m app.run",
     "restartPolicyType": "ON_FAILURE"
   }
 }

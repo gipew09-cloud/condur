@@ -68,7 +68,7 @@ python -m app.main            # веб на http://localhost:8000
 `OWNER_BOT_TOKEN`, `DRIVER_BOT_TOKEN`, `DATABASE_URL`, `REDIS_URL` (пусто = MemoryStorage),
 **`JWT_SECRET`** (на проде обязательно длинная случайная строка!), `PORT`,
 10 × `FEATURE_*`, `RECEIPT_OCR_PROVIDER` + `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` (OCR дормант),
-`EGTS_PORT`/`EGTS_*` для отдельного Stavtrack-приёмника.
+`SERVICE_ROLE`, `EGTS_PORT`/`EGTS_*` для отдельного Stavtrack-приёмника.
 
 **Прод (Railway):** `startCommand = alembic upgrade head && python -m app.main` — миграции
 применяются автоматически при деплое. Обязательно задать `JWT_SECRET` в Variables.
@@ -82,6 +82,7 @@ python -m app.main            # веб на http://localhost:8000
 ```
 app/
   main.py               точка входа: два бота + FastAPI через asyncio.gather
+  run.py                единый Railway-runner: SERVICE_ROLE=main/egts
   config.py             pydantic-settings: токены, JWT, фича-флаги
   database.py           async engine + session factory
   models.py             все таблицы (SQLAlchemy 2.0)
@@ -303,6 +304,7 @@ period_to, executor: dict, customer: dict, rows: list[dict]) -> Workbook`.
    Нужно загрузить xlsx владельца, проверить совпадения алиасов и позже использовать
    координаты для геозон.
 2. **Телематика (Stavtrack)** — первый диагностический слой уже есть:
+   `python -m app.run` + `SERVICE_ROLE=egts`, прямой процесс
    `python -m app.telemetry.egts_receiver`, миграция `0009_vehicle_telemetry`,
    инструкция `STAVTRACK_INTEGRATION.md`. Следующее: подключить 1 машину, получить реальные
    raw-пакеты, добавить ACK/парсер EGTS, затем включать сравнение с рейсами.
