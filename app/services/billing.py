@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import Subscription, Vehicle
 
 
@@ -47,7 +48,6 @@ async def get_or_create_subscription(
 
 async def can_add_vehicle(session: AsyncSession, owner_id: int) -> tuple[bool, int, int]:
     """Возвращает (можно_добавить, текущее_количество, лимит)."""
-    sub = await get_or_create_subscription(session, owner_id)
     count = (
         await session.execute(
             select(func.count(Vehicle.id)).where(
@@ -55,6 +55,10 @@ async def can_add_vehicle(session: AsyncSession, owner_id: int) -> tuple[bool, i
             )
         )
     ).scalar_one() or 0
+    # Биллинг заморожен (проект для своей компании) — лимит не действует.
+    if not settings.billing_enabled:
+        return (True, int(count), 9999)
+    sub = await get_or_create_subscription(session, owner_id)
     return (count < sub.vehicles_limit, int(count), sub.vehicles_limit)
 
 

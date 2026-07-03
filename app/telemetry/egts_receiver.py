@@ -1,12 +1,19 @@
 """
-Диагностический EGTS/TCP-приёмник для ретрансляции Stavtrack.
+EGTS/TCP-приёмник ретрансляции Stavtrack.
 
 Запускается отдельным Railway-сервисом:
     python -m app.telemetry.egts_receiver
 
-Это не второй Telegram-бот. Процесс только слушает TCP-порт и сохраняет
-сырые пакеты в Postgres. После получения реальных пакетов добавим парсер EGTS
-и ACK под фактическое поведение Stavtrack.
+Этап 2 (текущий): пакеты разбираются парсером app/telemetry/egts.py —
+сохраняем сырьё + нормализованные GPS-точки (координаты, скорость, зажигание,
+пробег), обновляем последнее состояние машины и отвечаем трекеру
+EGTS_PT_RESPONSE, чтобы Stavtrack не рвал связь и не слал повторы.
+
+Привязка к машине: OID из пакета == vehicles.stavtrack_object_id.
+  - ровно одна активная машина → точки пишутся с owner_id/vehicle_id;
+  - ни одной → пакет сохраняем со статусом ignored (чужой/ещё не привязан);
+  - несколько (один ID у разных владельцев) → ignored + 'ambiguous terminal id',
+    точки НЕ пишем никому — иначе чужие данные попали бы в оба кабинета.
 """
 from __future__ import annotations
 
@@ -14,7 +21,10 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
+
+from app.telemetry import egts
 
 logger = logging.getLogger(__name__)
 
@@ -66,25 +76,138 @@ def _preview_hex(payload: bytes, *, limit: int = 24) -> str:
     return payload[:limit].hex(" ")
 
 
-async def _save_raw_packet(payload: bytes, *, peer_host: str | None, peer_port: int | None) -> int | None:
-    # Импорт внутри функции: GPS-worker не тянет SQLAlchemy при простом импорте
-    # модуля, а тесты чистых helper-ов не требуют установленной БД.
+async def _process_packet(
+    payload: bytes, *, peer_host: str | None, peer_port: int | None
+) -> bytes | None:
+    """Разбирает пакет, пишет в БД, возвращает байты ACK (или None).
+
+    Импорты БД — внутри функции: чистые тесты парсера не требуют SQLAlchemy.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     from app.database import async_session
-    from app.models import VehicleTelemetryRawPacket
+    from app.models import (
+        Vehicle,
+        VehicleState,
+        VehicleTelemetryPoint,
+        VehicleTelemetryRawPacket,
+    )
+
+    parsed: egts.ParsedPacket | None = None
+    parse_error: str | None = None
+    try:
+        parsed = egts.parse_packet(payload)
+    except egts.EgtsParseError as exc:
+        parse_error = str(exc)
+
+    oid = parsed.object_id if parsed else None
+    terminal_id = str(oid) if oid is not None else None
 
     async with async_session() as session:
-        packet = VehicleTelemetryRawPacket(
+        raw = VehicleTelemetryRawPacket(
             protocol="egts",
             source="stavtrack",
             peer_host=peer_host,
             peer_port=peer_port,
+            terminal_id=terminal_id,
             payload=payload,
             payload_size=len(payload),
-            parse_status="raw",
+            parse_status="failed" if parse_error else "parsed",
+            parse_error=parse_error,
         )
-        session.add(packet)
+        session.add(raw)
+        await session.flush()
+
+        vehicle: Vehicle | None = None
+        if parsed is not None and terminal_id is not None:
+            matches = (
+                await session.execute(
+                    select(Vehicle).where(
+                        Vehicle.stavtrack_object_id == terminal_id,
+                        Vehicle.is_active.is_(True),
+                    )
+                )
+            ).scalars().all()
+            if len(matches) == 1:
+                vehicle = matches[0]
+                raw.vehicle_id = vehicle.id
+            elif len(matches) > 1:
+                raw.parse_status = "ignored"
+                raw.parse_error = "ambiguous terminal id (несколько машин с этим Stavtrack ID)"
+            else:
+                raw.parse_status = "ignored"
+                raw.parse_error = "unknown terminal id (машина с этим Stavtrack ID не найдена)"
+
+        points_saved = 0
+        last_point: VehicleTelemetryPoint | None = None
+        if parsed is not None and vehicle is not None:
+            for rec in parsed.records:
+                for pos in rec.positions:
+                    point = VehicleTelemetryPoint(
+                        raw_packet_id=raw.id,
+                        owner_id=vehicle.owner_id,
+                        vehicle_id=vehicle.id,
+                        terminal_id=terminal_id,
+                        observed_at=pos.navigation_time,
+                        latitude=Decimal(str(pos.latitude)),
+                        longitude=Decimal(str(pos.longitude)),
+                        speed_kmh=Decimal(str(pos.speed_kmh)),
+                        course=Decimal(pos.course),
+                        ignition=pos.ignition,
+                        mileage_km=Decimal(str(pos.odometer_km)),
+                        is_valid=pos.is_valid,
+                        anomaly_reason=None if pos.is_valid else "нет достоверных координат (VLD=0)",
+                    )
+                    session.add(point)
+                    points_saved += 1
+                    if last_point is None or (
+                        point.observed_at and last_point.observed_at
+                        and point.observed_at >= last_point.observed_at
+                    ):
+                        last_point = point
+
+            if last_point is not None:
+                await session.flush()  # нужен last_point.id
+                stmt = pg_insert(VehicleState).values(
+                    vehicle_id=vehicle.id,
+                    terminal_id=terminal_id,
+                    last_point_id=last_point.id,
+                    last_seen_at=last_point.observed_at,
+                    latitude=last_point.latitude,
+                    longitude=last_point.longitude,
+                    speed_kmh=last_point.speed_kmh,
+                    ignition=last_point.ignition,
+                    is_valid=last_point.is_valid,
+                    anomaly_reason=last_point.anomaly_reason,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[VehicleState.vehicle_id],
+                    set_={
+                        "terminal_id": stmt.excluded.terminal_id,
+                        "last_point_id": stmt.excluded.last_point_id,
+                        "last_seen_at": stmt.excluded.last_seen_at,
+                        "latitude": stmt.excluded.latitude,
+                        "longitude": stmt.excluded.longitude,
+                        "speed_kmh": stmt.excluded.speed_kmh,
+                        "ignition": stmt.excluded.ignition,
+                        "is_valid": stmt.excluded.is_valid,
+                        "anomaly_reason": stmt.excluded.anomaly_reason,
+                    },
+                )
+                await session.execute(stmt)
+
         await session.commit()
-        return packet.id
+        logger.info(
+            "EGTS packet id=%s status=%s terminal=%s vehicle=%s points=%s bytes=%s",
+            raw.id, raw.parse_status, terminal_id,
+            vehicle.license_plate if vehicle else "—",
+            points_saved, len(payload),
+        )
+
+    # ACK шлём на любой корректно разобранный транспортный пакет — иначе
+    # Stavtrack продолжит рвать связь и слать повторы.
+    return egts.build_response(parsed) if parsed is not None else None
 
 
 async def handle_client(
@@ -96,10 +219,11 @@ async def handle_client(
     peer_label = f"{peer_host}:{peer_port}" if peer_host and peer_port else str(peer_host or "unknown")
     logger.info("EGTS connection opened: %s", peer_label)
 
+    buffer = b""
     try:
         while True:
             try:
-                payload = await asyncio.wait_for(
+                chunk = await asyncio.wait_for(
                     reader.read(config.max_packet_bytes),
                     timeout=config.idle_timeout_seconds,
                 )
@@ -107,22 +231,27 @@ async def handle_client(
                 logger.info("EGTS connection idle timeout: %s", peer_label)
                 break
 
-            if not payload:
+            if not chunk:
+                break
+            buffer += chunk
+            if len(buffer) > config.max_packet_bytes * 4:
+                logger.warning("EGTS buffer overflow from %s, dropping connection", peer_label)
                 break
 
-            try:
-                packet_id = await _save_raw_packet(payload, peer_host=peer_host, peer_port=peer_port)
-            except Exception:
-                logger.exception("Не удалось сохранить EGTS-пакет от %s", peer_label)
-                continue
-
-            logger.info(
-                "EGTS raw saved: id=%s peer=%s bytes=%s preview=%s",
-                packet_id,
-                peer_label,
-                len(payload),
-                _preview_hex(payload),
-            )
+            # В буфере может лежать несколько пакетов (или пол-пакета).
+            while True:
+                need = egts.packet_length(buffer)
+                if need is None or len(buffer) < need:
+                    break
+                packet, buffer = buffer[:need], buffer[need:]
+                try:
+                    ack = await _process_packet(packet, peer_host=peer_host, peer_port=peer_port)
+                except Exception:
+                    logger.exception("Не удалось обработать EGTS-пакет от %s", peer_label)
+                    continue
+                if ack:
+                    writer.write(ack)
+                    await writer.drain()
     finally:
         writer.close()
         await writer.wait_closed()

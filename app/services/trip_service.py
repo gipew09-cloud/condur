@@ -7,7 +7,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Expense, Shift, Trip
@@ -112,3 +112,23 @@ async def set_trip_revenue(
 ) -> Trip:
     trip.revenue_rub = revenue_rub.quantize(Decimal("0.01"))
     return trip
+
+
+async def set_trip_revenue_if_empty(
+    session: AsyncSession, *, trip: Trip, revenue_rub: Decimal
+) -> bool:
+    """
+    «Правило первого» для ВОДИТЕЛЯ, устойчивое к гонке: атомарный UPDATE
+    записывает выручку только если её ещё нет. Если владелец успел указать
+    свою (пока водитель печатал число) — вернём False и ничего не перетрём.
+    Владелец пишет через set_trip_revenue — он главный и перетирает всегда.
+    """
+    result = await session.execute(
+        update(Trip)
+        .where(Trip.id == trip.id, Trip.revenue_rub.is_(None))
+        .values(revenue_rub=revenue_rub.quantize(Decimal("0.01")))
+    )
+    await session.flush()
+    # Обновляем объект в сессии, чтобы дальше показывать актуальное значение.
+    await session.refresh(trip)
+    return result.rowcount == 1

@@ -47,6 +47,25 @@
   .driver-marker.idle {
     background: linear-gradient(135deg, #94a3b8, #475569);
   }
+  /* Маркер машины (GPS Stavtrack): плашка с номером */
+  .vehicle-marker {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 2px solid white;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, .25);
+    color: #fff;
+    font-weight: 800;
+    font-size: .72rem;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .vehicle-marker.on { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+  .vehicle-marker.off { background: linear-gradient(135deg, #94a3b8, #475569); }
+  .vehicle-marker.stale { opacity: .65; }
   /* Пульс вокруг маркера активного водителя */
   .driver-marker.active::before {
     content: "";
@@ -150,6 +169,28 @@
   }
 
   const markers = {};
+  const vehicleMarkers = {};
+
+  function makeVehicleHTML(v) {
+    const fresh = v.updated_at && (Date.now() - new Date(v.updated_at).getTime()) < 10 * 60 * 1000;
+    const cls = (v.ignition ? 'on' : 'off') + (fresh ? '' : ' stale');
+    return `<div class="vehicle-marker ${cls}">🚚 ${v.plate}</div>`;
+  }
+
+  function makeVehiclePopup(v) {
+    const ago = v.updated_at
+      ? new Date(v.updated_at).toLocaleString('ru-RU',
+          { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : '—';
+    const ign = v.ignition ? '🟢 зажигание вкл' : '⚪️ зажигание выкл';
+    const gps = v.is_valid ? '' : '<div class="meta">⚠️ GPS без достоверных координат</div>';
+    return `<div class="driver-popup-content">
+      <h4>🚚 ${v.plate}</h4>
+      <div class="meta">${ign} · ${Math.round(v.speed_kmh)} км/ч</div>
+      ${gps}
+      <div class="meta">🕒 ${ago} (GPS Stavtrack)</div>
+    </div>`;
+  }
 
   async function refresh() {
     try {
@@ -176,7 +217,27 @@
         }
         bounds.extend([d.lat, d.lon]);
       }
-      if (data.drivers.length > 0) {
+      for (const v of (data.vehicles || [])) {
+        const icon = L.divIcon({
+          className: '',
+          html: makeVehicleHTML(v),
+          iconSize: null,
+          iconAnchor: [30, 14],
+          popupAnchor: [0, -14],
+        });
+        if (vehicleMarkers[v.vehicle_id]) {
+          vehicleMarkers[v.vehicle_id].setLatLng([v.lat, v.lon])
+            .setIcon(icon)
+            .setPopupContent(makeVehiclePopup(v));
+        } else {
+          vehicleMarkers[v.vehicle_id] = L.marker([v.lat, v.lon], { icon })
+            .addTo(map)
+            .bindPopup(makeVehiclePopup(v));
+        }
+        bounds.extend([v.lat, v.lon]);
+      }
+      const total = data.drivers.length + (data.vehicles || []).length;
+      if (total > 0) {
         map.fitBounds(bounds.pad(0.3), { maxZoom: 14 });
       }
     } catch (e) { console.error(e); }

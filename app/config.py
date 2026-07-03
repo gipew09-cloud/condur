@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     feature_odometer_ocr: bool = False          # распознавание одометра с фото (на будущее)
     feature_downtime: bool = False              # кнопка «Простой» (нет в списке «оставить»)
 
+    # Биллинг/тарифы ЗАМОРОЖЕНЫ (проект пока для своей компании): лимит машин
+    # не проверяется. Когда пойдём в продажу — BILLING_ENABLED=on, и лимиты
+    # тарифов снова заработают. Код тарифов не удалён, просто выключен.
+    billing_enabled: bool = False
+
     # OCR чека (Блок C). Без ключа функция дормант — водитель вводит сумму руками.
     # provider: anthropic | openai | disabled. Ключи — через ENV, в код не пишем.
     receipt_ocr_provider: str = "anthropic"

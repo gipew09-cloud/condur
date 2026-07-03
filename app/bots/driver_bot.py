@@ -1316,7 +1316,20 @@ async def driver_revenue_amount(
         await state.clear()
         await message.answer(msg.SOMETHING_WRONG)
         return
-    await trip_service.set_trip_revenue(session, trip=trip, revenue_rub=amount)
+    # Правило первого — атомарно: пока водитель печатал сумму, владелец мог
+    # успеть указать свою. Тогда НЕ перетираем (владелец главный).
+    saved = await trip_service.set_trip_revenue_if_empty(
+        session, trip=trip, revenue_rub=amount
+    )
+    if not saved:
+        await session.commit()
+        await state.clear()
+        await _refresh_ui(
+            message, session, driver,
+            f"Выручка уже указана владельцем: {(trip.revenue_rub or 0):.0f} ₽. "
+            "Твоё число не записано.",
+        )
+        return
     await log_event(
         session, owner_id=driver.owner_id, driver_id=driver.id,
         shift_id=trip.shift_id, trip_id=trip.id,

@@ -46,6 +46,7 @@ from app.models import (
     Trip,
     TripDocument,
     Vehicle,
+    VehicleState,
 )
 from app.config import settings
 from app.services import act_service, auth_service, billing, rc_service
@@ -2373,8 +2374,34 @@ async def api_drivers_locations(
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Последняя координата каждого водителя владельца — для карты."""
-    return {"drivers": await _driver_positions(session, owner.id)}
+    """Для карты: ручные координаты водителей + GPS машин (Stavtrack)."""
+    vehicles_res = await session.execute(
+        select(VehicleState, Vehicle.license_plate)
+        .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
+        .where(
+            Vehicle.owner_id == owner.id,
+            Vehicle.is_active.is_(True),
+            VehicleState.latitude.is_not(None),
+            VehicleState.longitude.is_not(None),
+        )
+    )
+    vehicles = [
+        {
+            "vehicle_id": st.vehicle_id,
+            "plate": plate,
+            "lat": float(st.latitude),
+            "lon": float(st.longitude),
+            "speed_kmh": float(st.speed_kmh or 0),
+            "ignition": st.ignition,
+            "is_valid": st.is_valid,
+            "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
+        }
+        for st, plate in vehicles_res.all()
+    ]
+    return {
+        "drivers": await _driver_positions(session, owner.id),
+        "vehicles": vehicles,
+    }
 
 
 # =========================================================================
