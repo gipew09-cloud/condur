@@ -24,6 +24,7 @@ from openpyxl import Workbook  # noqa: E402
 from app.services import act_service as A  # noqa: E402
 from app.services import auth_service as AU  # noqa: E402
 from app.services import rc_service as RC  # noqa: E402
+from app.services.timeutil import fmt_dt  # noqa: E402
 
 # Jinja-окружение с теми же фильтрами, что в app/web/router.py (чтобы не тянуть
 # в тест весь FastAPI/SQLAlchemy-стек ради рендера шаблонов).
@@ -37,6 +38,7 @@ _ENV.filters["vtype"] = lambda c: _VT.get(c or "", c or "—")
 _ENV.filters["tstatus"] = lambda c: _TS.get(c or "", c or "—")
 _ENV.filters["pillclass"] = lambda s: _PILL.get((s or "").lower(), "pill--neutral")
 _ENV.filters["statusru"] = lambda s: s or "—"
+_ENV.filters["localdt"] = lambda dt, tz=None, fmt="%d.%m.%Y %H:%M": fmt_dt(dt, tz, fmt)
 
 
 # ---------------------------------------------------------------- сумма прописью

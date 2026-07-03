@@ -26,8 +26,8 @@
   <tbody>
     {% for shift, driver_name, plate in rows %}
     <tr onclick="location.href='/shifts/{{ shift.id }}'" style="cursor:pointer;">
-      <td data-label="Начата">{{ shift.started_at.strftime('%d.%m %H:%M') if shift.started_at else '—' }}</td>
-      <td data-label="Завершена">{{ shift.ended_at.strftime('%d.%m %H:%M') if shift.ended_at else '—' }}</td>
+      <td data-label="Начата">{{ shift.started_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+      <td data-label="Завершена">{{ shift.ended_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
       <td data-label="Водитель">{{ driver_name }}</td>
       <td data-label="Машина">{{ plate }}{% if shift.is_manual %} <span class="badge badge--neutral">вручную</span>{% endif %}</td>
       <td data-label="Пробег" class="num">{{ shift.distance_km if shift.distance_km is not none else '—' }}</td>

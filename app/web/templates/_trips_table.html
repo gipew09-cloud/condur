@@ -31,7 +31,7 @@
         {% set cls = "row-profit" %}
       {% endif %}
       <tr class="{{ cls }}" onclick="location.href='/trips/{{ trip.id }}'" style="cursor:pointer;">
-        <td data-label="Дата">{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
+        <td data-label="Дата">{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
         <td data-label="Маршрут">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}
           {% if trip.is_manual %}<span class="badge badge--neutral" title="Добавлено вручную, км неизвестен">вручную</span>{% endif %}</td>
         <td data-label="Водитель">{{ driver_name }}</td>

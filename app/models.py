@@ -444,6 +444,12 @@ class VehicleState(Base):
     где авто сейчас, когда последний раз видели, включено ли зажигание.
     """
     __tablename__ = "vehicle_states"
+    __table_args__ = (
+        CheckConstraint(
+            "motion_status IS NULL OR motion_status IN ('moving','idle_engine','stopped','unknown')",
+            name="ck_vehicle_state_motion_status",
+        ),
+    )
 
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id", ondelete="CASCADE"), primary_key=True)
     terminal_id: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -455,6 +461,8 @@ class VehicleState(Base):
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
     ignition: Mapped[bool | None] = mapped_column(Boolean)
+    motion_status: Mapped[str | None] = mapped_column(String(20))
+    motion_since_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     anomaly_reason: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

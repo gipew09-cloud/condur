@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+from app.services import telemetry_service
 from app.telemetry.egts_receiver import ReceiverConfig, _env_int, _peer_parts, _preview_hex
 
 
@@ -37,3 +41,18 @@ def test_peer_parts_and_preview_hex():
     assert _peer_parts(("127.0.0.1", 12345)) == ("127.0.0.1", 12345)
     assert _peer_parts(None) == (None, None)
     assert _preview_hex(bytes.fromhex("010203040506"), limit=4) == "01 02 03 04"
+
+
+def test_vehicle_motion_status():
+    assert telemetry_service.vehicle_motion_status(Decimal("54"), False) == "moving"
+    assert telemetry_service.vehicle_motion_status(Decimal("0"), True) == "idle_engine"
+    assert telemetry_service.vehicle_motion_status(Decimal("0"), False) == "stopped"
+
+
+def test_motion_status_text_and_duration_label():
+    start = datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=2, minutes=15)
+
+    assert telemetry_service.motion_status_text("moving", Decimal("54")) == "едет · 54 км/ч"
+    assert telemetry_service.motion_status_text("idle_engine") == "стоит, двигатель работает"
+    assert telemetry_service.duration_label(start, end) == "2 ч 15 мин"

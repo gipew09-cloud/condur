@@ -11,8 +11,8 @@
     {% if trip.is_manual %}<span class="badge badge--neutral" style="font-size:.55em; vertical-align:middle;">вручную · км неизвестен</span>{% endif %}
   </h1>
   <p class="sub">
-    Создан {{ trip.created_at.strftime('%d.%m.%Y %H:%M') if trip.created_at else '—' }} ·
-    {% if trip.completed_at %}завершён {{ trip.completed_at.strftime('%d.%m.%Y %H:%M') }}{% else %}не завершён{% endif %}
+    Создан {{ trip.created_at | localdt(owner.timezone) }} ·
+    {% if trip.completed_at %}завершён {{ trip.completed_at | localdt(owner.timezone) }}{% else %}не завершён{% endif %}
     {% if travel %} · 🕒 в пути по маршруту ~{{ travel_label }} (примерно, по {{ travel.count }} рейс{{ 'у' if travel.count == 1 else 'ам' }}){% endif %}
   </p>
 </div>
@@ -50,7 +50,7 @@
 {% if trip.waybill_photo_url %}
 <h3 style="margin-top:1.5rem;">📄 ТТН</h3>
 {% if waybill_uploaded_at %}
-<p><small>Загружено {{ waybill_uploaded_at.strftime('%d.%m.%Y в %H:%M') }}</small></p>
+<p><small>Загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y в %H:%M') }}</small></p>
 {% endif %}
 <a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
   <img src="/api/photo/{{ trip.waybill_photo_url }}"
@@ -64,7 +64,7 @@
   {% for doc in documents %}
   <li>
     <a href="/api/trip-doc/{{ doc.id }}" target="_blank">{{ doc.filename or 'документ' }}</a>
-    <small style="color:var(--text-muted);">· загружено {{ doc.uploaded_at.strftime('%d.%m.%Y %H:%M') if doc.uploaded_at else '' }}</small>
+    <small style="color:var(--text-muted);">· загружено {{ doc.uploaded_at | localdt(owner.timezone) }}</small>
   </li>
   {% endfor %}
 </ul>
@@ -87,7 +87,7 @@
   <tbody>
     {% for e in expenses %}
     <tr>
-      <td data-label="Дата">{{ e.created_at.strftime('%d.%m %H:%M') if e.created_at else '—' }}</td>
+      <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
       <td data-label="Категория">{{ e.category }}{% if e.description %}<br><small style="color:var(--text-muted);">{{ e.description }}</small>{% endif %}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>

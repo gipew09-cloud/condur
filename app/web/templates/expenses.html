@@ -83,7 +83,7 @@
   <tbody>
     {% for expense, driver_name, plate in rows %}
     <tr>
-      <td data-label="Дата">{{ expense.created_at.strftime('%d.%m %H:%M') if expense.created_at else '—' }}</td>
+      <td data-label="Дата">{{ expense.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
       <td data-label="Водитель">{{ driver_name }}</td>
       <td data-label="Машина">{{ plate or '—' }}</td>
       <td data-label="Категория">{{ category_labels.get(expense.category, expense.category) }}</td>

@@ -49,8 +49,8 @@ from app.models import (
     VehicleState,
 )
 from app.config import settings
-from app.services import act_service, auth_service, billing, rc_service
-from app.services.timeutil import owner_tz
+from app.services import act_service, auth_service, billing, rc_service, telemetry_service
+from app.services.timeutil import fmt_dt, owner_tz
 from app.web.insights import generate_insights
 
 # --------- инициализация ----------
@@ -105,10 +105,15 @@ def _status_ru(status: str | None) -> str:
     return _STATUS_RU.get((status or "").lower(), status or "—")
 
 
+def _local_dt(value: datetime | None, timezone_name: str | None = None, fmt: str = "%d.%m.%Y %H:%M") -> str:
+    return fmt_dt(value, timezone_name, fmt)
+
+
 templates.env.filters["vtype"] = _vehicle_type_label
 templates.env.filters["tstatus"] = _trip_status_label
 templates.env.filters["pillclass"] = _pill_class
 templates.env.filters["statusru"] = _status_ru
+templates.env.filters["localdt"] = _local_dt
 
 app = FastAPI(title="TMS Cabinet")
 
@@ -384,6 +389,45 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
                     "pill": f"{(exp - today).days} дн", "sub": f"{label} · {v.license_plate} · до {exp:%d.%m.%Y}",
                 })
 
+    # --- GPS-контроль: простои, заведённый двигатель, потеря связи ---
+    now_utc = datetime.now(timezone.utc)
+    stale_cutoff = now_utc - timedelta(minutes=30)
+    telemetry_rows = (
+        await session.execute(
+            select(VehicleState, Vehicle.license_plate)
+            .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
+            .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+        )
+    ).all()
+    map_normal = map_attention = map_problem = 0
+    for st, plate in telemetry_rows:
+        status = st.motion_status or telemetry_service.vehicle_motion_status(st.speed_kmh, st.ignition)
+        duration = telemetry_service.duration_label(st.motion_since_at, now_utc)
+        since = fmt_dt(st.motion_since_at, owner.timezone, "%H:%M")
+        if st.last_seen_at and st.last_seen_at < stale_cutoff:
+            map_problem += 1
+            attention.append({
+                "sev": "danger", "icon": "📡", "title": "Нет свежего GPS",
+                "pill": telemetry_service.duration_label(st.last_seen_at, now_utc),
+                "sub": f"{plate} · последний сигнал {fmt_dt(st.last_seen_at, owner.timezone, '%H:%M')}",
+            })
+        elif st.is_valid is False:
+            map_problem += 1
+            attention.append({
+                "sev": "danger", "icon": "📍", "title": "GPS без точных координат",
+                "pill": "проверить", "sub": f"{plate} · метка держится на последней нормальной точке",
+            })
+        elif status == telemetry_service.MOTION_IDLE_ENGINE:
+            map_attention += 1
+            attention.append({
+                "sev": "warn", "icon": "⛽", "title": "Стоит с заведённым двигателем",
+                "pill": duration, "sub": f"{plate} · с {since}",
+            })
+        elif status == telemetry_service.MOTION_MOVING:
+            map_normal += 1
+        else:
+            map_attention += 1
+
     # --- структура расходов за месяц (одобренные, по категориям) ---
     br_res = await session.execute(
         select(Expense.category, func.coalesce(func.sum(Expense.amount_rub), 0))
@@ -421,11 +465,9 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
         "expense_total": sum(b["amount"] for b in breakdown),
         "expense_month": _RU_MONTHS_NOM[now_local.month - 1],
         "trips_yesterday": trips_yesterday,
-        # статусы для превью карты (норма/внимание/проблема). Внимание и проблема
-        # появятся с телематикой; пока всё, что в движении — «в норме».
-        "map_normal": len(active_vehicles),
-        "map_attention": 0,
-        "map_problem": 0,
+        "map_normal": map_normal,
+        "map_attention": map_attention,
+        "map_problem": map_problem,
     }
 
 
@@ -2391,6 +2433,11 @@ async def api_drivers_locations(
             "lon": float(st.longitude),
             "speed_kmh": float(st.speed_kmh or 0),
             "ignition": st.ignition,
+            "motion_status": st.motion_status,
+            "motion_status_text": telemetry_service.motion_status_text(st.motion_status, st.speed_kmh),
+            "motion_since_at": st.motion_since_at.isoformat() if st.motion_since_at else None,
+            "motion_since_label": fmt_dt(st.motion_since_at, owner.timezone, "%H:%M"),
+            "motion_duration_label": telemetry_service.duration_label(st.motion_since_at),
             "is_valid": st.is_valid,
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
         }

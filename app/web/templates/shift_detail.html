@@ -13,8 +13,8 @@
 <section class="kpi-grid">
   <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
   <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
-  <div class="kpi"><small>Начата</small><strong>{{ shift.started_at.strftime('%d.%m.%Y %H:%M') if shift.started_at else '—' }}</strong></div>
-  <div class="kpi"><small>Завершена</small><strong>{{ shift.ended_at.strftime('%d.%m.%Y %H:%M') if shift.ended_at else '—' }}</strong></div>
+  <div class="kpi"><small>Начата</small><strong>{{ shift.started_at | localdt(owner.timezone) }}</strong></div>
+  <div class="kpi"><small>Завершена</small><strong>{{ shift.ended_at | localdt(owner.timezone) }}</strong></div>
   <div class="kpi"><small>Одометр начало</small><strong>{{ shift.odometer_start or '—' }} км</strong></div>
   <div class="kpi"><small>Одометр конец</small><strong>{{ shift.odometer_end or '—' }} км</strong></div>
   <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km or '—' }} км</strong></div>
@@ -27,7 +27,7 @@
   <div>
     <small>
       Начало смены ({{ shift.odometer_start or '?' }} км)
-      {% if photo_start_at %} · загружено {{ photo_start_at.strftime('%d.%m в %H:%M') }}{% endif %}
+      {% if photo_start_at %} · загружено {{ photo_start_at | localdt(owner.timezone, '%d.%m в %H:%M') }}{% endif %}
     </small>
     <a href="/api/photo/{{ shift.odometer_start_photo_url }}" target="_blank">
       <img src="/api/photo/{{ shift.odometer_start_photo_url }}"
@@ -39,7 +39,7 @@
   <div>
     <small>
       Конец смены ({{ shift.odometer_end or '?' }} км)
-      {% if photo_end_at %} · загружено {{ photo_end_at.strftime('%d.%m в %H:%M') }}{% endif %}
+      {% if photo_end_at %} · загружено {{ photo_end_at | localdt(owner.timezone, '%d.%m в %H:%M') }}{% endif %}
     </small>
     <a href="/api/photo/{{ shift.odometer_end_photo_url }}" target="_blank">
       <img src="/api/photo/{{ shift.odometer_end_photo_url }}"
@@ -77,7 +77,7 @@
   <tbody>
     {% for e in expenses %}
     <tr>
-      <td data-label="Дата">{{ e.created_at.strftime('%d.%m %H:%M') if e.created_at else '—' }}</td>
+      <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
       <td data-label="Категория">{{ e.category }}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>

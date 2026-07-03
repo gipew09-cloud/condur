@@ -24,7 +24,7 @@
     {% for expense, driver_name, plate in rows %}
     {% set liters = (expense.amount_rub | float / 68) if expense.amount_rub else 0 %}
     <tr>
-      <td data-label="Дата">{{ expense.created_at.strftime('%d.%m %H:%M') if expense.created_at else '—' }}</td>
+      <td data-label="Дата">{{ expense.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
       <td data-label="Водитель">{{ driver_name }}</td>
       <td data-label="Машина">{{ plate }}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(expense.amount_rub or 0).replace(',', ' ') }} ₽</td>

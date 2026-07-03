@@ -283,7 +283,7 @@
       <tbody>
       {% for trip, driver_name, plate in last_trips %}
         <tr>
-          <td>{{ trip.created_at.strftime('%d.%m %H:%M') if trip.created_at else '—' }}</td>
+          <td>{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
           <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}{% if trip.is_manual %} <span class="badge badge--neutral">вручную</span>{% endif %}</td>
           <td>{{ driver_name }}</td>
           <td>{{ plate }}</td>

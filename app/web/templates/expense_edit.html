@@ -5,7 +5,7 @@
 <p><a href="/expenses">← ко всем расходам</a></p>
 <div class="page-head">
   <h1>Правка расхода</h1>
-  <p class="sub">{{ driver.full_name if driver else '—' }} · {{ expense.created_at.strftime('%d.%m.%Y %H:%M') if expense.created_at else '' }}</p>
+  <p class="sub">{{ driver.full_name if driver else '—' }} · {{ expense.created_at | localdt(owner.timezone) }}</p>
 </div>
 
 <div class="card" style="max-width: 560px;">

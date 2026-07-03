@@ -7,6 +7,8 @@
 
 Python 3.9+ имеет zoneinfo в стандартной библиотеке, pytz не нужен.
 """
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 

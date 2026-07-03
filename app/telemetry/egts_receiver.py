@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from app.services import telemetry_service
 from app.telemetry import egts
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,18 @@ async def _process_packet(
 
             if last_any is not None:
                 await session.flush()  # нужны id точек
+                previous_state = await session.get(VehicleState, vehicle.id)
+                motion_status = telemetry_service.vehicle_motion_status(
+                    last_any.speed_kmh, last_any.ignition
+                )
+                if (
+                    previous_state is not None
+                    and previous_state.motion_status == motion_status
+                    and previous_state.motion_since_at is not None
+                ):
+                    motion_since_at = previous_state.motion_since_at
+                else:
+                    motion_since_at = last_any.observed_at
                 if last_good is not None:
                     # Полное обновление состояния достоверной точкой.
                     values = dict(
@@ -182,12 +195,15 @@ async def _process_packet(
                         longitude=last_good.longitude,
                         speed_kmh=last_good.speed_kmh,
                         ignition=last_good.ignition,
+                        motion_status=motion_status,
+                        motion_since_at=motion_since_at,
                         is_valid=True,
                         anomaly_reason=None,
                     )
                     update_cols = (
                         "terminal_id", "last_point_id", "last_seen_at", "latitude",
-                        "longitude", "speed_kmh", "ignition", "is_valid", "anomaly_reason",
+                        "longitude", "speed_kmh", "ignition", "motion_status",
+                        "motion_since_at", "is_valid", "anomaly_reason",
                     )
                 else:
                     # Только недостоверные точки: машину «видели» (обновляем время,
@@ -198,11 +214,14 @@ async def _process_packet(
                         terminal_id=terminal_id,
                         last_seen_at=last_any.observed_at,
                         ignition=last_any.ignition,
+                        motion_status=motion_status,
+                        motion_since_at=motion_since_at,
                         is_valid=False,
                         anomaly_reason="нет достоверных координат (GPS)",
                     )
                     update_cols = (
-                        "terminal_id", "last_seen_at", "ignition", "is_valid", "anomaly_reason",
+                        "terminal_id", "last_seen_at", "ignition", "motion_status",
+                        "motion_since_at", "is_valid", "anomaly_reason",
                     )
                 stmt = pg_insert(VehicleState).values(**values)
                 stmt = stmt.on_conflict_do_update(

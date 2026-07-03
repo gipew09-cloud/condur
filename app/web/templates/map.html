@@ -173,6 +173,9 @@
   const vehicleMarkers = {};
 
   function vehicleStatus(v) {
+    if (v.motion_status === 'moving') return { text: `🟢 ${v.motion_status_text || `едет · ${Math.round(v.speed_kmh)} км/ч`}`, cls: 'moving' };
+    if (v.motion_status === 'idle_engine') return { text: `🟡 ${v.motion_status_text || 'стоит, двигатель работает'}`, cls: 'idle-engine' };
+    if (v.motion_status === 'stopped') return { text: '⚪️ стоит', cls: 'off' };
     if (v.speed_kmh > 3) return { text: `🟢 едет · ${Math.round(v.speed_kmh)} км/ч`, cls: 'moving' };
     if (v.ignition) return { text: '🟡 стоит, двигатель работает', cls: 'idle-engine' };
     return { text: '⚪️ стоит', cls: 'off' };
@@ -190,9 +193,13 @@
           { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
       : '—';
     const gps = v.is_valid ? '' : '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
+    const since = v.motion_since_label && v.motion_since_label !== '—'
+      ? `<div class="meta">⏱ с ${v.motion_since_label} · уже ${v.motion_duration_label || '—'}</div>`
+      : '';
     return `<div class="driver-popup-content">
       <h4>🚚 ${v.plate}</h4>
       <div class="meta">${vehicleStatus(v).text}</div>
+      ${since}
       ${gps}
       <div class="meta">🕒 ${ago} (GPS Stavtrack)</div>
     </div>`;

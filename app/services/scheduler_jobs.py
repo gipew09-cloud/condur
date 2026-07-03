@@ -21,9 +21,10 @@ from sqlalchemy import func, select
 from app.bots import messages as msg
 from app.bots.notifications import notify_owner
 from app.database import async_session
-from app.models import DailySummary, Driver, Event, Expense, Owner, Shift, Trip, Vehicle
+from app.models import DailySummary, Driver, Event, Expense, Owner, Shift, Trip, Vehicle, VehicleState
+from app.services import telemetry_service
 from app.services.event_service import log_event
-from app.services.timeutil import now_in_tz, owner_tz
+from app.services.timeutil import fmt_dt, now_in_tz, owner_tz
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,35 @@ async def _send_daily_summary(
             lines.append(f"• {dname} — {plate}")
     if pending_count:
         lines.append(f"\n⚠️ Расходов на одобрении: <b>{pending_count}</b>")
+
+    # GPS-контроль: полезные сигналы владельцу без лишнего шума.
+    gps_rows = (
+        await session.execute(
+            select(VehicleState, Vehicle.license_plate)
+            .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
+            .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+        )
+    ).all()
+    now_utc = datetime.now(timezone.utc)
+    stale_cutoff = now_utc - timedelta(minutes=30)
+    gps_lines: list[str] = []
+    for st, plate in gps_rows:
+        status = st.motion_status or telemetry_service.vehicle_motion_status(st.speed_kmh, st.ignition)
+        if status == telemetry_service.MOTION_IDLE_ENGINE:
+            gps_lines.append(
+                f"• {plate}: стоит с заведённым с "
+                f"{fmt_dt(st.motion_since_at, owner.timezone, '%H:%M')} "
+                f"({telemetry_service.duration_label(st.motion_since_at, now_utc)})"
+            )
+        elif st.last_seen_at and st.last_seen_at < stale_cutoff:
+            gps_lines.append(
+                f"• {plate}: нет GPS {telemetry_service.duration_label(st.last_seen_at, now_utc)}"
+            )
+        elif st.is_valid is False:
+            gps_lines.append(f"• {plate}: GPS без точных координат")
+    if gps_lines:
+        lines.append("\n<b>GPS-контроль:</b>")
+        lines.extend(gps_lines[:5])
 
     summary = DailySummary(
         owner_id=owner.id,
