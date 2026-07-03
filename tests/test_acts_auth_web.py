@@ -8,7 +8,7 @@ ENV ботов/БД фиктивные — нужны только для имп
 """
 import os
 import io
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace as NS
 
@@ -334,3 +334,106 @@ def test_render_trips_kpi():
                    totals={"count": 12, "revenue": Decimal("292000"), "profit": Decimal("112000")},
                    rows=[], page=1, has_next=False)
     assert "sp-kpi" in html and "Рейсов по фильтру" in html
+
+
+def test_pending_driver_revenue_is_not_counted_as_final_revenue():
+    trip = NS(
+        id=39,
+        created_at=datetime(2026, 7, 3, 18, 55, tzinfo=timezone.utc),
+        origin="непонятно",
+        destination="непонятно",
+        is_manual=False,
+        revenue_rub=None,
+        driver_revenue_pending_rub=Decimal("12000"),
+        fuel_cost_rub=Decimal("0"),
+        profit_rub=Decimal("0"),
+        status="completed",
+    )
+    html = _render(
+        "_trips_table.html",
+        owner=OWNER,
+        rows=[(trip, "овыраовраор", "Е774ЕТ178")],
+        totals={"count": 1, "revenue": Decimal("0"), "profit": Decimal("0")},
+        filter_driver_id="",
+        filter_date_from="",
+        filter_date_to="",
+        page=1,
+        has_next=False,
+    )
+
+    assert "на подтверждении 12 000 ₽" in html
+    assert "<div class=\"lbl\">Выручка</div><div class=\"val\">0 <span class=\"rub\">₽</span></div>" in html
+
+
+def test_trip_detail_shows_pending_driver_revenue_separately():
+    trip = NS(
+        id=39,
+        created_at=datetime(2026, 7, 3, 18, 55, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 7, 3, 18, 56, tzinfo=timezone.utc),
+        origin="непонятно",
+        destination="непонятно",
+        is_manual=False,
+        status="completed",
+        cargo_name="РЦ адамнт",
+        revenue_rub=None,
+        driver_revenue_pending_rub=Decimal("12000"),
+        fuel_cost_rub=Decimal("0"),
+        other_costs_rub=Decimal("0"),
+        profit_rub=Decimal("0"),
+        waybill_photo_url=None,
+    )
+    html = _render(
+        "trip_detail.html",
+        owner=OWNER,
+        active_page="trips",
+        trip=trip,
+        driver=NS(full_name="овыраовраор"),
+        vehicle=NS(license_plate="Е774ЕТ178"),
+        travel=None,
+        documents=[],
+        expenses=[],
+        waybill_uploaded_at=None,
+    )
+
+    assert "на подтверждении 12 000 ₽" in html
+    assert "<strong>0 ₽</strong>" in html
+
+
+# ------------------------------------------------------------------ карта (Яндекс)
+def test_map_template_uses_yandex_not_leaflet():
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    for banned in ("leaflet", "Leaflet", "openstreetmap", "cartocdn", "CARTO", "L.map"):
+        assert banned not in src, f"старая карта не удалена: {banned}"
+    assert "api-maps.yandex.ru" in src
+
+    html = _render("map.html", owner=OWNER, active_page="map",
+                   yandex_maps_api_key="test-key-123")
+    assert "api-maps.yandex.ru/2.1/?apikey=test-key-123" in html
+    assert "vehicle-marker" in html and "visibilitychange" in html
+
+
+def test_map_template_without_key_shows_hint():
+    html = _render("map.html", owner=OWNER, active_page="map", yandex_maps_api_key="")
+    assert "YANDEX_MAPS_API_KEY" in html
+    assert "api-maps.yandex.ru" not in html
+
+
+# ------------------------------------------------------------------ метка «с какого времени»
+def test_smart_since_label_today_yesterday_older():
+    from datetime import datetime, timedelta, timezone as tz
+
+    from app.services.timeutil import now_in_tz, smart_since_label
+
+    now_local = now_in_tz("Europe/Moscow")
+    today_dt = now_local.replace(hour=10, minute=5) if now_local.hour >= 11 \
+        else now_local.replace(minute=0)
+    assert smart_since_label(today_dt, "Europe/Moscow").startswith("с ")
+    assert "," not in smart_since_label(today_dt, "Europe/Moscow")
+
+    yesterday = now_local - timedelta(days=1)
+    assert smart_since_label(yesterday, "Europe/Moscow").startswith("со вчера, ")
+
+    older = now_local - timedelta(days=5)
+    label = smart_since_label(older, "Europe/Moscow")
+    assert label.startswith("с ") and older.strftime("%d.%m") in label
+    assert smart_since_label(None, "Europe/Moscow") == "—"

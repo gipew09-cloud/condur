@@ -30,6 +30,7 @@ from app.bots.states import (
     AddManualTrip,
     DriverTripRevenue,
     EndShift,
+    EndShiftLocation,
     EndTripLocation,
     HandedCash,
     NewExpense,
@@ -530,6 +531,7 @@ async def _do_end_shift(
 
     trips = await shift_service.get_shift_trips(session, shift.id)
     revenue = sum((t.revenue_rub or Decimal(0)) for t in trips) or Decimal(0)
+    pending_revenue = sum((t.driver_revenue_pending_rub or Decimal(0)) for t in trips) or Decimal(0)
 
     approved_expenses = await session.execute(
         select(Expense).where(Expense.shift_id == shift.id, Expense.status == "approved")
@@ -575,6 +577,8 @@ async def _do_end_shift(
                 trips=len(trips), revenue=f"{revenue:.0f}",
                 expenses=f"{expenses_total:.0f}", salary=f"{salary:.0f}",
             )
+        if pending_revenue:
+            owner_text += f"\n⏳ Выручка на подтверждении: <b>{pending_revenue:.0f} ₽</b>"
         await notify_owner(owner_bot, session, owner, owner_text)
         # Контроль топлива: сумма fuel-расходов смены vs норма
         await _maybe_fuel_overrun_alert(session, owner_bot, owner, driver, shift, approved_list)
@@ -590,6 +594,60 @@ async def _do_end_shift(
                 ),
                 reply_markup=kb.odometer_set_keyboard(shift.id, "end"),
             )
+
+    # Где закончил смену: просим геопозицию (скип возможен) — владельцу
+    # уйдёт точка ссылкой на Яндекс.Карты.
+    if settings.feature_cargo_geolocation:
+        await state.set_state(EndShiftLocation.waiting_for_location)
+        await state.update_data(ended_shift_id=shift.id)
+        await reply_target.answer(
+            msg.SHIFT_END_LOCATION_ASK, reply_markup=kb.location_request_keyboard()
+        )
+
+
+@driver_router.message(EndShiftLocation.waiting_for_location, F.location)
+async def shift_end_with_location(
+    message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    data = await state.get_data()
+    lat, lon = message.location.latitude, message.location.longitude
+    await log_event(
+        session, owner_id=driver.owner_id, driver_id=driver.id,
+        shift_id=data.get("ended_shift_id"), event_type="location_sent",
+        payload={"lat": lat, "lon": lon, "context": "shift_end"},
+    )
+    await session.commit()
+    await state.clear()
+    await _refresh_ui(message, session, driver, msg.LOCATION_SAVED)
+
+    owner = await session.get(Owner, driver.owner_id)
+    if owner is not None:
+        # Формат ссылки Яндекс.Карт: pt=долгота,широта
+        link = f"https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map"
+        await notify_owner(
+            owner_bot, session, owner,
+            msg.NOTIFY_SHIFT_END_LOCATION.format(driver=driver.full_name, link=link),
+        )
+
+
+@driver_router.message(EndShiftLocation.waiting_for_location, F.text == kb.BTN_SKIP)
+async def shift_end_skip_location(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    await state.clear()
+    if driver is not None:
+        await _refresh_ui(message, session, driver, "Ок, без геопозиции.")
+
+
+@driver_router.message(EndShiftLocation.waiting_for_location)
+async def shift_end_location_invalid(message: Message) -> None:
+    await message.answer(msg.SHIFT_END_LOCATION_ASK)
 
 
 async def _maybe_fuel_overrun_alert(
@@ -1290,6 +1348,13 @@ async def cb_driver_revenue(call: CallbackQuery, state: FSMContext, session: Asy
             pass
         await call.answer(f"Выручка уже указана: {trip.revenue_rub:.0f} ₽", show_alert=True)
         return
+    if trip.driver_revenue_pending_rub is not None:
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        await call.answer("Выручка уже отправлена владельцу на подтверждение", show_alert=True)
+        return
     # убрать кнопку, чтобы не нажимали повторно
     try:
         await call.message.edit_reply_markup(reply_markup=None)
@@ -1316,19 +1381,24 @@ async def driver_revenue_amount(
         await state.clear()
         await message.answer(msg.SOMETHING_WRONG)
         return
-    # Правило первого — атомарно: пока водитель печатал сумму, владелец мог
-    # успеть указать свою. Тогда НЕ перетираем (владелец главный).
-    saved = await trip_service.set_trip_revenue_if_empty(
+    # Водительская сумма — только черновик на подтверждении. Финальной
+    # выручкой она станет после решения владельца.
+    saved = await trip_service.set_trip_driver_revenue_pending(
         session, trip=trip, revenue_rub=amount
     )
     if not saved:
         await session.commit()
         await state.clear()
-        await _refresh_ui(
-            message, session, driver,
-            f"Выручка уже указана владельцем: {(trip.revenue_rub or 0):.0f} ₽. "
-            "Твоё число не записано.",
-        )
+        if trip.revenue_rub is not None:
+            text = (
+                f"Выручка уже указана владельцем: {trip.revenue_rub:.0f} ₽. "
+                "Твоё число не записано."
+            )
+        elif trip.driver_revenue_pending_rub is not None:
+            text = "Выручка уже отправлена владельцу на подтверждение. Второе число не записано."
+        else:
+            text = "Не получилось записать выручку. Попробуйте ещё раз."
+        await _refresh_ui(message, session, driver, text)
         return
     await log_event(
         session, owner_id=driver.owner_id, driver_id=driver.id,

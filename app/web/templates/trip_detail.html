@@ -26,7 +26,13 @@
 
 <h3 style="margin-top:1.5rem;">Финансы</h3>
 <section class="kpi-grid">
-  <div class="kpi"><small>Выручка</small><strong>{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }} ₽</strong></div>
+  <div class="kpi">
+    <small>Выручка</small>
+    <strong>{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }} ₽</strong>
+    {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
+      <span class="badge badge--warning">на подтверждении {{ "{:,.0f}".format(trip.driver_revenue_pending_rub).replace(',', ' ') }} ₽</span>
+    {% endif %}
+  </div>
   <div class="kpi"><small>Топливо</small><strong>{{ "{:,.0f}".format(trip.fuel_cost_rub or 0).replace(',', ' ') }} ₽</strong></div>
   <div class="kpi"><small>Прочее</small><strong>{{ "{:,.0f}".format(trip.other_costs_rub or 0).replace(',', ' ') }} ₽</strong></div>
   <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(trip.profit_rub or 0).replace(',', ' ') }} ₽</strong></div>

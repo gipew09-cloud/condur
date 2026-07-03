@@ -111,24 +111,49 @@ async def set_trip_revenue(
     session: AsyncSession, *, trip: Trip, revenue_rub: Decimal
 ) -> Trip:
     trip.revenue_rub = revenue_rub.quantize(Decimal("0.01"))
+    trip.driver_revenue_pending_rub = None
     return trip
+
+
+async def set_trip_driver_revenue_pending(
+    session: AsyncSession, *, trip: Trip, revenue_rub: Decimal
+) -> bool:
+    """
+    Водитель предлагает сумму, но она НЕ становится финальной выручкой.
+    Финальная revenue_rub появляется только после подтверждения/правки владельцем.
+    """
+    result = await session.execute(
+        update(Trip)
+        .where(
+            Trip.id == trip.id,
+            Trip.revenue_rub.is_(None),
+            Trip.driver_revenue_pending_rub.is_(None),
+        )
+        .values(driver_revenue_pending_rub=revenue_rub.quantize(Decimal("0.01")))
+    )
+    await session.flush()
+    await session.refresh(trip)
+    return result.rowcount == 1
+
+
+async def approve_trip_driver_revenue(session: AsyncSession, *, trip: Trip) -> bool:
+    """Владелец принимает сумму, которую предложил водитель."""
+    if trip.driver_revenue_pending_rub is None:
+        return False
+    trip.revenue_rub = Decimal(trip.driver_revenue_pending_rub).quantize(Decimal("0.01"))
+    trip.driver_revenue_pending_rub = None
+    await session.flush()
+    await session.refresh(trip)
+    return True
 
 
 async def set_trip_revenue_if_empty(
     session: AsyncSession, *, trip: Trip, revenue_rub: Decimal
 ) -> bool:
     """
-    «Правило первого» для ВОДИТЕЛЯ, устойчивое к гонке: атомарный UPDATE
-    записывает выручку только если её ещё нет. Если владелец успел указать
-    свою (пока водитель печатал число) — вернём False и ничего не перетрём.
-    Владелец пишет через set_trip_revenue — он главный и перетирает всегда.
+    Старое имя оставлено для совместимости: водительская сумма теперь всегда
+    уходит в черновик на подтверждение владельцу, а не в финальную выручку.
     """
-    result = await session.execute(
-        update(Trip)
-        .where(Trip.id == trip.id, Trip.revenue_rub.is_(None))
-        .values(revenue_rub=revenue_rub.quantize(Decimal("0.01")))
+    return await set_trip_driver_revenue_pending(
+        session, trip=trip, revenue_rub=revenue_rub
     )
-    await session.flush()
-    # Обновляем объект в сессии, чтобы дальше показывать актуальное значение.
-    await session.refresh(trip)
-    return result.rowcount == 1

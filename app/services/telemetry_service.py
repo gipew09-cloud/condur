@@ -23,6 +23,13 @@ MOTION_IDLE_ENGINE = "idle_engine"
 MOTION_STOPPED = "stopped"
 MOTION_UNKNOWN = "unknown"
 
+SIGNAL_OK = "ok"
+SIGNAL_GPS_STALE = "gps_stale"
+SIGNAL_GPS_INVALID = "gps_invalid"
+SIGNAL_MOVING_WITHOUT_SHIFT = "moving_without_shift"
+SIGNAL_MOVING_WITHOUT_TRIP = "moving_without_trip"
+SIGNAL_IDLE_ENGINE = "idle_engine"
+
 
 def vehicle_motion_status(speed_kmh: Decimal | float | int | None, ignition: bool | None) -> str:
     """Текущий статус машины по GPS/Stavtrack."""
@@ -43,6 +50,28 @@ def motion_status_text(status: str | None, speed_kmh: Decimal | float | int | No
     if status == MOTION_STOPPED:
         return "стоит"
     return "нет данных"
+
+
+def vehicle_control_signal(
+    *,
+    motion_status: str | None,
+    has_active_shift: bool,
+    has_active_trip: bool,
+    gps_stale: bool = False,
+    gps_invalid: bool = False,
+) -> str:
+    """Главный GPS-сигнал для владельца: что требует внимания прямо сейчас."""
+    if gps_stale:
+        return SIGNAL_GPS_STALE
+    if gps_invalid:
+        return SIGNAL_GPS_INVALID
+    if motion_status == MOTION_MOVING and not has_active_shift:
+        return SIGNAL_MOVING_WITHOUT_SHIFT
+    if motion_status == MOTION_MOVING and not has_active_trip:
+        return SIGNAL_MOVING_WITHOUT_TRIP
+    if motion_status == MOTION_IDLE_ENGINE:
+        return SIGNAL_IDLE_ENGINE
+    return SIGNAL_OK
 
 
 def duration_label(start: datetime | None, end: datetime | None = None) -> str:

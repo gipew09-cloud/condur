@@ -2,7 +2,6 @@
 {% block title %}Карта{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   #map {
     width: 100%;
@@ -17,192 +16,154 @@
     #map { height: calc(100vh - 160px); border-radius: 0; }
   }
 
-  /* Маркер: цветной круг с инициалами */
+  /* Водитель: цветной круг с инициалами */
   .driver-marker {
-    width: 38px;
-    height: 38px;
-    border-radius: 50%;
+    width: 38px; height: 38px; border-radius: 50%;
     border: 3px solid white;
     box-shadow: 0 2px 10px rgba(15, 23, 42, .25), 0 0 0 1px rgba(15, 23, 42, .08);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: 700;
-    font-size: .82rem;
-    font-family: 'Inter', sans-serif;
-    letter-spacing: .02em;
-    cursor: pointer;
-    user-select: none;
-    transition: transform .15s ease, box-shadow .15s ease;
-    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: .82rem;
+    cursor: pointer; user-select: none;
   }
-  .driver-marker:hover {
-    transform: scale(1.15);
-    box-shadow: 0 4px 16px rgba(15, 23, 42, .35);
-  }
-  .driver-marker.active {
-    background: linear-gradient(135deg, #10b981, #047857);
-  }
-  .driver-marker.idle {
-    background: linear-gradient(135deg, #94a3b8, #475569);
-  }
-  /* Маркер машины (GPS Stavtrack): плашка с номером */
+  .driver-marker.active { background: linear-gradient(135deg, #10b981, #047857); }
+  .driver-marker.idle { background: linear-gradient(135deg, #94a3b8, #475569); }
+
+  /* Машина: плашка с номером; цвет = статус движения */
   .vehicle-marker {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    border-radius: 8px;
-    border: 2px solid white;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 8px; border-radius: 8px; border: 2px solid white;
     box-shadow: 0 2px 10px rgba(15, 23, 42, .25);
-    color: #fff;
-    font-weight: 800;
-    font-size: .72rem;
-    white-space: nowrap;
-    cursor: pointer;
-    user-select: none;
+    color: #fff; font-weight: 800; font-size: .72rem;
+    white-space: nowrap; cursor: pointer; user-select: none;
   }
   .vehicle-marker.moving { background: linear-gradient(135deg, #16a34a, #15803d); }
-  .vehicle-marker.idle-engine { background: linear-gradient(135deg, #eab308, #ca8a04); color: #111827; }
+  .vehicle-marker.idle-engine { background: linear-gradient(135deg, #d97706, #b45309); }
   .vehicle-marker.off { background: linear-gradient(135deg, #94a3b8, #475569); }
-  .vehicle-marker.stale { opacity: .65; }
-  /* Пульс вокруг маркера активного водителя */
-  .driver-marker.active::before {
-    content: "";
-    position: absolute;
-    inset: -3px;
-    border-radius: 50%;
-    background: #10b981;
-    opacity: .35;
-    animation: pulseRing 2s ease-out infinite;
-    z-index: -1;
-  }
-  @keyframes pulseRing {
-    0%   { transform: scale(1);   opacity: .45; }
-    100% { transform: scale(2.2); opacity: 0; }
-  }
+  .vehicle-marker.stale { opacity: .6; }
 
-  /* Кастомный Leaflet-попап под наш дизайн */
-  .leaflet-popup-content-wrapper {
-    border-radius: 12px;
-    box-shadow: 0 10px 30px rgba(15, 23, 42, .15);
-    border: 1px solid var(--border);
-    padding: 0;
+  /* Балуны */
+  .map-balloon h4 { margin: 0 0 6px; font-size: .95rem; }
+  .map-balloon .meta { color: #5b6573; font-size: .82rem; margin-top: 3px; }
+  .map-balloon .badge-active, .map-balloon .badge-idle {
+    display: inline-block; font-size: .74rem; font-weight: 700;
+    border-radius: 6px; padding: 2px 7px; margin-right: 6px;
   }
-  .leaflet-popup-content {
-    margin: .9rem 1.1rem;
-    font-family: 'Inter', sans-serif;
-  }
-  .leaflet-popup-tip { background: white; }
+  .map-balloon .badge-active { background: #e7f6ec; color: #147a3d; }
+  .map-balloon .badge-idle { background: #f1f4f9; color: #5b6573; }
+  .map-balloon .badge-plate { font-weight: 800; font-size: .74rem; background: #f1f4f9; border: 1px solid #e4e8ef; border-radius: 6px; padding: 2px 6px; }
 
-  .driver-popup-content h4 {
-    margin: 0 0 .35rem; font-size: 1rem; color: var(--text);
+  .map-nokey {
+    padding: 2rem; border: 1px dashed var(--border); border-radius: 12px;
+    color: var(--text-muted); background: #f8fafc;
   }
-  .driver-popup-content .badge-row {
-    display: flex; gap: .35rem; margin-bottom: .5rem; flex-wrap: wrap;
-  }
-  .driver-popup-content .badge-row span {
-    font-size: .7rem; font-weight: 600;
-    padding: .15rem .55rem; border-radius: 999px;
-    text-transform: uppercase; letter-spacing: .04em;
-  }
-  .driver-popup-content .badge-active  { background:#d1fae5; color:#065f46; }
-  .driver-popup-content .badge-idle    { background:#f1f5f9; color:#475569; }
-  .driver-popup-content .badge-plate   { background:#dbeafe; color:#1e40af; }
-  .driver-popup-content .meta {
-    font-size: .8rem; color: var(--text-muted); margin: .15rem 0;
-  }
-  .driver-popup-content .meta a { color: var(--accent); text-decoration: none; }
-  .driver-popup-content .meta a:hover { text-decoration: underline; }
-
-  /* Скрываем стандартный аттрибут — он есть на самих плитках */
-  .leaflet-control-attribution a { color: var(--text-muted); }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="page-head">
   <h1>Карта водителей и машин</h1>
-  <p class="sub">Водители показываются по отправленной геопозиции, машины — по GPS Stavtrack. Обновляется раз в минуту, клик по точке — подробности.</p>
+  <p class="sub">Машины — по GPS Stavtrack (обновление каждые 30 секунд, страницу перезагружать не нужно), водители — по отправленной геопозиции. Клик по метке — подробности.</p>
 </div>
+
+{% if yandex_maps_api_key %}
 <div id="map"></div>
+{% else %}
+<div class="map-nokey">
+  <b>Карта не настроена.</b> Задай переменную окружения <code>YANDEX_MAPS_API_KEY</code>
+  (Railway → сервис condur → Variables) и перезапусти сервис. Ключ берётся в
+  кабинете разработчика Яндекса: developer.tech.yandex.ru → JavaScript API.
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{% if yandex_maps_api_key %}
+<script src="https://api-maps.yandex.ru/2.1/?apikey={{ yandex_maps_api_key }}&lang=ru_RU"></script>
 <script>
-  const map = L.map('map', {
-    zoomControl: true,
-    attributionControl: true,
-  }).setView([55.75, 37.62], 5);
+ymaps.ready(function () {
+  // Дефолт — Санкт-Петербург и Ленобласть, пока нет ни одной точки.
+  const map = new ymaps.Map('map', {
+    center: [59.93, 30.33],
+    zoom: 9,
+    controls: ['zoomControl', 'typeSelector', 'fullscreenControl'],
+  }, { suppressMapOpenBlock: true });
 
-  // CartoDB Voyager — минималистичные плитки в нашем стиле, бесплатно
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap, © CARTO',
-    subdomains: 'abcd',
-    maxZoom: 19,
-  }).addTo(map);
+  // HTML-плашки как раньше: у машины виден госномер прямо на карте.
+  const VehicleLayout = ymaps.templateLayoutFactory.createClass(
+    '<div class="vehicle-marker $[properties.markerCls]">🚚 $[properties.plate]</div>'
+  );
+  const DriverLayout = ymaps.templateLayoutFactory.createClass(
+    '<div class="driver-marker $[properties.markerCls]">$[properties.initials]</div>'
+  );
 
-  function makeMarkerHTML(d) {
-    const cls = d.active_shift ? 'active' : 'idle';
-    return `<div class="driver-marker ${cls}">${d.initials}</div>`;
-  }
-
-  function makePopupHTML(d) {
-    const ago = d.updated_at
-      ? new Date(d.updated_at).toLocaleString('ru-RU',
-          { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-      : '—';
-    const phone = d.phone
-      ? `<div class="meta">📞 <a href="tel:${d.phone}">${d.phone}</a></div>`
-      : '';
-    const plate = d.plate ? `<span class="badge-plate">${d.plate}</span>` : '';
-    const status = d.active_shift
-      ? `<span class="badge-active">🟢 В смене</span>`
-      : `<span class="badge-idle">⚪️ Не в смене</span>`;
-    return `<div class="driver-popup-content">
-      <h4>${d.name || '—'}</h4>
-      <div class="badge-row">${status}${plate}</div>
-      ${phone}
-      <div class="meta">🕒 ${ago}</div>
-    </div>`;
-  }
-
-  const markers = {};
   const vehicleMarkers = {};
+  const driverMarkers = {};
+  let didFitBounds = false;
 
   function vehicleStatus(v) {
-    if (v.motion_status === 'moving') return { text: `🟢 ${v.motion_status_text || `едет · ${Math.round(v.speed_kmh)} км/ч`}`, cls: 'moving' };
-    if (v.motion_status === 'idle_engine') return { text: `🟡 ${v.motion_status_text || 'стоит, двигатель работает'}`, cls: 'idle-engine' };
+    if (v.motion_status === 'moving') return { text: `🟢 ${v.motion_status_text}`, cls: 'moving' };
+    if (v.motion_status === 'idle_engine') return { text: `🟡 ${v.motion_status_text}`, cls: 'idle-engine' };
     if (v.motion_status === 'stopped') return { text: '⚪️ стоит', cls: 'off' };
     if (v.speed_kmh > 3) return { text: `🟢 едет · ${Math.round(v.speed_kmh)} км/ч`, cls: 'moving' };
     if (v.ignition) return { text: '🟡 стоит, двигатель работает', cls: 'idle-engine' };
     return { text: '⚪️ стоит', cls: 'off' };
   }
 
-  function makeVehicleHTML(v) {
-    const fresh = v.updated_at && (Date.now() - new Date(v.updated_at).getTime()) < 10 * 60 * 1000;
-    const cls = vehicleStatus(v).cls + (fresh ? '' : ' stale');
-    return `<div class="vehicle-marker ${cls}">🚚 ${v.plate}</div>`;
+  function isFresh(v) {
+    return v.updated_at && (Date.now() - new Date(v.updated_at).getTime()) < 10 * 60 * 1000;
   }
 
-  function makeVehiclePopup(v) {
-    const ago = v.updated_at
-      ? new Date(v.updated_at).toLocaleString('ru-RU',
-          { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-      : '—';
-    const gps = v.is_valid ? '' : '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
-    const since = v.motion_since_label && v.motion_since_label !== '—'
-      ? `<div class="meta">⏱ с ${v.motion_since_label} · уже ${v.motion_duration_label || '—'}</div>`
-      : '';
-    return `<div class="driver-popup-content">
+  function vehicleBalloon(v) {
+    const st = vehicleStatus(v);
+    const since = (v.motion_since_label && v.motion_since_label !== '—')
+      ? `<div class="meta">⏱ ${v.motion_since_label} · уже ${v.motion_duration_label || '—'}</div>` : '';
+    const shift = v.has_active_shift
+      ? '<span class="badge-active">🟢 В смене</span>'
+      : '<span class="badge-idle">⚪️ Без смены</span>';
+    const gps = v.is_valid ? '' :
+      '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
+    const stale = isFresh(v) ? '' : '<div class="meta">⚠️ Сигнал давно не обновлялся</div>';
+    return `<div class="map-balloon">
       <h4>🚚 ${v.plate}</h4>
-      <div class="meta">${vehicleStatus(v).text}</div>
-      ${since}
-      ${gps}
-      <div class="meta">🕒 ${ago} (GPS Stavtrack)</div>
+      <div>${shift}</div>
+      <div class="meta">${st.text}</div>
+      ${since}${gps}${stale}
+      <div class="meta">🕒 ${v.updated_label || '—'} (GPS Stavtrack)</div>
     </div>`;
+  }
+
+  function driverBalloon(d) {
+    const ago = d.updated_at
+      ? new Date(d.updated_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : '—';
+    const phone = d.phone ? `<div class="meta">📞 <a href="tel:${d.phone}">${d.phone}</a></div>` : '';
+    const plate = d.plate ? `<span class="badge-plate">${d.plate}</span>` : '';
+    const status = d.active_shift
+      ? '<span class="badge-active">🟢 В смене</span>'
+      : '<span class="badge-idle">⚪️ Не в смене</span>';
+    return `<div class="map-balloon">
+      <h4>${d.name || '—'}</h4>
+      <div>${status}${plate}</div>
+      ${phone}
+      <div class="meta">🕒 ${ago}</div>
+    </div>`;
+  }
+
+  function upsertPlacemark(store, key, coords, props, layout, shape) {
+    if (store[key]) {
+      store[key].geometry.setCoordinates(coords);
+      store[key].properties.set(props);
+      return store[key];
+    }
+    const pm = new ymaps.Placemark(coords, props, {
+      iconLayout: layout,
+      iconShape: shape,
+      balloonPanelMaxMapArea: 0,
+      hideIconOnBalloonOpen: false,
+    });
+    map.geoObjects.add(pm);
+    store[key] = pm;
+    return pm;
   }
 
   async function refresh() {
@@ -210,52 +171,51 @@
       const r = await fetch('/api/drivers-locations');
       if (!r.ok) return;
       const data = await r.json();
-      const bounds = L.latLngBounds();
-      for (const d of data.drivers) {
-        const icon = L.divIcon({
-          className: '',
-          html: makeMarkerHTML(d),
-          iconSize: [38, 38],
-          iconAnchor: [19, 19],
-          popupAnchor: [0, -22],
-        });
-        if (markers[d.driver_id]) {
-          markers[d.driver_id].setLatLng([d.lat, d.lon])
-            .setIcon(icon)
-            .setPopupContent(makePopupHTML(d));
-        } else {
-          markers[d.driver_id] = L.marker([d.lat, d.lon], { icon })
-            .addTo(map)
-            .bindPopup(makePopupHTML(d));
-        }
-        bounds.extend([d.lat, d.lon]);
-      }
+      const points = [];
+
       for (const v of (data.vehicles || [])) {
-        const icon = L.divIcon({
-          className: '',
-          html: makeVehicleHTML(v),
-          iconSize: null,
-          iconAnchor: [30, 14],
-          popupAnchor: [0, -14],
-        });
-        if (vehicleMarkers[v.vehicle_id]) {
-          vehicleMarkers[v.vehicle_id].setLatLng([v.lat, v.lon])
-            .setIcon(icon)
-            .setPopupContent(makeVehiclePopup(v));
-        } else {
-          vehicleMarkers[v.vehicle_id] = L.marker([v.lat, v.lon], { icon })
-            .addTo(map)
-            .bindPopup(makeVehiclePopup(v));
-        }
-        bounds.extend([v.lat, v.lon]);
+        const st = vehicleStatus(v);
+        const cls = st.cls + (isFresh(v) ? '' : ' stale');
+        upsertPlacemark(
+          vehicleMarkers, 'v' + v.vehicle_id, [v.lat, v.lon],
+          { plate: v.plate, markerCls: cls, balloonContentBody: vehicleBalloon(v) },
+          VehicleLayout,
+          { type: 'Rectangle', coordinates: [[-52, -16], [52, 16]] },
+        );
+        points.push([v.lat, v.lon]);
       }
-      const total = data.drivers.length + (data.vehicles || []).length;
-      if (total > 0) {
-        map.fitBounds(bounds.pad(0.3), { maxZoom: 14 });
+
+      for (const d of (data.drivers || [])) {
+        upsertPlacemark(
+          driverMarkers, 'd' + d.driver_id, [d.lat, d.lon],
+          { initials: d.initials || '—', markerCls: d.active_shift ? 'active' : 'idle',
+            balloonContentBody: driverBalloon(d) },
+          DriverLayout,
+          { type: 'Circle', coordinates: [0, 0], radius: 20 },
+        );
+        points.push([d.lat, d.lon]);
+      }
+
+      // Камеру подгоняем ОДИН раз — дальше не дёргаем, чтобы карта не прыгала,
+      // пока владелец её рассматривает.
+      if (!didFitBounds && points.length > 0) {
+        didFitBounds = true;
+        if (points.length === 1) {
+          map.setCenter(points[0], 13);
+        } else {
+          map.setBounds(ymaps.util.bounds.fromPoints(points), { checkZoomRange: true, zoomMargin: 48 });
+        }
       }
     } catch (e) { console.error(e); }
   }
+
   refresh();
-  setInterval(refresh, 60000);
+  setInterval(refresh, 30000);
+  // Вернулся на вкладку — обновляем сразу (фоновые вкладки браузер «усыпляет»).
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refresh();
+  });
+});
 </script>
+{% endif %}
 {% endblock %}

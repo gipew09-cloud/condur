@@ -36,7 +36,12 @@
           {% if trip.is_manual %}<span class="badge badge--neutral" title="Добавлено вручную, км неизвестен">вручную</span>{% endif %}</td>
         <td data-label="Водитель">{{ driver_name }}</td>
         <td data-label="Машина">{{ plate }}</td>
-        <td data-label="Выручка" class="num">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</td>
+        <td data-label="Выручка" class="num">
+          {{ "{:,.0f}".format(revenue).replace(',', ' ') }}
+          {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
+            <br><span class="badge badge--warning">на подтверждении {{ "{:,.0f}".format(trip.driver_revenue_pending_rub).replace(',', ' ') }} ₽</span>
+          {% endif %}
+        </td>
         <td data-label="Топливо" class="num">{{ "{:,.0f}".format(fuel).replace(',', ' ') }}</td>
         <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</td>
         <td data-label="Статус"><span class="pill {{ trip.status | pillclass }}">{{ trip.status | tstatus }}</span></td>

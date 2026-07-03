@@ -50,7 +50,7 @@ from app.models import (
 )
 from app.config import settings
 from app.services import act_service, auth_service, billing, rc_service, telemetry_service
-from app.services.timeutil import fmt_dt, owner_tz
+from app.services.timeutil import fmt_dt, owner_tz, smart_since_label
 from app.web.insights import generate_insights
 
 # --------- инициализация ----------
@@ -344,14 +344,16 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
 
     # --- машины в работе (активные смены + маршрут активного рейса) ---
     active_res = await session.execute(
-        select(Shift.id, Driver.full_name, Vehicle.license_plate)
+        select(Shift.id, Shift.vehicle_id, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Shift.driver_id)
         .join(Vehicle, Vehicle.id == Shift.vehicle_id)
         .where(Shift.owner_id == owner.id, Shift.status == "started")
         .order_by(Vehicle.license_plate)
     )
     active_vehicles = []
-    for shift_id, dname, plate in active_res.all():
+    active_shift_by_vehicle: dict[int, dict] = {}
+    active_trip_vehicle_ids: set[int] = set()
+    for shift_id, vehicle_id, dname, plate in active_res.all():
         trip = (
             await session.execute(
                 select(Trip).where(
@@ -365,6 +367,9 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
             "route": (f"{trip.origin or '—'} → {trip.destination or '—'}" if trip else "без рейса"),
             "status": _TRIP_STATUS_LABELS.get(trip.status, "") if trip else "",
         })
+        active_shift_by_vehicle[vehicle_id] = {"driver": dname, "plate": plate}
+        if trip is not None:
+            active_trip_vehicle_ids.add(vehicle_id)
 
     # --- требуют внимания: истекающие документы (реальные данные) ---
     attention = []
@@ -404,20 +409,42 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
         status = st.motion_status or telemetry_service.vehicle_motion_status(st.speed_kmh, st.ignition)
         duration = telemetry_service.duration_label(st.motion_since_at, now_utc)
         since = fmt_dt(st.motion_since_at, owner.timezone, "%H:%M")
-        if st.last_seen_at and st.last_seen_at < stale_cutoff:
+        signal = telemetry_service.vehicle_control_signal(
+            motion_status=status,
+            has_active_shift=st.vehicle_id in active_shift_by_vehicle,
+            has_active_trip=st.vehicle_id in active_trip_vehicle_ids,
+            gps_stale=bool(st.last_seen_at and st.last_seen_at < stale_cutoff),
+            gps_invalid=st.is_valid is False,
+        )
+        if signal == telemetry_service.SIGNAL_GPS_STALE:
             map_problem += 1
             attention.append({
                 "sev": "danger", "icon": "📡", "title": "Нет свежего GPS",
                 "pill": telemetry_service.duration_label(st.last_seen_at, now_utc),
                 "sub": f"{plate} · последний сигнал {fmt_dt(st.last_seen_at, owner.timezone, '%H:%M')}",
             })
-        elif st.is_valid is False:
+        elif signal == telemetry_service.SIGNAL_GPS_INVALID:
             map_problem += 1
             attention.append({
                 "sev": "danger", "icon": "📍", "title": "GPS без точных координат",
                 "pill": "проверить", "sub": f"{plate} · метка держится на последней нормальной точке",
             })
-        elif status == telemetry_service.MOTION_IDLE_ENGINE:
+        elif signal == telemetry_service.SIGNAL_MOVING_WITHOUT_SHIFT:
+            map_problem += 1
+            attention.append({
+                "sev": "danger", "icon": "🚛", "title": "Машина едет без смены",
+                "pill": f"{Decimal(st.speed_kmh or 0):.0f} км/ч",
+                "sub": f"{plate} · с {since} · водитель не начал смену",
+            })
+        elif signal == telemetry_service.SIGNAL_MOVING_WITHOUT_TRIP:
+            map_attention += 1
+            driver = active_shift_by_vehicle.get(st.vehicle_id, {}).get("driver", "водитель в смене")
+            attention.append({
+                "sev": "warn", "icon": "🛣", "title": "Едет без активного рейса",
+                "pill": f"{Decimal(st.speed_kmh or 0):.0f} км/ч",
+                "sub": f"{plate} · {driver} · с {since}",
+            })
+        elif signal == telemetry_service.SIGNAL_IDLE_ENGINE:
             map_attention += 1
             attention.append({
                 "sev": "warn", "icon": "⛽", "title": "Стоит с заведённым двигателем",
@@ -2341,7 +2368,10 @@ async def map_page(
 ):
     return templates.TemplateResponse(
         "map.html",
-        {"request": request, "owner": owner, "active_page": "map"},
+        {
+            "request": request, "owner": owner, "active_page": "map",
+            "yandex_maps_api_key": settings.yandex_maps_api_key,
+        },
     )
 
 
@@ -2425,6 +2455,13 @@ async def api_drivers_locations(
             VehicleState.longitude.is_not(None),
         )
     )
+    # машины с открытой сменой — для балуна «в смене / без смены»
+    busy_res = await session.execute(
+        select(Shift.vehicle_id).where(
+            Shift.owner_id == owner.id, Shift.status == "started"
+        )
+    )
+    busy_vehicle_ids = {row[0] for row in busy_res.all()}
     vehicles = [
         {
             "vehicle_id": st.vehicle_id,
@@ -2436,10 +2473,13 @@ async def api_drivers_locations(
             "motion_status": st.motion_status,
             "motion_status_text": telemetry_service.motion_status_text(st.motion_status, st.speed_kmh),
             "motion_since_at": st.motion_since_at.isoformat() if st.motion_since_at else None,
-            "motion_since_label": fmt_dt(st.motion_since_at, owner.timezone, "%H:%M"),
+            # «с 21:52» / «со вчера, 21:52» / «с 01.07, 21:52»
+            "motion_since_label": smart_since_label(st.motion_since_at, owner.timezone),
             "motion_duration_label": telemetry_service.duration_label(st.motion_since_at),
+            "has_active_shift": st.vehicle_id in busy_vehicle_ids,
             "is_valid": st.is_valid,
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
+            "updated_label": fmt_dt(st.last_seen_at, owner.timezone, "%d.%m, %H:%M"),
         }
         for st, plate in vehicles_res.all()
         # «нулевой остров» (потеря GPS у трекера) на карту не выносим
@@ -2584,6 +2624,7 @@ async def update_trip_revenue(
     except InvalidOperation:
         raise HTTPException(status_code=400, detail="Bad revenue")
     trip.revenue_rub = rev.quantize(Decimal("0.01"))
+    trip.driver_revenue_pending_rub = None
     await session.commit()
     return RedirectResponse(f"/trips/{trip_id}", status_code=303)
 

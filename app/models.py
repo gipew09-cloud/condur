@@ -199,6 +199,7 @@ class Trip(Base):
     waybill_photo_url: Mapped[str | None] = mapped_column(Text)
 
     revenue_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    driver_revenue_pending_rub: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     fuel_cost_rub: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     other_costs_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     # вычисляемая прибыль = выручка - топливо - прочие расходы

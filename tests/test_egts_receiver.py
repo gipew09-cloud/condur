@@ -56,3 +56,21 @@ def test_motion_status_text_and_duration_label():
     assert telemetry_service.motion_status_text("moving", Decimal("54")) == "едет · 54 км/ч"
     assert telemetry_service.motion_status_text("idle_engine") == "стоит, двигатель работает"
     assert telemetry_service.duration_label(start, end) == "2 ч 15 мин"
+
+
+def test_vehicle_control_signal_priorities():
+    assert telemetry_service.vehicle_control_signal(
+        motion_status="moving", has_active_shift=False, has_active_trip=False
+    ) == "moving_without_shift"
+    assert telemetry_service.vehicle_control_signal(
+        motion_status="moving", has_active_shift=True, has_active_trip=False
+    ) == "moving_without_trip"
+    assert telemetry_service.vehicle_control_signal(
+        motion_status="idle_engine", has_active_shift=True, has_active_trip=True
+    ) == "idle_engine"
+    assert telemetry_service.vehicle_control_signal(
+        motion_status="moving", has_active_shift=True, has_active_trip=True, gps_stale=True
+    ) == "gps_stale"
+    assert telemetry_service.vehicle_control_signal(
+        motion_status="moving", has_active_shift=True, has_active_trip=True, gps_invalid=True
+    ) == "gps_invalid"

@@ -1092,11 +1092,16 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session:
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
-    # Владелец — главный: если выручка уже есть (указал водитель), показываем
-    # текущую сумму, владелец может оставить или переписать.
+    # Владелец — главный: финальную выручку он может указать/переписать.
+    # Если водитель предложил сумму, показываем её как черновик.
     if trip is not None and trip.revenue_rub is not None:
         await call.message.answer(
             f"Текущая выручка: {trip.revenue_rub:.0f} ₽. Введите новую сумму:"
+        )
+    elif trip is not None and trip.driver_revenue_pending_rub is not None:
+        await call.message.answer(
+            f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
+            "Введите финальную сумму:"
         )
     else:
         await call.message.answer("Введите выручку по рейсу в рублях:")
@@ -1104,7 +1109,7 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session:
 
 @owner_router.callback_query(F.data.startswith("trev:ok:"))
 async def cb_trip_revenue_approve(call: CallbackQuery, session: AsyncSession) -> None:
-    """Владелец одобряет выручку, указанную водителем (значение уже в БД)."""
+    """Владелец одобряет выручку, указанную водителем."""
     try:
         trip_id = int(call.data.split(":")[2])
     except (IndexError, ValueError):
@@ -1114,6 +1119,17 @@ async def cb_trip_revenue_approve(call: CallbackQuery, session: AsyncSession) ->
     trip = await session.get(Trip, trip_id)
     if owner is None or trip is None or trip.owner_id != owner.id:
         await call.answer("Рейс не найден", show_alert=True)
+        return
+    approved = await trip_service.approve_trip_driver_revenue(session, trip=trip)
+    if approved:
+        await log_event(
+            session, owner_id=owner.id, driver_id=trip.driver_id,
+            shift_id=trip.shift_id, trip_id=trip.id,
+            event_type="trip_revenue_approved", payload={"revenue": str(trip.revenue_rub)},
+        )
+        await session.commit()
+    elif trip.revenue_rub is None:
+        await call.answer("Нет суммы на подтверждении", show_alert=True)
         return
     try:
         await call.message.edit_reply_markup(reply_markup=None)
@@ -1145,7 +1161,13 @@ async def cb_trip_revenue_edit(call: CallbackQuery, state: FSMContext, session: 
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
-    await call.message.answer("Введите правильную выручку по рейсу в рублях:")
+    if trip.driver_revenue_pending_rub is not None:
+        await call.message.answer(
+            f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
+            "Введите правильную выручку по рейсу в рублях:"
+        )
+    else:
+        await call.message.answer("Введите правильную выручку по рейсу в рублях:")
 
 
 @owner_router.message(SetTripRevenue.waiting_for_amount)

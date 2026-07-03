@@ -26,6 +26,7 @@ PT_APPDATA = 1
 # Типы подзаписей, которые разбираем.
 SR_RECORD_RESPONSE = 0
 SR_POS_DATA = 16
+SR_STATE_DATA = 20  # состояние терминала: режим + напряжения питания
 
 # Коды результата обработки.
 PC_OK = 0
@@ -80,12 +81,28 @@ class PositionData:
 
 
 @dataclass(frozen=True)
+class TerminalState:
+    """EGTS_SR_STATE_DATA: режим терминала и напряжения питания (в вольтах).
+
+    ⚠️ Поля напряжений однобайтовые в 0.1 В — максимум 25.5 В. Для 24-вольтовой
+    бортсети грузовика (работа ~28 В) значение может упираться в потолок,
+    поэтому для определения зажигания используем с осторожностью.
+    """
+    mode: int
+    main_power_v: float        # напряжение основного питания
+    backup_battery_v: float    # резервный АКБ терминала
+    internal_battery_v: float  # внутренняя батарейка
+    flags: int
+
+
+@dataclass(frozen=True)
 class ServiceRecord:
     record_number: int
     object_id: int | None      # OID — Stavtrack object id (есть при OBFE=1)
     record_time: datetime | None
     service_type: int          # SST
     positions: list[PositionData]
+    state: TerminalState | None
     unknown_subrecords: list[int]  # типы подзаписей, которые не разбираем
 
 
@@ -174,16 +191,18 @@ def _parse_service_records(sfrd: bytes) -> list[ServiceRecord]:
         record_data = sfrd[offset: offset + rl]
         offset += rl
 
-        positions, unknown = _parse_subrecords(record_data)
+        positions, state, unknown = _parse_subrecords(record_data)
         records.append(ServiceRecord(
             record_number=rn, object_id=object_id, record_time=record_time,
-            service_type=sst, positions=positions, unknown_subrecords=unknown,
+            service_type=sst, positions=positions, state=state,
+            unknown_subrecords=unknown,
         ))
     return records
 
 
-def _parse_subrecords(rd: bytes) -> tuple[list[PositionData], list[int]]:
+def _parse_subrecords(rd: bytes) -> tuple[list[PositionData], TerminalState | None, list[int]]:
     positions: list[PositionData] = []
+    state: TerminalState | None = None
     unknown: list[int] = []
     offset = 0
     while offset + 3 <= len(rd):
@@ -194,9 +213,17 @@ def _parse_subrecords(rd: bytes) -> tuple[list[PositionData], list[int]]:
         offset += srl
         if srt == SR_POS_DATA and len(payload) >= 21:
             positions.append(_parse_pos_data(payload))
+        elif srt == SR_STATE_DATA and len(payload) >= 5:
+            state = TerminalState(
+                mode=payload[0],
+                main_power_v=payload[1] / 10.0,
+                backup_battery_v=payload[2] / 10.0,
+                internal_battery_v=payload[3] / 10.0,
+                flags=payload[4],
+            )
         elif srt != SR_RECORD_RESPONSE:
             unknown.append(srt)
-    return positions, unknown
+    return positions, state, unknown
 
 
 def _parse_pos_data(p: bytes) -> PositionData:

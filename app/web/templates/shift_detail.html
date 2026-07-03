@@ -61,7 +61,12 @@
     <tr onclick="location.href='/trips/{{ t.id }}'" style="cursor:pointer;">
       <td data-label="Маршрут">{{ t.origin or '—' }} → {{ t.destination or '—' }}</td>
       <td data-label="Статус"><span class="pill {{ t.status | pillclass }}">{{ t.status | tstatus }}</span></td>
-      <td data-label="Выручка" class="num">{{ "{:,.0f}".format(t.revenue_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="Выручка" class="num">
+        {{ "{:,.0f}".format(t.revenue_rub or 0).replace(',', ' ') }} ₽
+        {% if t.revenue_rub is none and t.driver_revenue_pending_rub %}
+          <br><span class="badge badge--warning">на подтверждении {{ "{:,.0f}".format(t.driver_revenue_pending_rub).replace(',', ' ') }} ₽</span>
+        {% endif %}
+      </td>
       <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(t.profit_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="ТТН">{% if t.waybill_photo_url %}📷{% else %}—{% endif %}</td>
     </tr>

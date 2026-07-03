@@ -50,8 +50,10 @@ def _encode_pos_data(
     return body
 
 
-def _encode_appdata(*, pid: int, rn: int, oid: int, when: datetime, pos: bytes) -> bytes:
-    sub = bytes([egts.SR_POS_DATA]) + struct.pack("<H", len(pos)) + pos
+def _encode_appdata(
+    *, pid: int, rn: int, oid: int, when: datetime, pos: bytes, extra_sub: bytes = b""
+) -> bytes:
+    sub = bytes([egts.SR_POS_DATA]) + struct.pack("<H", len(pos)) + pos + extra_sub
     tm = int((when - _EPOCH).total_seconds())
     record = struct.pack("<HHB", len(sub), rn, 0x05)  # RFL: OBFE|TMFE
     record += struct.pack("<II", oid, tm)
@@ -137,6 +139,27 @@ def test_packet_length_and_tcp_slicing():
     first = egts.packet_length(stream)
     assert first == len(packet)
     assert egts.packet_length(stream[first:]) == len(packet)
+
+
+def test_state_data_subrecord_parsed_and_unknown_collected():
+    when = datetime(2026, 7, 3, 16, 3, 11, tzinfo=timezone.utc)
+    pos = _encode_pos_data(when=when, lat=59.75, lon=30.45, speed_kmh=0,
+                           course=0, odometer_km=100.0, moving=False, valid=True, din=0)
+    # STATE_DATA (тип 20): mode=1, питание 25.5В (потолок байта), АКБ 4.1В,
+    # внутр. 3.9В, flags=0b101 + следом неизвестная подзапись типа 99.
+    state = bytes([egts.SR_STATE_DATA]) + struct.pack("<H", 5) + bytes([1, 255, 41, 39, 0b101])
+    unknown = bytes([99]) + struct.pack("<H", 2) + b"\x01\x02"
+    packet = _encode_appdata(pid=1, rn=1, oid=129772, when=when, pos=pos,
+                             extra_sub=state + unknown)
+    (rec,) = egts.parse_packet(packet).records
+    assert rec.state is not None
+    assert rec.state.mode == 1
+    assert rec.state.main_power_v == pytest.approx(25.5)
+    assert rec.state.backup_battery_v == pytest.approx(4.1)
+    assert rec.state.flags == 0b101
+    assert rec.unknown_subrecords == [99]
+    (p,) = rec.positions  # POS_DATA рядом не пострадала
+    assert p.latitude == pytest.approx(59.75, abs=1e-5)
 
 
 def test_build_response_is_valid_egts():

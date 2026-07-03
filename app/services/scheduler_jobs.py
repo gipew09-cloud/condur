@@ -78,6 +78,17 @@ async def _send_daily_summary(
         .where(Shift.owner_id == owner.id, Shift.status == "started")
     )
     active_shifts = list(active_shifts_res.all())
+    active_shift_vehicle_ids = {sh.vehicle_id for sh, _dname, _plate in active_shifts}
+    active_trip_vehicle_ids = set(
+        (
+            await session.execute(
+                select(Trip.vehicle_id).where(
+                    Trip.owner_id == owner.id,
+                    Trip.status.in_(("created", "in_transit", "unloading")),
+                )
+            )
+        ).scalars().all()
+    )
 
     # рейсы завершённые за день
     trips_res = await session.execute(
@@ -134,17 +145,34 @@ async def _send_daily_summary(
     gps_lines: list[str] = []
     for st, plate in gps_rows:
         status = st.motion_status or telemetry_service.vehicle_motion_status(st.speed_kmh, st.ignition)
-        if status == telemetry_service.MOTION_IDLE_ENGINE:
+        signal = telemetry_service.vehicle_control_signal(
+            motion_status=status,
+            has_active_shift=st.vehicle_id in active_shift_vehicle_ids,
+            has_active_trip=st.vehicle_id in active_trip_vehicle_ids,
+            gps_stale=bool(st.last_seen_at and st.last_seen_at < stale_cutoff),
+            gps_invalid=st.is_valid is False,
+        )
+        if signal == telemetry_service.SIGNAL_MOVING_WITHOUT_SHIFT:
+            gps_lines.append(
+                f"• {plate}: едет без смены "
+                f"({Decimal(st.speed_kmh or 0):.0f} км/ч, с {fmt_dt(st.motion_since_at, owner.timezone, '%H:%M')})"
+            )
+        elif signal == telemetry_service.SIGNAL_MOVING_WITHOUT_TRIP:
+            gps_lines.append(
+                f"• {plate}: едет без активного рейса "
+                f"({Decimal(st.speed_kmh or 0):.0f} км/ч, с {fmt_dt(st.motion_since_at, owner.timezone, '%H:%M')})"
+            )
+        elif signal == telemetry_service.SIGNAL_IDLE_ENGINE:
             gps_lines.append(
                 f"• {plate}: стоит с заведённым с "
                 f"{fmt_dt(st.motion_since_at, owner.timezone, '%H:%M')} "
                 f"({telemetry_service.duration_label(st.motion_since_at, now_utc)})"
             )
-        elif st.last_seen_at and st.last_seen_at < stale_cutoff:
+        elif signal == telemetry_service.SIGNAL_GPS_STALE:
             gps_lines.append(
                 f"• {plate}: нет GPS {telemetry_service.duration_label(st.last_seen_at, now_utc)}"
             )
-        elif st.is_valid is False:
+        elif signal == telemetry_service.SIGNAL_GPS_INVALID:
             gps_lines.append(f"• {plate}: GPS без точных координат")
     if gps_lines:
         lines.append("\n<b>GPS-контроль:</b>")

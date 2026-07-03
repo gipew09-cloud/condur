@@ -231,11 +231,25 @@ async def _process_packet(
                 await session.execute(stmt)
 
         await session.commit()
+        # Диагностика для калибровки датчиков (зажигание/напряжение): типы
+        # подзаписей, которые пока не разбираем, напряжение борта и полный hex.
+        unknown_types = sorted({
+            t for rec in (parsed.records if parsed else []) for t in rec.unknown_subrecords
+        })
+        state_v = next(
+            (rec.state.main_power_v for rec in (parsed.records if parsed else [])
+             if rec.state is not None),
+            None,
+        )
         logger.info(
-            "EGTS packet id=%s status=%s terminal=%s vehicle=%s points=%s bytes=%s",
+            "EGTS packet id=%s status=%s terminal=%s vehicle=%s points=%s bytes=%s "
+            "power=%sV unknown_sr=%s hex=%s",
             raw.id, raw.parse_status, terminal_id,
             vehicle.license_plate if vehicle else "—",
             points_saved, len(payload),
+            state_v if state_v is not None else "—",
+            unknown_types or "—",
+            _preview_hex(payload, limit=96),
         )
 
     # ACK шлём на любой корректно разобранный транспортный пакет — иначе

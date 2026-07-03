@@ -117,6 +117,14 @@ class EndTripLocation(StatesGroup):
     waiting_for_location = State()
 
 
+class EndShiftLocation(StatesGroup):
+    """После завершения смены спрашиваем, где водитель её закончил.
+
+    Владелец получает точку ссылкой на Яндекс.Карты — контроль «где реально
+    закончился день», особенно когда GPS-трекер в городе лагает."""
+    waiting_for_location = State()
+
+
 class UnloadingLocation(StatesGroup):
     """Перед переходом в статус 'выгрузка' спрашиваем геопозицию."""
     waiting_for_location = State()
