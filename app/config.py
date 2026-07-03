@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def fix_database_url(cls, v: str) -> str:
+        v = v.strip()
+        # Частая ошибка при ручном вводе в Railway Variables: перед URL случайно
+        # попадает русская буква "к", и SQLAlchemy видит диалект "кpostgresql".
+        if v.startswith(("кpostgres://", "кpostgresql://", "Кpostgres://", "Кpostgresql://")):
+            v = v[1:]
         # Heroku-style: postgres:// → postgresql+asyncpg://
         if v.startswith("postgres://"):
             return v.replace("postgres://", "postgresql+asyncpg://", 1)

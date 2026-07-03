@@ -306,6 +306,23 @@ def test_rc_xlsx_import_and_lookup_preserves_zero_coordinates():
     assert RC.canonical_rc_address("доставка в шушары", lookup) == "СПб, Московское шоссе, 231"
 
 
+def test_rc_xlsx_import_single_column_file():
+    """Файл владельца «РЦ Адреса Спб.xlsx»: одна колонка, без шапки,
+    название и адрес слиты в одной ячейке. Должен импортироваться."""
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["РЦ Лента Лен.Обл. Тосненский район посёлок Красный бор"])
+    ws.append(["РЦ 7 шагов, Санкт-Петербург г., п. Шушары"])
+    ws.append([None])  # пустая строка — пропускается
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    rows = RC.distribution_centers_from_xlsx(buf.getvalue())
+    assert len(rows) == 2
+    assert rows[0]["name"] == rows[0]["address"]  # адрес = вся ячейка
+    assert rows[0]["name"].startswith("РЦ Лента")
+
+
 def test_render_trips_kpi():
     html = _render("trips.html", owner=OWNER, active_page="trips",
                    drivers=[NS(id=1, full_name="Д")],

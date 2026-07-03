@@ -116,6 +116,10 @@ def distribution_centers_from_xlsx(data: bytes) -> list[dict]:
         cells = tuple(row)
         name = _xlsx_value(cells, name_idx) or _xlsx_value(cells, 0)
         address = _xlsx_value(cells, address_idx) or _xlsx_value(cells, 1)
+        # Одноколоночный файл (как «РЦ Адреса Спб.xlsx» владельца): название и
+        # адрес слиты в одной ячейке — берём её и как адрес.
+        if name and not address:
+            address = name
         if not name or not address:
             continue
         if header_idx is None and _looks_like_rc_header(cells):

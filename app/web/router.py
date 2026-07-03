@@ -2216,6 +2216,8 @@ async def routes_rc_import(
     file: Annotated[UploadFile, File()],
 ):
     data = await file.read()
+    if len(data) > _MAX_DOC_BYTES:
+        raise HTTPException(status_code=400, detail="Файл слишком большой (макс 6 МБ)")
     try:
         items = rc_service.distribution_centers_from_xlsx(data)
     except ValueError as exc:
