@@ -71,9 +71,12 @@ class PositionData:
 
     @property
     def ignition(self) -> bool:
-        # Бит 0 DIN у большинства конфигураций — зажигание. Если входы не
-        # заведены (DIN=0), движение тоже означает включённое зажигание.
-        return bool(self.digital_inputs & 0x01) or self.is_moving
+        # Бит 0 DIN у части конфигураций — зажигание. Но у Stavtrack датчик
+        # зажигания может передаваться вне POS_DATA (DIN=0 и MV=0 даже в
+        # движении — видели на реальной машине при 54 км/ч). Поэтому считаем
+        # надёжно: любое из «входы», «флаг движения», «скорость > 0» =
+        # двигатель работает.
+        return bool(self.digital_inputs & 0x01) or self.is_moving or self.speed_kmh > 0
 
 
 @dataclass(frozen=True)

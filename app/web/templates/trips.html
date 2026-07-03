@@ -10,14 +10,6 @@
   <p class="sub">Все рейсы автопарка. Фильтруйте по водителю и датам или добавьте рейс вручную.</p>
 </div>
 
-{% if totals %}
-<div class="sp-kpi" style="margin-bottom:1.25rem; grid-template-columns: repeat(3, 1fr);">
-  <div class="c"><div class="lbl">Рейсов по фильтру</div><div class="val">{{ totals.count }}</div></div>
-  <div class="c"><div class="lbl">Выручка</div><div class="val">{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} <span class="rub">₽</span></div></div>
-  <div class="c dark"><div class="lbl">Прибыль</div><div class="val">{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} <span class="rub">₽</span></div></div>
-</div>
-{% endif %}
-
 <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
   <div class="grid">
     <label>

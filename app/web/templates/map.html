@@ -63,7 +63,8 @@
     cursor: pointer;
     user-select: none;
   }
-  .vehicle-marker.on { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+  .vehicle-marker.moving { background: linear-gradient(135deg, #16a34a, #15803d); }
+  .vehicle-marker.idle-engine { background: linear-gradient(135deg, #eab308, #ca8a04); color: #111827; }
   .vehicle-marker.off { background: linear-gradient(135deg, #94a3b8, #475569); }
   .vehicle-marker.stale { opacity: .65; }
   /* Пульс вокруг маркера активного водителя */
@@ -122,8 +123,8 @@
 
 {% block content %}
 <div class="page-head">
-  <h1>Карта водителей</h1>
-  <p class="sub">Зелёная пульсирующая точка — водитель в смене, серая — не в смене. Обновляется раз в минуту, клик по точке — подробности.</p>
+  <h1>Карта водителей и машин</h1>
+  <p class="sub">Водители показываются по отправленной геопозиции, машины — по GPS Stavtrack. Обновляется раз в минуту, клик по точке — подробности.</p>
 </div>
 <div id="map"></div>
 {% endblock %}
@@ -171,9 +172,15 @@
   const markers = {};
   const vehicleMarkers = {};
 
+  function vehicleStatus(v) {
+    if (v.speed_kmh > 3) return { text: `🟢 едет · ${Math.round(v.speed_kmh)} км/ч`, cls: 'moving' };
+    if (v.ignition) return { text: '🟡 стоит, двигатель работает', cls: 'idle-engine' };
+    return { text: '⚪️ стоит', cls: 'off' };
+  }
+
   function makeVehicleHTML(v) {
     const fresh = v.updated_at && (Date.now() - new Date(v.updated_at).getTime()) < 10 * 60 * 1000;
-    const cls = (v.ignition ? 'on' : 'off') + (fresh ? '' : ' stale');
+    const cls = vehicleStatus(v).cls + (fresh ? '' : ' stale');
     return `<div class="vehicle-marker ${cls}">🚚 ${v.plate}</div>`;
   }
 
@@ -182,11 +189,10 @@
       ? new Date(v.updated_at).toLocaleString('ru-RU',
           { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
       : '—';
-    const ign = v.ignition ? '🟢 зажигание вкл' : '⚪️ зажигание выкл';
-    const gps = v.is_valid ? '' : '<div class="meta">⚠️ GPS без достоверных координат</div>';
+    const gps = v.is_valid ? '' : '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
     return `<div class="driver-popup-content">
       <h4>🚚 ${v.plate}</h4>
-      <div class="meta">${ign} · ${Math.round(v.speed_kmh)} км/ч</div>
+      <div class="meta">${vehicleStatus(v).text}</div>
       ${gps}
       <div class="meta">🕒 ${ago} (GPS Stavtrack)</div>
     </div>`;

@@ -140,10 +140,14 @@ async def _process_packet(
                 raw.parse_error = "unknown terminal id (машина с этим Stavtrack ID не найдена)"
 
         points_saved = 0
-        last_point: VehicleTelemetryPoint | None = None
+        last_good: VehicleTelemetryPoint | None = None   # достоверная точка
+        last_any: VehicleTelemetryPoint | None = None
         if parsed is not None and vehicle is not None:
             for rec in parsed.records:
                 for pos in rec.positions:
+                    # «Нулевой остров»: при потере GPS часть трекеров шлёт (0,0).
+                    zeroish = abs(pos.latitude) < 0.001 and abs(pos.longitude) < 0.001
+                    good = pos.is_valid and not zeroish
                     point = VehicleTelemetryPoint(
                         raw_packet_id=raw.id,
                         owner_id=vehicle.owner_id,
@@ -156,44 +160,54 @@ async def _process_packet(
                         course=Decimal(pos.course),
                         ignition=pos.ignition,
                         mileage_km=Decimal(str(pos.odometer_km)),
-                        is_valid=pos.is_valid,
-                        anomaly_reason=None if pos.is_valid else "нет достоверных координат (VLD=0)",
+                        is_valid=good,
+                        anomaly_reason=None if good else "нет достоверных координат (GPS)",
                     )
                     session.add(point)
                     points_saved += 1
-                    if last_point is None or (
-                        point.observed_at and last_point.observed_at
-                        and point.observed_at >= last_point.observed_at
-                    ):
-                        last_point = point
+                    last_any = point
+                    if good:
+                        last_good = point
 
-            if last_point is not None:
-                await session.flush()  # нужен last_point.id
-                stmt = pg_insert(VehicleState).values(
-                    vehicle_id=vehicle.id,
-                    terminal_id=terminal_id,
-                    last_point_id=last_point.id,
-                    last_seen_at=last_point.observed_at,
-                    latitude=last_point.latitude,
-                    longitude=last_point.longitude,
-                    speed_kmh=last_point.speed_kmh,
-                    ignition=last_point.ignition,
-                    is_valid=last_point.is_valid,
-                    anomaly_reason=last_point.anomaly_reason,
-                )
+            if last_any is not None:
+                await session.flush()  # нужны id точек
+                if last_good is not None:
+                    # Полное обновление состояния достоверной точкой.
+                    values = dict(
+                        vehicle_id=vehicle.id,
+                        terminal_id=terminal_id,
+                        last_point_id=last_good.id,
+                        last_seen_at=last_good.observed_at,
+                        latitude=last_good.latitude,
+                        longitude=last_good.longitude,
+                        speed_kmh=last_good.speed_kmh,
+                        ignition=last_good.ignition,
+                        is_valid=True,
+                        anomaly_reason=None,
+                    )
+                    update_cols = (
+                        "terminal_id", "last_point_id", "last_seen_at", "latitude",
+                        "longitude", "speed_kmh", "ignition", "is_valid", "anomaly_reason",
+                    )
+                else:
+                    # Только недостоверные точки: машину «видели» (обновляем время,
+                    # зажигание и пометку), но координаты НЕ трогаем — иначе метка
+                    # улетает в «нулевой остров» у берегов Африки.
+                    values = dict(
+                        vehicle_id=vehicle.id,
+                        terminal_id=terminal_id,
+                        last_seen_at=last_any.observed_at,
+                        ignition=last_any.ignition,
+                        is_valid=False,
+                        anomaly_reason="нет достоверных координат (GPS)",
+                    )
+                    update_cols = (
+                        "terminal_id", "last_seen_at", "ignition", "is_valid", "anomaly_reason",
+                    )
+                stmt = pg_insert(VehicleState).values(**values)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=[VehicleState.vehicle_id],
-                    set_={
-                        "terminal_id": stmt.excluded.terminal_id,
-                        "last_point_id": stmt.excluded.last_point_id,
-                        "last_seen_at": stmt.excluded.last_seen_at,
-                        "latitude": stmt.excluded.latitude,
-                        "longitude": stmt.excluded.longitude,
-                        "speed_kmh": stmt.excluded.speed_kmh,
-                        "ignition": stmt.excluded.ignition,
-                        "is_valid": stmt.excluded.is_valid,
-                        "anomaly_reason": stmt.excluded.anomaly_reason,
-                    },
+                    set_={col: getattr(stmt.excluded, col) for col in update_cols},
                 )
                 await session.execute(stmt)
 

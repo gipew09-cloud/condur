@@ -99,10 +99,14 @@ def test_roundtrip_pos_data():
     assert pos.is_moving and pos.is_valid and pos.ignition
 
 
-def test_ignition_from_movement_when_din_empty():
-    parsed = egts.parse_packet(_sample_packet(din=0x00, moving=True))
+def test_ignition_from_movement_or_speed_when_din_empty():
+    parsed = egts.parse_packet(_sample_packet(din=0x00, moving=True, speed_kmh=0))
     assert parsed.records[0].positions[0].ignition is True
-    parsed = egts.parse_packet(_sample_packet(din=0x00, moving=False))
+    # Реальный кейс с машины Т772НХ178: DIN=0, MV=0, но скорость 54 км/ч —
+    # двигатель точно работает.
+    parsed = egts.parse_packet(_sample_packet(din=0x00, moving=False, speed_kmh=54))
+    assert parsed.records[0].positions[0].ignition is True
+    parsed = egts.parse_packet(_sample_packet(din=0x00, moving=False, speed_kmh=0))
     assert parsed.records[0].positions[0].ignition is False
 
 

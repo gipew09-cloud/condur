@@ -55,7 +55,14 @@ from app.config import settings
 from app.models import (
     Admin, Driver, Expense, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
 )
-from app.services import auth_service, billing, expense_service, salary_service, trip_service
+from app.services import (
+    auth_service,
+    billing,
+    expense_service,
+    salary_service,
+    telemetry_service,
+    trip_service,
+)
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
 
@@ -1500,13 +1507,27 @@ async def odo_value(
         trips_res = await session.execute(select(Trip).where(Trip.shift_id == shift.id))
         trips = list(trips_res.scalars().all())
         salary = salary_service.calculate_salary(driver, shift, trips) if driver else 0
-        await message.answer(
-            msg.ODOMETER_OWNER_DONE_END.format(
-                km=value,
-                distance=shift.distance_km if shift.distance_km is not None else "—",
-                salary=f"{salary:.0f}",
-            )
+        text = msg.ODOMETER_OWNER_DONE_END.format(
+            km=value,
+            distance=shift.distance_km if shift.distance_km is not None else "—",
+            salary=f"{salary:.0f}",
         )
+        # Контроль честности: пробег по одометру против счётчика GPS-трекера
+        # за эту смену (если телематика по машине уже идёт).
+        if shift.distance_km is not None and shift.started_at is not None:
+            from datetime import datetime as _dt, timezone as _tz
+
+            gps_km = await telemetry_service.gps_mileage_for_period(
+                session,
+                vehicle_id=shift.vehicle_id,
+                start=shift.started_at,
+                end=shift.ended_at or _dt.now(_tz.utc),
+            )
+            if gps_km is not None:
+                text += "\n" + telemetry_service.format_mileage_comparison(
+                    shift.distance_km, gps_km
+                )
+        await message.answer(text)
 
 
 @owner_router.callback_query(F.data.startswith("expense:approve:"))

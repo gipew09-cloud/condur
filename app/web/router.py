@@ -2290,7 +2290,7 @@ async def routes_rc_delete(
 
 
 # =========================================================================
-# /map — карта водителей с последними координатами
+# /map — карта водителей и машин с последними координатами
 # =========================================================================
 @app.get("/map", response_class=HTMLResponse)
 async def map_page(
@@ -2308,11 +2308,9 @@ async def _driver_positions(session: AsyncSession, owner_id: int) -> list[dict]:
     Последняя известная позиция каждого водителя владельца + признак активной
     смены и гос. номер машины в смене.
 
-    СЕЙЧАС источник координат — ручные геопозиции водителя (события
-    `location_sent`), поэтому карта почти всегда пустая. В Блоке 2 здесь
-    подключится телематика (таблица VehicleState через машину активной смены),
-    а ручные точки останутся фоллбэком. Набор ключей в словаре — это контракт
-    для `map.html`, его не меняем.
+    Источник координат водителя — ручные геопозиции (события `location_sent`).
+    GPS машин Stavtrack отдаётся отдельно из VehicleState в API ниже. Набор
+    ключей в словаре — это контракт для `map.html`, его не меняем.
     """
     # Postgres DISTINCT ON через raw — проще, чем рисовать в SQLAlchemy
     from sqlalchemy import text as sa_text
@@ -2397,6 +2395,8 @@ async def api_drivers_locations(
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
         }
         for st, plate in vehicles_res.all()
+        # «нулевой остров» (потеря GPS у трекера) на карту не выносим
+        if abs(float(st.latitude)) > 0.001 or abs(float(st.longitude)) > 0.001
     ]
     return {
         "drivers": await _driver_positions(session, owner.id),
