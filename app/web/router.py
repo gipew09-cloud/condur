@@ -28,7 +28,7 @@ from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, desc, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,10 +47,19 @@ from app.models import (
     TripDocument,
     Vehicle,
     VehicleState,
+    WebSession,
 )
 from app.config import settings
 from app.services import act_service, auth_service, billing, rc_service, telemetry_service
-from app.services.timeutil import fmt_dt, owner_tz, smart_since_label
+from app.services.timeutil import (
+    RU_MONTHS_SHORT,
+    add_months,
+    cashflow_buckets,
+    fmt_dt,
+    month_floor,
+    owner_tz,
+    smart_since_label,
+)
 from app.web.insights import generate_insights
 
 # --------- инициализация ----------
@@ -129,22 +138,71 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+_LOGIN_REDIRECT = HTTPException(status_code=303, headers={"Location": "/login"})
+
+
+async def _session_from_request(
+    request: Request, session: AsyncSession
+) -> WebSession | None:
+    """Активная веб-сессия по cookie (или None). Обновляет last_seen раз в 5 мин."""
+    raw = request.cookies.get(auth_service.SESSION_COOKIE)
+    if not raw:
+        return None
+    ws = (
+        await session.execute(
+            select(WebSession).where(
+                WebSession.token_hash == auth_service.session_token_hash(raw),
+                WebSession.revoked_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if ws is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if ws.last_seen_at is None or (now - ws.last_seen_at).total_seconds() > 300:
+        ws.last_seen_at = now
+        await session.commit()
+    return ws
+
+
+async def _viewer_telegram_id(request: Request, session: AsyncSession) -> int | None:
+    """Telegram ID того, кто сейчас смотрит кабинет (сессия или старый JWT).
+    None — старый владельческий JWT без tid; трактуем как владельца."""
+    ws = await _session_from_request(request, session)
+    if ws is not None:
+        return ws.telegram_id
+    token = request.cookies.get("auth")
+    if token:
+        decoded = auth_service.decode_jwt(token)
+        if decoded is not None:
+            return decoded[1]
+    return None
+
+
 async def current_owner(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Owner:
-    token = request.cookies.get("auth")
-    if not token:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
-    decoded = auth_service.decode_jwt(token)
-    if decoded is None:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
-    owner_id, tid = decoded
+    # 1) Постоянная сессия (основной путь).
+    ws = await _session_from_request(request, session)
+    if ws is not None:
+        owner_id, tid = ws.owner_id, ws.telegram_id
+    else:
+        # 2) Переходный fallback: старый 7-дневный JWT (чтобы никого не
+        # разлогинило при деплое). Истечёт сам — дальше вход уже постоянный.
+        token = request.cookies.get("auth")
+        if not token:
+            raise _LOGIN_REDIRECT
+        decoded = auth_service.decode_jwt(token)
+        if decoded is None:
+            raise _LOGIN_REDIRECT
+        owner_id, tid = decoded
+
     owner = await session.get(Owner, owner_id)
     if owner is None:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+        raise _LOGIN_REDIRECT
     # Если вошёл админ (tid не совпадает с владельцем) — проверяем, что доступ
-    # ещё не отозван. Так удаление админа срабатывает сразу, а не через 7 дней.
+    # ещё не отозван. Удаление админа гасит и все его устройства сразу.
     if tid is not None and tid != owner.telegram_id:
         admin = (
             await session.execute(
@@ -152,7 +210,7 @@ async def current_owner(
             )
         ).scalar_one_or_none()
         if admin is None:
-            raise HTTPException(status_code=303, headers={"Location": "/login"})
+            raise _LOGIN_REDIRECT
     return owner
 
 
@@ -293,17 +351,44 @@ async def login_submit(
             status_code=400,
         )
 
-    token = auth_service.create_jwt(owner_id, tid=tg_id)
+    # Постоянная сессия: живёт, пока не завершат («Выйти» на устройстве или
+    # владелец на «Реквизиты → Устройства»). В cookie — токен, в БД — его hash.
+    raw_token = auth_service.new_session_token()
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
+        request.client.host if request.client else None
+    )
+    web_session = WebSession(
+        owner_id=owner_id,
+        telegram_id=tg_id,
+        token_hash=auth_service.session_token_hash(raw_token),
+        device_label=auth_service.device_label_from_user_agent(
+            request.headers.get("user-agent")
+        ),
+        ip=ip,
+        last_seen_at=datetime.now(timezone.utc),
+    )
+    session.add(web_session)
+    await session.commit()
+
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
-        "auth", token, httponly=True, samesite="lax", max_age=7 * 24 * 3600
+        auth_service.SESSION_COOKIE, raw_token, httponly=True, samesite="lax",
+        max_age=auth_service.SESSION_COOKIE_MAX_AGE,
     )
     return response
 
 
 @app.get("/logout")
-async def logout():
+async def logout(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    ws = await _session_from_request(request, session)
+    if ws is not None:
+        ws.revoked_at = datetime.now(timezone.utc)
+        await session.commit()
     response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(auth_service.SESSION_COOKIE)
     response.delete_cookie("auth")
     return response
 
@@ -585,17 +670,10 @@ async def api_dashboard_chart(
     return await _dashboard_chart(session, owner.id, period)
 
 
-_RU_MON = ["янв", "фев", "мар", "апр", "май", "июн",
-           "июл", "авг", "сен", "окт", "ноя", "дек"]
-
-
-def _month_floor(d: date) -> date:
-    return date(d.year, d.month, 1)
-
-
-def _add_months(d: date, n: int) -> date:
-    m = d.month - 1 + n
-    return date(d.year + m // 12, m % 12 + 1, 1)
+# Календарные помощники и шаг графика — в timeutil (там и тестируются).
+_RU_MON = RU_MONTHS_SHORT
+_month_floor = month_floor
+_add_months = add_months
 
 
 async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) -> dict:
@@ -614,7 +692,8 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
         first = _add_months(_month_floor(today), -(months - 1))
         start = first
         keys = [_add_months(first, i) for i in range(months)]
-        labels = [f"{_RU_MON[k.month - 1]} {k:%y}" for k in keys]
+        # «июл 2026», а не «июл 26» — владелец читал «26» как число месяца.
+        labels = [f"{_RU_MON[k.month - 1]} {k:%Y}" for k in keys]
         bucket_keys = [(k.year, k.month) for k in keys]
 
         def key_of(d):
@@ -696,6 +775,79 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
     }
 
 
+async def _cashflow_chart(
+    session: AsyncSession, owner_id: int, df: date, dt: date
+) -> dict:
+    """Денежный поток за выбранный период «с… по…» (страница /finances).
+    Те же определения дохода/расхода, что и в финансовой матрице."""
+    labels, bucket_keys, key_of = cashflow_buckets(df, dt)
+    revenue = {k: Decimal(0) for k in bucket_keys}
+    expense = {k: Decimal(0) for k in bucket_keys}
+
+    def accumulate(rows, target):
+        for d, amount in rows:
+            if d is None:
+                continue
+            k = key_of(d)
+            if k in target:
+                target[k] += Decimal(amount)
+
+    rev_rows = await session.execute(
+        select(func.date(Trip.completed_at), func.coalesce(func.sum(Trip.revenue_rub), 0))
+        .where(
+            Trip.owner_id == owner_id,
+            Trip.status == "completed",
+            func.date(Trip.completed_at) >= df,
+            func.date(Trip.completed_at) <= dt,
+        )
+        .group_by(func.date(Trip.completed_at))
+    )
+    accumulate(rev_rows.all(), revenue)
+    inc_rows = await session.execute(
+        select(ManualEntry.entry_date, func.coalesce(func.sum(ManualEntry.amount_rub), 0))
+        .where(
+            ManualEntry.owner_id == owner_id,
+            ManualEntry.type == "income",
+            ManualEntry.entry_date >= df,
+            ManualEntry.entry_date <= dt,
+        )
+        .group_by(ManualEntry.entry_date)
+    )
+    accumulate(inc_rows.all(), revenue)
+    exp_rows = await session.execute(
+        select(func.date(Expense.created_at), func.coalesce(func.sum(Expense.amount_rub), 0))
+        .where(
+            Expense.owner_id == owner_id,
+            Expense.status == "approved",
+            func.date(Expense.created_at) >= df,
+            func.date(Expense.created_at) <= dt,
+        )
+        .group_by(func.date(Expense.created_at))
+    )
+    accumulate(exp_rows.all(), expense)
+    mexp_rows = await session.execute(
+        select(ManualEntry.entry_date, func.coalesce(func.sum(ManualEntry.amount_rub), 0))
+        .where(
+            ManualEntry.owner_id == owner_id,
+            ManualEntry.type == "expense",
+            ManualEntry.entry_date >= df,
+            ManualEntry.entry_date <= dt,
+        )
+        .group_by(ManualEntry.entry_date)
+    )
+    accumulate(mexp_rows.all(), expense)
+
+    rev_list = [float(revenue[k]) for k in bucket_keys]
+    exp_list = [float(expense[k]) for k in bucket_keys]
+    return {
+        "labels": labels,
+        "revenue": rev_list,
+        "expenses": exp_list,
+        "profit": [round(r - e, 2) for r, e in zip(rev_list, exp_list)],
+        "period": "custom",
+    }
+
+
 # =========================================================================
 # /trips
 # =========================================================================
@@ -704,14 +856,17 @@ async def trips_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    driver_id: Annotated[int | None, Query()] = None,
+    driver_id: Annotated[str | None, Query()] = None,
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query()] = 1,
 ):
+    # driver_id приходит строкой: пустое значение «— все —» не должно ронять
+    # запрос в 422 (из-за этого «Применить» выглядел неработающим).
+    d_id = int(driver_id) if (driver_id or "").strip().isdigit() else None
     conditions = [Trip.owner_id == owner.id]
-    if driver_id:
-        conditions.append(Trip.driver_id == driver_id)
+    if d_id:
+        conditions.append(Trip.driver_id == d_id)
     if date_from:
         try:
             conditions.append(Trip.created_at >= datetime.fromisoformat(date_from))
@@ -770,7 +925,7 @@ async def trips_page(
         "drivers": drivers,
         "vehicles": vehicles,
         "today": date.today().isoformat(),
-        "filter_driver_id": driver_id,
+        "filter_driver_id": d_id,
         "filter_date_from": date_from or "",
         "filter_date_to": date_to or "",
         "active_page": "trips",
@@ -1417,8 +1572,9 @@ async def finances_page(
     df, dt = _parse_period(period_from, period_to)
     summary = await _finance_summary(session, owner.id, df, dt)
 
-    # Денежный поток за 6 месяцев (тот же датасет дохода/расхода, что у дашборда).
-    cashflow = await _dashboard_chart(session, owner.id, "6m")
+    # Денежный поток за выбранный период: шаг (день/неделя/месяц) сам
+    # подстраивается под длину диапазона «с… по…».
+    cashflow = await _cashflow_chart(session, owner.id, df, dt)
 
     # Прибыльность направлений: прибыль завершённых рейсов по маршруту за период.
     dir_res = await session.execute(
@@ -1836,11 +1992,38 @@ async def requisites_page(
         select(Admin).where(Admin.owner_id == owner.id).order_by(Admin.created_at)
     )
     admins = list(admins_res.scalars().all())
+
+    # Устройства (активные веб-сессии кабинета): кто, с чего и когда заходил.
+    current_ws = await _session_from_request(request, session)
+    viewer_tid = await _viewer_telegram_id(request, session)
+    is_owner_viewer = viewer_tid is None or viewer_tid == owner.telegram_id
+    admin_names = {a.telegram_id: (a.name or f"Админ {a.telegram_id}") for a in admins}
+    ws_res = await session.execute(
+        select(WebSession)
+        .where(WebSession.owner_id == owner.id, WebSession.revoked_at.is_(None))
+        .order_by(desc(WebSession.last_seen_at), desc(WebSession.id))
+    )
+    sessions = [
+        {
+            "id": ws.id,
+            "who": ("Владелец" if ws.telegram_id == owner.telegram_id
+                    else admin_names.get(ws.telegram_id, f"Админ {ws.telegram_id}")),
+            "device": ws.device_label or "—",
+            "ip": ws.ip or "—",
+            "created": fmt_dt(ws.created_at, owner.timezone, "%d.%m %H:%M"),
+            "seen": fmt_dt(ws.last_seen_at, owner.timezone, "%d.%m %H:%M"),
+            "is_current": current_ws is not None and ws.id == current_ws.id,
+            # свою сессию может завершить каждый; чужие — только владелец
+            "can_revoke": is_owner_viewer or (current_ws is not None and ws.id == current_ws.id),
+        }
+        for ws in ws_res.scalars().all()
+    ]
     return templates.TemplateResponse(
         "requisites.html",
         {
             "request": request, "owner": owner, "customers": customers,
-            "admins": admins, "active_page": "requisites",
+            "admins": admins, "sessions": sessions,
+            "is_owner_viewer": is_owner_viewer, "active_page": "requisites",
         },
     )
 
@@ -1957,7 +2140,68 @@ async def admins_delete(
     admin = await session.get(Admin, admin_id)
     if admin is None or admin.owner_id != owner.id:
         raise HTTPException(status_code=404)
+    # Гасим и все устройства этого админа — доступ закрывается мгновенно.
+    await session.execute(
+        update(WebSession)
+        .where(
+            WebSession.owner_id == owner.id,
+            WebSession.telegram_id == admin.telegram_id,
+            WebSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
     await session.delete(admin)
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
+
+
+# =====================================================================
+# УСТРОЙСТВА (веб-сессии): завершить одно / все кроме текущего
+# =====================================================================
+@app.post("/sessions/{session_id}/revoke")
+async def sessions_revoke(
+    session_id: int,
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    ws = await session.get(WebSession, session_id)
+    if ws is None or ws.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    current_ws = await _session_from_request(request, session)
+    viewer_tid = await _viewer_telegram_id(request, session)
+    is_owner_viewer = viewer_tid is None or viewer_tid == owner.telegram_id
+    is_own = current_ws is not None and ws.id == current_ws.id
+    # Владелец гасит любые устройства; админ — только своё текущее.
+    if not (is_owner_viewer or is_own):
+        raise HTTPException(status_code=403, detail="Только владелец может завершать чужие сессии")
+    ws.revoked_at = datetime.now(timezone.utc)
+    await session.commit()
+    if is_own:
+        response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie(auth_service.SESSION_COOKIE)
+        response.delete_cookie("auth")
+        return response
+    return RedirectResponse("/requisites", status_code=303)
+
+
+@app.post("/sessions/revoke-others")
+async def sessions_revoke_others(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Владелец: выйти на всех устройствах, кроме текущего."""
+    current_ws = await _session_from_request(request, session)
+    viewer_tid = await _viewer_telegram_id(request, session)
+    if viewer_tid is not None and viewer_tid != owner.telegram_id:
+        raise HTTPException(status_code=403, detail="Доступно только владельцу")
+    stmt = update(WebSession).where(
+        WebSession.owner_id == owner.id, WebSession.revoked_at.is_(None)
+    )
+    if current_ws is not None:
+        stmt = stmt.where(WebSession.id != current_ws.id)
+    await session.execute(stmt.values(revoked_at=datetime.now(timezone.utc)))
     await session.commit()
     return RedirectResponse("/requisites", status_code=303)
 
@@ -2844,12 +3088,37 @@ async def expenses_page(
     session: Annotated[AsyncSession, Depends(get_session)],
     category: Annotated[str | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
+    driver_id: Annotated[str | None, Query()] = None,
+    vehicle_id: Annotated[str | None, Query()] = None,
+    date_from: Annotated[str | None, Query()] = None,
+    date_to: Annotated[str | None, Query()] = None,
 ):
+    # id приходят строками: пустое «— все —» не должно ронять запрос в 422.
+    d_id = int(driver_id) if (driver_id or "").strip().isdigit() else None
+    v_id = int(vehicle_id) if (vehicle_id or "").strip().isdigit() else None
     conditions = [Expense.owner_id == owner.id]
     if category and category in _EXPENSE_CATEGORIES:
         conditions.append(Expense.category == category)
     if status and status in ("pending", "approved", "rejected"):
         conditions.append(Expense.status == status)
+    if d_id:
+        conditions.append(Expense.driver_id == d_id)
+    if v_id:
+        # машина у расхода определяется через смену; расходы без смены
+        # при фильтре по машине не показываем
+        conditions.append(Shift.vehicle_id == v_id)
+    if date_from:
+        try:
+            conditions.append(Expense.created_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            conditions.append(
+                Expense.created_at < datetime.fromisoformat(date_to) + timedelta(days=1)
+            )
+        except ValueError:
+            pass
     rows_res = await session.execute(
         select(Expense, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Expense.driver_id)
@@ -2876,12 +3145,27 @@ async def expenses_page(
         {"label": _cat_ru.get(c, c), "amount": float(v)}
         for c, v in sorted(cat_sums.items(), key=lambda kv: kv[1], reverse=True)
     ]
+    # списки для фильтров «Водитель» и «Машина»
+    drivers = list((await session.execute(
+        select(Driver).where(Driver.owner_id == owner.id).order_by(Driver.full_name)
+    )).scalars().all())
+    vehicles = list((await session.execute(
+        select(Vehicle)
+        .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+        .order_by(Vehicle.license_plate)
+    )).scalars().all())
     return templates.TemplateResponse(
         "expenses.html",
         {
             "request": request, "owner": owner, "rows": rows,
             "filter_category": category or "",
             "filter_status": status or "",
+            "filter_driver_id": d_id,
+            "filter_vehicle_id": v_id,
+            "filter_date_from": date_from or "",
+            "filter_date_to": date_to or "",
+            "drivers": drivers,
+            "vehicles": vehicles,
             "categories": _EXPENSE_CATEGORIES,
             "active_page": "trips", "totals": totals,
             "breakdown": breakdown,

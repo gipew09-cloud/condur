@@ -7,16 +7,24 @@
 
 <div class="page-head">
   <h1>Финансы</h1>
-  <p class="sub">Доходы, расходы и прибыль за период. Денежный поток за 6 месяцев и прибыльность направлений.</p>
+  <p class="sub">Доходы, расходы и прибыль за выбранный период. График и прибыльность направлений строятся по датам «с… по…» — или жми быстрый период.</p>
 </div>
 
-<form method="GET" action="/finances">
+<form method="GET" action="/finances" id="fin-period-form">
   <div class="grid">
-    <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
-    <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
+    <label>С даты <input type="date" name="period_from" id="fin-from" value="{{ period_from }}"></label>
+    <label>По дату <input type="date" name="period_to" id="fin-to" value="{{ period_to }}"></label>
     <label>&nbsp;<button type="submit">Показать</button></label>
     <label>&nbsp;<a role="button" class="secondary outline" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Excel</a></label>
     <label>&nbsp;<a role="button" class="secondary outline" href="/acts?period_from={{ period_from }}&period_to={{ period_to }}">📄 Акт сверки</a></label>
+  </div>
+  <div style="display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; margin:-.25rem 0 .75rem;">
+    <span style="color:var(--text-muted); font-size:.85rem;">Быстрый период:</span>
+    <button type="button" class="secondary outline fin-preset" data-days="7" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">Неделя</button>
+    <button type="button" class="secondary outline fin-preset" data-days="30" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">Месяц</button>
+    <button type="button" class="secondary outline fin-preset" data-days="91" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">3 мес</button>
+    <button type="button" class="secondary outline fin-preset" data-days="182" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">6 мес</button>
+    <button type="button" class="secondary outline fin-preset" data-days="365" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">12 мес</button>
   </div>
 </form>
 
@@ -48,7 +56,8 @@
     <div class="sp-card">
       <div class="sp-panel__head">
         <div class="l">
-          <span class="ttl">Денежный поток · 6 месяцев</span>
+          <span class="ttl">Денежный поток</span>
+          <span class="meta">{{ period_from }} — {{ period_to }}</span>
           <span class="sp-leg"><span class="sq"></span>Доход</span>
           <span class="sp-leg"><span class="sq red"></span>Расход</span>
           <span class="sp-leg"><span class="line"></span>Прибыль</span>
@@ -136,6 +145,21 @@
       plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } } },
       scales: { x: { grid: { display: false } }, y: { ticks: { callback: fmtShort }, grid: { color: '#f1f3f6' } } },
     },
+  });
+
+  // Быстрые периоды: Неделя/Месяц/3/6/12 мес — ставим даты и перезагружаем
+  // страницу, чтобы KPI, график и направления пересчитались согласованно.
+  document.querySelectorAll('.fin-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const days = parseInt(btn.dataset.days, 10);
+      const to = new Date();
+      const from = new Date();
+      from.setDate(to.getDate() - (days - 1));
+      const iso = (d) => d.toISOString().slice(0, 10);
+      document.getElementById('fin-from').value = iso(from);
+      document.getElementById('fin-to').value = iso(to);
+      document.getElementById('fin-period-form').submit();
+    });
   });
 </script>
 {% endblock %}

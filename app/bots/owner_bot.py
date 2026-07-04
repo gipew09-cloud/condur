@@ -50,6 +50,7 @@ from app.bots.states import (
     SetOdometer,
     SetTripRevenue,
     TripCalc,
+    WipeAll,
 )
 from app.config import settings
 from app.models import (
@@ -59,6 +60,7 @@ from app.services import (
     auth_service,
     billing,
     expense_service,
+    maintenance_service,
     salary_service,
     telemetry_service,
     trip_service,
@@ -1711,6 +1713,52 @@ async def fallback_callback(call: CallbackQuery) -> None:
         "Эта кнопка устарела. Нажмите /start чтобы открыть меню заново.",
         show_alert=True,
     )
+
+
+# =========================================================================
+# /wipe — СКРЫТАЯ команда полного сброса тестовых данных (нет в /help).
+# Удаляет все рабочие данные владельца; аккаунт, реквизиты, админы и
+# устройства кабинета остаются. Требует точную фразу подтверждения.
+# =========================================================================
+@owner_router.message(Command("wipe"), StateFilter(any_state))
+async def cmd_wipe(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    await state.clear()
+    await state.set_state(WipeAll.waiting_for_confirm)
+    await message.answer(
+        "⚠️ <b>Полный сброс данных</b>\n\n"
+        "Будут БЕЗВОЗВРАТНО удалены: рейсы, смены, водители, машины, расходы, "
+        "документы, GPS-данные, справочник РЦ, заказчики, ручные записи и события.\n\n"
+        "Останутся: ваш аккаунт, реквизиты Исполнителя, админы и входы в кабинет.\n\n"
+        f"Чтобы подтвердить, отправьте точную фразу:\n<b>{maintenance_service.WIPE_CONFIRM_PHRASE}</b>\n\n"
+        "Отменить — /cancel или любой другой текст."
+    )
+
+
+@owner_router.message(WipeAll.waiting_for_confirm)
+async def wipe_confirm(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    if (message.text or "").strip() != maintenance_service.WIPE_CONFIRM_PHRASE:
+        await message.answer("Фраза не совпала — сброс отменён. Данные не тронуты.")
+        await _show_main_menu(message, owner)
+        return
+    counts = await maintenance_service.wipe_owner_data(session, owner.id)
+    await session.commit()
+    if counts:
+        lines = "\n".join(f"• {name}: {n}" for name, n in counts.items())
+        await message.answer(
+            f"🧹 Готово — тестовые данные стёрты:\n{lines}\n\n"
+            "Кабинет чистый, можно начинать новую стадию теста. /start"
+        )
+    else:
+        await message.answer("Удалять было нечего — кабинет уже пуст. /start")
 
 
 @owner_router.message()

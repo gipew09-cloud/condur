@@ -61,8 +61,38 @@
         <option value="rejected" {% if filter_status == 'rejected' %}selected{% endif %}>Отклонён</option>
       </select>
     </label>
+    <label>
+      Водитель
+      <select name="driver_id" onchange="this.form.submit()">
+        <option value="">— все —</option>
+        {% for d in drivers %}
+          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Машина
+      <select name="vehicle_id" onchange="this.form.submit()">
+        <option value="">— все —</option>
+        {% for v in vehicles %}
+          <option value="{{ v.id }}" {% if filter_vehicle_id == v.id %}selected{% endif %}>{{ v.license_plate }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <div class="grid">
+    <label>С даты <input type="date" name="date_from" value="{{ filter_date_from }}"></label>
+    <label>По дату <input type="date" name="date_to" value="{{ filter_date_to }}"></label>
+    <label>&nbsp;<button type="submit">Применить</button></label>
+    <label>&nbsp;<a role="button" class="secondary outline" href="/expenses">Сбросить</a></label>
   </div>
 </form>
+{% if filter_vehicle_id %}
+<p style="color:var(--text-muted); font-size:.82rem; margin-top:-.5rem;">
+  Фильтр по машине показывает расходы, привязанные к сменам этой машины;
+  расходы «вне смены» в него не попадают.
+</p>
+{% endif %}
 
 {% if not rows %}
   <p>Расходов по фильтру нет.</p>

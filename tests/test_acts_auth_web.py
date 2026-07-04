@@ -254,9 +254,51 @@ def test_render_acts_checklist():
 def test_render_requisites_with_admins():
     admins = [NS(id=1, name="Бухгалтер Анна", telegram_id=123456789, created_at=None)]
     html = _render("requisites.html", owner=OWNER, customers=[], admins=admins,
-                   active_page="requisites")
+                   sessions=[], is_owner_viewer=True, active_page="requisites")
     assert "Администраторы" in html and "Telegram ID 123456789" in html
     assert "/admins/add" in html
+    assert "Устройства" in html  # блок сессий есть даже когда список пуст
+
+
+def _session_row(id, who, current=False, can_revoke=True):
+    return {"id": id, "who": who, "device": "Chrome · Windows", "ip": "1.2.3.4",
+            "created": "04.07 10:00", "seen": "04.07 12:00",
+            "is_current": current, "can_revoke": can_revoke}
+
+
+def test_render_requisites_devices_owner_view():
+    html = _render("requisites.html", owner=OWNER, customers=[], admins=[],
+                   sessions=[_session_row(1, "Владелец", current=True),
+                             _session_row(2, "Бухгалтер Анна")],
+                   is_owner_viewer=True, active_page="requisites")
+    assert "это устройство" in html and "Выйти здесь" in html
+    assert "/sessions/2/revoke" in html and "Завершить" in html
+    assert "/sessions/revoke-others" in html  # владелец видит «выйти на всех»
+
+
+def test_render_requisites_devices_admin_view_no_mass_logout():
+    # Админ: чужие сессии без кнопки, массового выхода нет.
+    html = _render("requisites.html", owner=OWNER, customers=[], admins=[],
+                   sessions=[_session_row(1, "Владелец", can_revoke=False),
+                             _session_row(2, "Бухгалтер Анна", current=True)],
+                   is_owner_viewer=False, active_page="requisites")
+    assert "/sessions/revoke-others" not in html
+    assert "/sessions/1/revoke" not in html
+    assert "/sessions/2/revoke" in html
+
+
+def test_session_token_hash_and_device_label():
+    t1, t2 = AU.new_session_token(), AU.new_session_token()
+    assert t1 != t2 and len(t1) > 40
+    assert AU.session_token_hash(t1) != AU.session_token_hash(t2)
+    assert len(AU.session_token_hash(t1)) == 64  # sha256 hex
+    assert AU.session_token_hash(t1) == AU.session_token_hash(t1)  # детерминирован
+
+    ua_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36"
+    assert AU.device_label_from_user_agent(ua_mac) == "Chrome · macOS"
+    ua_iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605 Version/17.5 Safari/604.1"
+    assert AU.device_label_from_user_agent(ua_iphone) == "Safari · iPhone"
+    assert AU.device_label_from_user_agent(None) == "Браузер · ?"
 
 
 def test_render_expenses_donut():
@@ -266,8 +308,16 @@ def test_render_expenses_donut():
                    rows=[(exp, "Саломов", "Т557")],
                    totals={"count": 1, "sum": Decimal("5000"), "pending": 0, "approved": 1},
                    filter_category="", filter_status="", categories=("fuel",),
+                   drivers=[NS(id=1, full_name="Саломов")],
+                   vehicles=[NS(id=2, license_plate="Т557ОС178")],
+                   filter_driver_id=1, filter_vehicle_id=None,
+                   filter_date_from="2026-07-01", filter_date_to="2026-07-04",
                    breakdown=[{"label": "Топливо", "amount": 5000.0}])
     assert "Структура расходов по категориям" in html
+    # фильтры: водитель выбран, машина в списке, даты подставлены, кнопки на месте
+    assert 'name="driver_id"' in html and "selected>Саломов" in html
+    assert 'name="vehicle_id"' in html and "Т557ОС178" in html
+    assert 'value="2026-07-01"' in html and "Применить" in html and "Сбросить" in html
 
 
 def test_render_routes_with_distribution_centers():
@@ -437,3 +487,68 @@ def test_smart_since_label_today_yesterday_older():
     label = smart_since_label(older, "Europe/Moscow")
     assert label.startswith("с ") and older.strftime("%d.%m") in label
     assert smart_since_label(None, "Europe/Moscow") == "—"
+
+
+# ------------------------------------------------------------------ график: шаг периода
+def test_cashflow_buckets_days_weeks_months():
+    from app.services.timeutil import cashflow_buckets
+
+    # ≤45 дней — по дням
+    labels, keys, key_of = cashflow_buckets(date(2026, 7, 1), date(2026, 7, 7))
+    assert len(keys) == 7 and labels[0] == "01.07" and labels[-1] == "07.07"
+    assert key_of(date(2026, 7, 3)) == date(2026, 7, 3)
+
+    # 46–200 дней — по неделям, ключ = понедельник
+    labels, keys, key_of = cashflow_buckets(date(2026, 4, 1), date(2026, 7, 4))
+    assert all(l.startswith("нед. ") for l in labels)
+    assert all(k.weekday() == 0 for k in keys)
+    assert key_of(date(2026, 7, 2)) == date(2026, 6, 29)  # четверг → его понедельник
+
+    # >200 дней — по месяцам, подпись с полным годом («июл 2026», не «июл 26»)
+    labels, keys, key_of = cashflow_buckets(date(2025, 8, 1), date(2026, 7, 4))
+    assert labels[-1] == "июл 2026" and labels[0] == "авг 2025"
+    assert keys[-1] == (2026, 7)
+    assert key_of(date(2026, 7, 2)) == (2026, 7)
+
+    # границы переключения шага
+    assert cashflow_buckets(date(2026, 1, 1), date(2026, 2, 14))[2](date(2026, 1, 5)) == date(2026, 1, 5)   # 45 дн — дни
+    assert cashflow_buckets(date(2026, 1, 1), date(2026, 2, 15))[2](date(2026, 1, 7)) == date(2026, 1, 5)   # 46 дн — недели
+
+
+def test_render_finances_period_presets():
+    html = _render(
+        "finances.html", owner=OWNER, active_page="finances",
+        summary={"total_income": Decimal("93000"), "total_expense": Decimal("0"),
+                 "profit": Decimal("93000"), "fuel": Decimal("0")},
+        margin=100.0,
+        cashflow={"labels": ["01.07"], "revenue": [93000], "expenses": [0],
+                  "profit": [93000], "period": "custom"},
+        directions=[], entries=[], period_from="2026-07-01", period_to="2026-07-05",
+        today="2026-07-04")
+    assert "Денежный поток" in html and "2026-07-01 — 2026-07-05" in html
+    for days in ("7", "30", "91", "182", "365"):
+        assert f'data-days="{days}"' in html
+    assert "fin-preset" in html and "fin-period-form" in html
+
+
+# ------------------------------------------------------------------ скрытая команда /wipe
+def test_wipe_not_in_help_and_phrase_consistent():
+    import ast
+    from app.bots import messages as msg
+
+    assert "wipe" not in msg.OWNER_HELP.lower(), "/wipe не должен светиться в /help"
+
+    # фраза подтверждения объявлена в сервисе…
+    tree = ast.parse(open("app/services/maintenance_service.py", encoding="utf-8").read())
+    phrase = next(
+        ast.literal_eval(node.value) for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", "") == "WIPE_CONFIRM_PHRASE" for t in node.targets)
+    )
+    assert phrase == "УДАЛИТЬ ВСЁ"
+
+    # …и бот использует именно её (и не переопределяет свою)
+    bot_src = open("app/bots/owner_bot.py", encoding="utf-8").read()
+    assert 'Command("wipe")' in bot_src
+    assert "maintenance_service.WIPE_CONFIRM_PHRASE" in bot_src
+    assert "wipe_owner_data" in bot_src

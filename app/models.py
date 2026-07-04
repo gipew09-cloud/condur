@@ -91,6 +91,27 @@ class Admin(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ========== ВЕБ-СЕССИИ (устройства кабинета) ==========
+class WebSession(Base):
+    """
+    Постоянная сессия веб-кабинета — одно устройство, на котором вошли.
+    В cookie лежит случайный токен, здесь — только его SHA-256 (утечка БД
+    не даёт войти). Сессия живёт, пока её не завершат: сам пользователь
+    («Выйти»), либо владелец со страницы «Реквизиты → Устройства».
+    """
+    __tablename__ = "web_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger)  # кто вошёл: владелец или админ
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_label: Mapped[str | None] = mapped_column(String(120))  # «Chrome · Windows»
+    ip: Mapped[str | None] = mapped_column(String(45))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 # ========== ВОДИТЕЛИ ==========
 class Driver(Base):
     __tablename__ = "drivers"

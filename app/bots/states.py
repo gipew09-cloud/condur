@@ -117,6 +117,12 @@ class EndTripLocation(StatesGroup):
     waiting_for_location = State()
 
 
+class WipeAll(StatesGroup):
+    """Скрытая команда /wipe (нет в /help): полный сброс тестовых данных
+    владельца. Ждём точную фразу подтверждения."""
+    waiting_for_confirm = State()
+
+
 class EndShiftLocation(StatesGroup):
     """После завершения смены спрашиваем, где водитель её закончил.
 

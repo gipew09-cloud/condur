@@ -87,3 +87,55 @@ def decode_jwt(token: str) -> tuple[int, int | None] | None:
     except (jwt.PyJWTError, KeyError, ValueError) as exc:
         logger.debug("JWT decode failed: %s", exc)
         return None
+
+
+# =====================================================================
+# Постоянные сессии (таблица web_sessions): вход живёт, пока его не
+# завершат. В cookie — случайный токен, в БД — только SHA-256 от него.
+# =====================================================================
+SESSION_COOKIE = "session"
+SESSION_COOKIE_MAX_AGE = 10 * 365 * 24 * 3600  # «навсегда» (10 лет)
+
+
+def new_session_token() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def session_token_hash(token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def device_label_from_user_agent(user_agent: str | None) -> str:
+    """Короткая подпись устройства для списка «Устройства»: «Chrome · Windows»."""
+    ua = (user_agent or "").lower()
+    if "edg/" in ua or "edge" in ua:
+        browser = "Edge"
+    elif "opr/" in ua or "opera" in ua:
+        browser = "Opera"
+    elif "yabrowser" in ua:
+        browser = "Яндекс Браузер"
+    elif "firefox" in ua:
+        browser = "Firefox"
+    elif "chrome" in ua:
+        browser = "Chrome"
+    elif "safari" in ua:
+        browser = "Safari"
+    else:
+        browser = "Браузер"
+    if "iphone" in ua:
+        os_name = "iPhone"
+    elif "ipad" in ua:
+        os_name = "iPad"
+    elif "android" in ua:
+        os_name = "Android"
+    elif "mac os" in ua or "macintosh" in ua:
+        os_name = "macOS"
+    elif "windows" in ua:
+        os_name = "Windows"
+    elif "linux" in ua:
+        os_name = "Linux"
+    else:
+        os_name = "?"
+    return f"{browser} · {os_name}"

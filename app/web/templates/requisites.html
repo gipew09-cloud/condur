@@ -133,4 +133,46 @@
     </form>
   </details>
 </article>
+
+<article>
+  <header>
+    <strong>Устройства</strong>
+    <span style="color:var(--text-muted);">({{ sessions|length }})</span>
+  </header>
+  <p class="sub" style="margin-top:-.3rem;">
+    Где сейчас выполнен вход в кабинет. Вход не слетает сам — устройство работает,
+    пока его не завершить здесь или кнопкой «Выйти» на самом устройстве.
+  </p>
+
+  {% for s in sessions %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--border); flex-wrap:wrap;">
+    <div>
+      <b>{{ s.device }}</b>
+      {% if s.is_current %}<span class="pill pill--success">это устройство</span>{% endif %}
+      <div style="color:var(--text-muted); font-size:.85rem;">
+        {{ s.who }} · вход {{ s.created }} · был(а) {{ s.seen }} · IP {{ s.ip }}
+      </div>
+    </div>
+    {% if s.can_revoke %}
+    <form method="POST" action="/sessions/{{ s.id }}/revoke" style="margin:0;">
+      <button type="submit" class="secondary outline"
+              onclick="return confirm('Завершить вход на «{{ s.device }}»{{ ' (это устройство — вы выйдете сейчас)' if s.is_current else '' }}?')">
+        {{ 'Выйти здесь' if s.is_current else 'Завершить' }}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted);">Активных устройств нет (вход по старой 7-дневной сессии — после следующего входа устройства появятся здесь).</p>
+  {% endfor %}
+
+  {% if is_owner_viewer and sessions|length > 1 %}
+  <form method="POST" action="/sessions/revoke-others" style="margin-top:.75rem;">
+    <button type="submit" class="secondary outline"
+            onclick="return confirm('Завершить вход на всех устройствах, кроме этого?')">
+      Выйти на всех устройствах, кроме этого
+    </button>
+  </form>
+  {% endif %}
+</article>
 {% endblock %}
