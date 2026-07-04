@@ -37,6 +37,7 @@ from app.services.scheduler_jobs import (
     late_start_job,
     monthly_econometer_job,
     no_show_detector_job,
+    rc_geofence_job,
     silence_detector_job,
     telemetry_cleanup_job,
     vehicle_mixup_detector_job,
@@ -153,6 +154,11 @@ async def main() -> None:
     # GPS-детектор «поехала не та машина» / «движение без смены»: каждые 10 мин.
     scheduler.add_job(
         vehicle_mixup_detector_job, "cron", minute="*/10", args=[owner_bot],
+        max_instances=1, misfire_grace_time=120,
+    )
+    # Геозоны РЦ: приехал/уехал + время под выгрузкой. Каждые 5 минут.
+    scheduler.add_job(
+        rc_geofence_job, "cron", minute="*/5", args=[owner_bot],
         max_instances=1, misfire_grace_time=120,
     )
     # Чистка телеметрии: раз в сутки ночью — сырые пакеты >7 дней,

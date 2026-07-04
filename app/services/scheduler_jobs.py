@@ -21,8 +21,11 @@ from sqlalchemy import func, select
 from app.bots import messages as msg
 from app.bots.notifications import notify_owner
 from app.database import async_session
-from app.models import DailySummary, Driver, Event, Expense, Owner, Shift, Trip, Vehicle, VehicleState
-from app.services import telemetry_service
+from app.models import (
+    DailySummary, DistributionCenter, Driver, Event, Expense, Owner, Shift, Trip,
+    Vehicle, VehicleState,
+)
+from app.services import rc_service, telemetry_service
 from app.services.event_service import log_event
 from app.services.timeutil import fmt_dt, now_in_tz, owner_tz
 
@@ -839,6 +842,157 @@ async def _check_vehicle_mixup(session, owner_bot: Bot, owner: Owner) -> None:
             )
             recent_moving.add(mv_vid)
             sent_any = True
+    if sent_any:
+        await session.commit()
+
+
+# =========================================================================
+# Геозоны РЦ — каждые ~5 минут. У РЦ из справочника есть координаты
+# (кнопка «Определить координаты» на /routes). Машина оказалась ближе
+# RC_GEOFENCE_RADIUS_M к точке РЦ → событие «приехал» + уведомление;
+# удалилась дальше RC_GEOFENCE_EXIT_RADIUS_M → «уехал» с временем стоянки
+# под выгрузкой. Вход/выход разнесены (гистерезис), чтобы дрожание GPS
+# на границе зоны не рождало ложные события. Состояние «внутри/снаружи»
+# храним в events (rc_arrived / rc_departed) — переживает рестарты.
+# =========================================================================
+RC_GEOFENCE_RADIUS_M = 400
+RC_GEOFENCE_EXIT_RADIUS_M = 600
+RC_GPS_FRESH_MINUTES = 30
+RC_EVENTS_LOOKBACK_DAYS = 7
+
+
+async def rc_geofence_job(owner_bot: Bot) -> None:
+    async with async_session() as session:
+        owners_res = await session.execute(select(Owner))
+        for owner in owners_res.scalars().all():
+            try:
+                await _check_rc_geofences(session, owner_bot, owner)
+            except Exception:
+                logger.exception("rc_geofence_job failed for owner %s", owner.id)
+                await session.rollback()
+                continue
+
+
+async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
+    now = datetime.now(timezone.utc)
+
+    rcs = list(
+        (
+            await session.execute(
+                select(DistributionCenter).where(
+                    DistributionCenter.owner_id == owner.id,
+                    DistributionCenter.is_active.is_(True),
+                    DistributionCenter.latitude.is_not(None),
+                    DistributionCenter.longitude.is_not(None),
+                )
+            )
+        ).scalars().all()
+    )
+    if not rcs:
+        return
+
+    fresh_cutoff = now - timedelta(minutes=RC_GPS_FRESH_MINUTES)
+    states = [
+        (st, plate)
+        for st, plate in (
+            await session.execute(
+                select(VehicleState, Vehicle.license_plate)
+                .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
+                .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+            )
+        ).all()
+        if st.last_seen_at is not None
+        and st.last_seen_at >= fresh_cutoff
+        and st.is_valid is not False
+        and st.latitude is not None
+        and st.longitude is not None
+        # «нулевой остров» — трекер без спутников
+        and (abs(float(st.latitude)) > 0.001 or abs(float(st.longitude)) > 0.001)
+    ]
+    if not states:
+        return
+
+    # кто сейчас в смене на машине — для текста уведомления
+    shifts_res = await session.execute(
+        select(Shift.vehicle_id, Driver.full_name)
+        .join(Driver, Driver.id == Shift.driver_id)
+        .where(Shift.owner_id == owner.id, Shift.status == "started")
+    )
+    driver_by_vehicle = {vid: name for vid, name in shifts_res.all()}
+
+    # последнее состояние «внутри/снаружи» по каждой паре (машина, РЦ)
+    events_res = await session.execute(
+        select(Event.event_type, Event.payload, Event.created_at)
+        .where(
+            Event.owner_id == owner.id,
+            Event.event_type.in_(("rc_arrived", "rc_departed")),
+            Event.created_at >= now - timedelta(days=RC_EVENTS_LOOKBACK_DAYS),
+        )
+        .order_by(Event.created_at)
+    )
+    pair_state: dict[tuple[int, int], tuple[str, datetime]] = {}
+    for event_type, payload, created_at in events_res.all():
+        payload = payload or {}
+        vid, rcid = payload.get("vehicle_id"), payload.get("rc_id")
+        if vid is not None and rcid is not None:
+            pair_state[(vid, rcid)] = (event_type, created_at)
+
+    sent_any = False
+    for st, plate in states:
+        driver_name = driver_by_vehicle.get(st.vehicle_id)
+        who = f" ({driver_name})" if driver_name else ""
+        distances = {
+            rc.id: rc_service.haversine_m(
+                st.latitude, st.longitude, rc.latitude, rc.longitude
+            )
+            for rc in rcs
+        }
+
+        # 1) Выезды: по всем РЦ, где машина числится «внутри».
+        still_inside = False
+        for rc in rcs:
+            last = pair_state.get((st.vehicle_id, rc.id))
+            if last is None or last[0] != "rc_arrived":
+                continue
+            if distances[rc.id] >= RC_GEOFENCE_EXIT_RADIUS_M:
+                waited = telemetry_service.duration_label(last[1], now)
+                await notify_owner(
+                    owner_bot, session, owner,
+                    f"🏁 <b>{plate}</b>{who} уехал с РЦ <b>{rc.name}</b>. "
+                    f"Был там: <b>{waited}</b>.",
+                )
+                await log_event(
+                    session, owner_id=owner.id, event_type="rc_departed",
+                    payload={
+                        "vehicle_id": st.vehicle_id,
+                        "rc_id": rc.id,
+                        "waited_minutes": int((now - last[1]).total_seconds() // 60),
+                    },
+                )
+                pair_state[(st.vehicle_id, rc.id)] = ("rc_departed", now)
+                sent_any = True
+            else:
+                still_inside = True
+
+        # 2) Въезд. РЦ часто стоят кучно (промзоны): фиксируем только
+        # БЛИЖАЙШИЙ РЦ в радиусе, и пока машина «внутри» одного РЦ —
+        # на соседние не реагируем (нельзя быть на двух складах сразу).
+        if still_inside:
+            continue
+        candidates = [rc for rc in rcs if distances[rc.id] <= RC_GEOFENCE_RADIUS_M]
+        if not candidates:
+            continue
+        nearest = min(candidates, key=lambda rc: distances[rc.id])
+        await notify_owner(
+            owner_bot, session, owner,
+            f"🏬 <b>{plate}</b>{who} приехал на РЦ <b>{nearest.name}</b>.",
+        )
+        await log_event(
+            session, owner_id=owner.id, event_type="rc_arrived",
+            payload={"vehicle_id": st.vehicle_id, "rc_id": nearest.id},
+        )
+        pair_state[(st.vehicle_id, nearest.id)] = ("rc_arrived", now)
+        sent_any = True
     if sent_any:
         await session.commit()
 

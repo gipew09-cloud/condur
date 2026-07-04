@@ -59,6 +59,21 @@ def decimal_or_none(value: str | int | float | Decimal | None) -> Decimal | None
         raise ValueError("Координаты должны быть числами") from exc
 
 
+def haversine_m(
+    lat1: Decimal | float, lon1: Decimal | float,
+    lat2: Decimal | float, lon2: Decimal | float,
+) -> float:
+    """Расстояние между двумя точками по прямой, в метрах (формула гаверсинуса).
+    Для геозон РЦ точности сферической Земли более чем достаточно."""
+    from math import asin, cos, radians, sin, sqrt
+
+    lat1, lon1, lat2, lon2 = (radians(float(x)) for x in (lat1, lon1, lat2, lon2))
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 2 * 6_371_000 * asin(sqrt(a))
+
+
 def _header_token(value) -> str:
     return route_key(str(value or ""))
 

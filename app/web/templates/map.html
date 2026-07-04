@@ -99,6 +99,22 @@ ymaps.ready(function () {
   const vehicleMarkers = {};
   const driverMarkers = {};
   let didFitBounds = false;
+  let rcsAdded = false;
+
+  // РЦ — статичные точки, добавляем один раз (данные не меняются в течение дня).
+  function addRcs(rcs) {
+    if (rcsAdded || !rcs || !rcs.length) return;
+    rcsAdded = true;
+    for (const rc of rcs) {
+      const pm = new ymaps.Placemark([rc.lat, rc.lon], {
+        hintContent: 'РЦ ' + rc.name,
+        balloonContentBody: `<div class="map-balloon"><h4>🏬 РЦ ${rc.name}</h4>` +
+          `<div class="meta">${rc.address || ''}</div>` +
+          `<div class="meta">Геозона: приезд/отъезд машин фиксируются автоматически</div></div>`,
+      }, { preset: 'islands#blueCircleDotIcon', balloonPanelMaxMapArea: 0 });
+      map.geoObjects.add(pm);
+    }
+  }
 
   function vehicleStatus(v) {
     if (v.motion_status === 'moving') return { text: `🟢 ${v.motion_status_text}`, cls: 'moving' };
@@ -171,6 +187,7 @@ ymaps.ready(function () {
       const r = await fetch('/api/drivers-locations');
       if (!r.ok) return;
       const data = await r.json();
+      addRcs(data.rcs);
       const points = [];
 
       for (const v of (data.vehicles || [])) {

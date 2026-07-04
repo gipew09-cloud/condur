@@ -50,7 +50,7 @@ from app.models import (
     WebSession,
 )
 from app.config import settings
-from app.services import act_service, auth_service, billing, rc_service, telemetry_service
+from app.services import act_service, auth_service, billing, geocode_service, rc_service, telemetry_service
 from app.services.event_service import log_event
 from app.services.timeutil import (
     RU_MONTHS_SHORT,
@@ -2537,6 +2537,7 @@ async def routes_page(
             "rows": rows,
             "centers": centers,
             "rc_imported": rc_imported,
+            "yandex_maps_api_key": settings.yandex_maps_api_key,
             "active_page": "routes",
         },
     )
@@ -2609,6 +2610,44 @@ async def routes_rc_import(
         imported += 1
     await session.commit()
     return RedirectResponse(f"/routes?rc_imported={imported}", status_code=303)
+
+
+@app.post("/routes/rc/geocode")
+async def routes_rc_geocode(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Определить координаты РЦ по адресам через бесплатный Nominatim (OSM).
+
+    Берём только РЦ без координат. За один клик — до 20 адресов (между
+    запросами пауза ~1 с, политика сервиса), при большом списке владелец
+    жмёт кнопку ещё раз — остаток показываем в уведомлении.
+    """
+    centers_res = await session.execute(
+        select(DistributionCenter)
+        .where(
+            DistributionCenter.owner_id == owner.id,
+            DistributionCenter.is_active.is_(True),
+            (DistributionCenter.latitude.is_(None))
+            | (DistributionCenter.longitude.is_(None)),
+        )
+        .order_by(DistributionCenter.name)
+    )
+    pending = [c for c in centers_res.scalars().all() if (c.address or "").strip()]
+    batch = pending[:20]
+    left = len(pending) - len(batch)
+    found = failed = 0
+    results = await geocode_service.geocode_many([c.address for c in batch])
+    for center, coords in zip(batch, results):
+        if coords is None:
+            failed += 1
+            continue
+        center.latitude, center.longitude = coords
+        found += 1
+    await session.commit()
+    return RedirectResponse(
+        f"/routes?geo_ok={found}&geo_fail={failed}&geo_left={left}", status_code=303
+    )
 
 
 @app.post("/routes/rc/{center_id}")
@@ -2780,9 +2819,29 @@ async def api_drivers_locations(
         # «нулевой остров» (потеря GPS у трекера) на карту не выносим
         if abs(float(st.latitude)) > 0.001 or abs(float(st.longitude)) > 0.001
     ]
+    # РЦ с координатами — статичные синие точки (границы геозон)
+    rcs_res = await session.execute(
+        select(DistributionCenter).where(
+            DistributionCenter.owner_id == owner.id,
+            DistributionCenter.is_active.is_(True),
+            DistributionCenter.latitude.is_not(None),
+            DistributionCenter.longitude.is_not(None),
+        )
+    )
+    rcs = [
+        {
+            "id": rc.id,
+            "name": rc.name,
+            "address": rc.address,
+            "lat": float(rc.latitude),
+            "lon": float(rc.longitude),
+        }
+        for rc in rcs_res.scalars().all()
+    ]
     return {
         "drivers": await _driver_positions(session, owner.id),
         "vehicles": vehicles,
+        "rcs": rcs,
     }
 
 
