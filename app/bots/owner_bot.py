@@ -16,13 +16,16 @@
 import logging
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +58,7 @@ from app.bots.states import (
 from app.config import settings
 from app.models import (
     Admin, Driver, Expense, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
+    VehicleState,
 )
 from app.services import (
     auth_service,
@@ -63,6 +67,7 @@ from app.services import (
     maintenance_service,
     salary_service,
     telemetry_service,
+    timeutil,
     trip_service,
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
@@ -75,7 +80,18 @@ PHONE_RE = re.compile(r"^\+7\d{10}$")
 
 
 async def _get_owner(session: AsyncSession, telegram_id: int) -> Owner | None:
+    """Владелец по telegram_id. Если это админ кабинета (второй телефон
+    владельца) — возвращаем владельца, чей кабинет он администрирует:
+    у админа в боте те же меню и кнопки, что у владельца."""
     result = await session.execute(select(Owner).where(Owner.telegram_id == telegram_id))
+    owner = result.scalar_one_or_none()
+    if owner is not None:
+        return owner
+    result = await session.execute(
+        select(Owner)
+        .join(Admin, Admin.owner_id == Owner.id)
+        .where(Admin.telegram_id == telegram_id)
+    )
     return result.scalar_one_or_none()
 
 
@@ -98,19 +114,8 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) 
         await _show_main_menu(message, owner)
         return
 
-    # Админ чьего-то кабинета? Не регистрируем как нового владельца —
-    # направляем на вход через /login.
-    admin = (
-        await session.execute(
-            select(Admin).where(Admin.telegram_id == message.from_user.id)
-        )
-    ).scalar_one_or_none()
-    if admin is not None:
-        await message.answer(
-            "Вы добавлены администратором кабинета. Для входа отправьте /login "
-            "и введите код на странице входа."
-        )
-        return
+    # Админы сюда не попадают: _get_owner уже вернул для них владельца
+    # кабинета, и они увидели главное меню выше.
 
     # новый владелец → 5-шаговый онбординг
     await state.set_state(Onboarding.company)
@@ -362,10 +367,9 @@ async def _onboarding_complete(
         f"Машина: <b>{vehicle.license_plate}</b> ({vehicle.brand})\n"
         f"Водитель: <b>{driver.full_name}</b>\n"
         f"{route_line}"
-        f"Тариф: <b>FREE</b> (до 2 машин)\n\n"
-        "Отправьте водителю ссылку для подключения:\n"
+        "\nОтправьте водителю ссылку для подключения:\n"
         f"<code>{link}</code>\n\n"
-        "Дальше: /tariffs · /calc · /login (вход в веб-кабинет)"
+        "Дальше: /calc · /login (вход в веб-кабинет)"
     )
     await _show_main_menu(reply_target, owner)
 
@@ -684,6 +688,151 @@ async def cb_vehicles(call: CallbackQuery, session: AsyncSession) -> None:
 
 
 # =========================================================================
+# Машины — карточка (read-only, редактирование на сайте)
+# =========================================================================
+VEHICLE_TYPE_LABELS = {
+    "truck": "Грузовик",
+    "gazelle": "Газель / фургон",
+    "refrigerator": "Рефрижератор",
+}
+
+# Свежесть GPS: сигнал старше 30 минут считаем потерей связи (как на сайте).
+GPS_STALE_MINUTES = 30
+
+
+def _doc_expiry_line(label: str, exp, today) -> str:
+    """Строка «ОСАГО: до 01.08.2026» с пометкой, если истёк или скоро истечёт."""
+    if exp is None:
+        return f"{label}: не указано"
+    line = f"{label}: до {exp:%d.%m.%Y}"
+    if exp < today:
+        line += f" ⛔ истёк {(today - exp).days} дн назад"
+    elif (exp - today).days <= 30:
+        line += f" ⚠️ осталось {(exp - today).days} дн"
+    return line
+
+
+@owner_router.callback_query(F.data.startswith("vehicle:view:"))
+async def cb_vehicle_view(call: CallbackQuery, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    try:
+        vehicle_id = int(call.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await call.answer()
+        return
+    vehicle = (
+        await session.execute(
+            select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.owner_id == owner.id)
+        )
+    ).scalar_one_or_none()
+    if vehicle is None:
+        await call.answer("Машина не найдена", show_alert=True)
+        return
+
+    lines = [f"🚚 <b>{vehicle.license_plate}</b>"]
+    props = []
+    if vehicle.brand:
+        props.append(vehicle.brand)
+    if vehicle.type:
+        props.append(VEHICLE_TYPE_LABELS.get(vehicle.type, vehicle.type))
+    if props:
+        lines.append(" · ".join(props))
+    if vehicle.fuel_norm_per_100km:
+        lines.append(f"Норма расхода: {vehicle.fuel_norm_per_100km} л/100км")
+    lines.append(
+        f"GPS-трекер: Stavtrack ID {vehicle.stavtrack_object_id}"
+        if vehicle.stavtrack_object_id
+        else "GPS-трекер: не привязан (указать можно на сайте, в карточке машины)"
+    )
+
+    # --- документы ---
+    today = timeutil.now_in_tz(owner.timezone).date()
+    lines.append("")
+    lines.append("📄 <b>Документы</b>")
+    lines.append(_doc_expiry_line("ОСАГО", vehicle.osago_expires, today))
+    lines.append(_doc_expiry_line("Техосмотр", vehicle.inspection_expires, today))
+    lines.append(_doc_expiry_line("Тахограф", vehicle.tacho_expires, today))
+
+    # --- GPS сейчас ---
+    state = (
+        await session.execute(
+            select(VehicleState).where(VehicleState.vehicle_id == vehicle.id)
+        )
+    ).scalar_one_or_none()
+    lines.append("")
+    lines.append("📡 <b>GPS сейчас</b>")
+    if state is None or state.last_seen_at is None:
+        lines.append("Данных от трекера ещё не было.")
+    else:
+        now_utc = datetime.now(timezone.utc)
+        stale_cutoff = now_utc - timedelta(minutes=GPS_STALE_MINUTES)
+        last_seen = state.last_seen_at
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if last_seen < stale_cutoff:
+            lines.append(
+                "⚠️ Нет свежего сигнала — последний был "
+                f"{timeutil.fmt_dt(state.last_seen_at, owner.timezone, '%d.%m, %H:%M')} "
+                f"({telemetry_service.duration_label(state.last_seen_at, now_utc)} назад)."
+            )
+        else:
+            status_text = telemetry_service.motion_status_text(
+                state.motion_status, state.speed_kmh
+            )
+            since = timeutil.smart_since_label(state.motion_since_at, owner.timezone)
+            lines.append(f"{status_text} · {since}")
+
+        # пробег за сегодня по счётчику трекера
+        local_now = timeutil.now_in_tz(owner.timezone)
+        day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        gps_km = await telemetry_service.gps_mileage_for_period(
+            session,
+            vehicle_id=vehicle.id,
+            start=day_start.astimezone(timezone.utc),
+            end=now_utc,
+        )
+        if gps_km is not None:
+            lines.append(f"Пробег за сегодня: {gps_km:.0f} км")
+
+    # --- кто в смене ---
+    shift_row = (
+        await session.execute(
+            select(Shift, Driver.full_name)
+            .join(Driver, Driver.id == Shift.driver_id)
+            .where(Shift.vehicle_id == vehicle.id, Shift.status == "started")
+            .order_by(Shift.started_at.desc())
+            .limit(1)
+        )
+    ).first()
+    lines.append("")
+    if shift_row is not None:
+        shift, driver_name = shift_row
+        started = timeutil.fmt_dt(shift.started_at, owner.timezone, "%d.%m, %H:%M")
+        lines.append(f"👤 В смене: <b>{driver_name}</b> (с {started})")
+    else:
+        lines.append("⚪️ Сейчас не в смене.")
+
+    lines.append("")
+    lines.append("<i>Изменить данные машины можно на сайте, раздел «Машины».</i>")
+
+    kb_builder = InlineKeyboardBuilder()
+    kb_builder.button(text="🔄 Обновить", callback_data=f"vehicle:view:{vehicle.id}")
+    kb_builder.button(text="« К списку машин", callback_data="owner:vehicles")
+    kb_builder.button(text="« Главное меню", callback_data="owner:menu")
+    kb_builder.adjust(1)
+    try:
+        await call.message.edit_text("\n".join(lines), reply_markup=kb_builder.as_markup())
+    except TelegramBadRequest:
+        # «Обновить» без изменений данных — Telegram не даёт править текст
+        # на идентичный; просто подтверждаем нажатие.
+        pass
+    await call.answer()
+
+
+# =========================================================================
 # Машины — добавление
 # =========================================================================
 @owner_router.callback_query(F.data == "vehicle:add")
@@ -694,6 +843,7 @@ async def cb_add_vehicle(call: CallbackQuery, state: FSMContext, session: AsyncS
         return
     can_add, count, limit = await billing.can_add_vehicle(session, owner.id)
     if not can_add:
+        # достижимо только при включённом биллинге (заморожен — лимита нет)
         await call.message.edit_text(
             f"⛔ На вашем тарифе максимум {limit} машин ({count}/{limit} занято).\n"
             f"Расширить: /tariffs",
@@ -1650,11 +1800,6 @@ async def cb_driver_view(call: CallbackQuery) -> None:
     await call.answer("Профиль водителя появится на Этапе 2", show_alert=True)
 
 
-@owner_router.callback_query(F.data.startswith("vehicle:view:"))
-async def cb_vehicle_view(call: CallbackQuery) -> None:
-    await call.answer("Профиль машины появится на Этапе 2", show_alert=True)
-
-
 @owner_router.message(Command("help"), StateFilter(any_state))
 async def cmd_help(message: Message) -> None:
     await message.answer(msg.OWNER_HELP)
@@ -1662,9 +1807,14 @@ async def cmd_help(message: Message) -> None:
 
 @owner_router.message(Command("tariffs"), StateFilter(any_state))
 async def cmd_tariffs(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    """Показать тарифы. Кнопка «Написать для подключения» открывает чат с автором."""
+    """Показать тарифы. Пока биллинг заморожен (BILLING_ENABLED=off) —
+    тарифы не показываем вовсе, лимитов нет."""
     await state.clear()
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    if not settings.billing_enabled:
+        await message.answer(
+            "Тарифы пока не подключены — все функции доступны без ограничений."
+        )
+        return
     builder = InlineKeyboardBuilder()
     # URL чата владельца проекта — пока хардкод, поменять на свой
     builder.button(text="✉️ Написать для подключения", url="https://t.me/")

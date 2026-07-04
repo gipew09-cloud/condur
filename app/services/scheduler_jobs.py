@@ -704,6 +704,146 @@ async def no_show_detector_job(owner_bot: Bot) -> None:
 
 
 # =========================================================================
+# GPS-детектор «поехала не та машина» — каждые ~10 минут.
+# Ситуация-миссклик: водитель открыл смену на машине X, но сел в машину Y.
+# Признак: машина смены стоит > N минут, а другая машина БЕЗ смены едет.
+# Заодно общий алерт «движение без смены» (машина едет, смены нет вообще).
+# Дедуп через Event: не чаще раза в MIXUP_DEDUP_HOURS на пару машин.
+# =========================================================================
+MIXUP_SHIFT_STOPPED_MINUTES = 15
+MIXUP_DEDUP_HOURS = 2
+MIXUP_GPS_STALE_MINUTES = 30
+
+
+async def vehicle_mixup_detector_job(owner_bot: Bot) -> None:
+    async with async_session() as session:
+        owners_res = await session.execute(select(Owner))
+        for owner in owners_res.scalars().all():
+            try:
+                await _check_vehicle_mixup(session, owner_bot, owner)
+            except Exception:
+                logger.exception("vehicle_mixup_detector_job failed for owner %s", owner.id)
+                await session.rollback()
+                continue
+
+
+async def _check_vehicle_mixup(session, owner_bot: Bot, owner: Owner) -> None:
+    now = datetime.now(timezone.utc)
+    stale_cutoff = now - timedelta(minutes=MIXUP_GPS_STALE_MINUTES)
+    stopped_cutoff = now - timedelta(minutes=MIXUP_SHIFT_STOPPED_MINUTES)
+    dedup_since = now - timedelta(hours=MIXUP_DEDUP_HOURS)
+
+    # активные смены: vehicle_id → (shift_id, имя водителя, номер машины)
+    shifts_res = await session.execute(
+        select(Shift.id, Shift.vehicle_id, Driver.full_name, Vehicle.license_plate)
+        .join(Driver, Driver.id == Shift.driver_id)
+        .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+        .where(Shift.owner_id == owner.id, Shift.status == "started")
+    )
+    shift_by_vehicle = {
+        vehicle_id: (shift_id, driver_name, plate)
+        for shift_id, vehicle_id, driver_name, plate in shifts_res.all()
+    }
+
+    # свежие GPS-состояния всех машин владельца
+    states_res = await session.execute(
+        select(VehicleState, Vehicle.license_plate)
+        .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
+        .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+    )
+    stopped_in_shift: list[tuple] = []   # (vehicle_id, shift_id, driver, plate, since)
+    moving_no_shift: list[tuple] = []    # (vehicle_id, plate, speed, since)
+    for st, plate in states_res.all():
+        if st.last_seen_at is None or st.last_seen_at < stale_cutoff:
+            continue  # данные старые — по ним выводов не делаем
+        if st.is_valid is False:
+            continue
+        status = st.motion_status or telemetry_service.vehicle_motion_status(
+            st.speed_kmh, st.ignition
+        )
+        if st.vehicle_id in shift_by_vehicle:
+            shift_id, driver_name, shift_plate = shift_by_vehicle[st.vehicle_id]
+            long_stop = (
+                status == telemetry_service.MOTION_STOPPED
+                and st.motion_since_at is not None
+                and st.motion_since_at <= stopped_cutoff
+            )
+            if long_stop:
+                stopped_in_shift.append(
+                    (st.vehicle_id, shift_id, driver_name, shift_plate, st.motion_since_at)
+                )
+        elif status == telemetry_service.MOTION_MOVING:
+            moving_no_shift.append(
+                (st.vehicle_id, plate, Decimal(st.speed_kmh or 0), st.motion_since_at)
+            )
+
+    if not moving_no_shift:
+        return
+
+    # что уже алёртили за последние MIXUP_DEDUP_HOURS
+    recent_res = await session.execute(
+        select(Event.event_type, Event.payload).where(
+            Event.owner_id == owner.id,
+            Event.event_type.in_(("vehicle_mixup_alert", "moving_without_shift_alert")),
+            Event.created_at >= dedup_since,
+        )
+    )
+    recent_pairs: set[tuple[int, int]] = set()
+    recent_moving: set[int] = set()
+    for event_type, payload in recent_res.all():
+        payload = payload or {}
+        if event_type == "vehicle_mixup_alert":
+            recent_pairs.add(
+                (payload.get("shift_vehicle_id"), payload.get("moving_vehicle_id"))
+            )
+        else:
+            recent_moving.add(payload.get("vehicle_id"))
+
+    sent_any = False
+    if stopped_in_shift:
+        # пара «стоит в смене» × «едет без смены» → похоже на перепутанную машину
+        for sh_vid, shift_id, driver_name, shift_plate, stop_since in stopped_in_shift:
+            for mv_vid, mv_plate, speed, _mv_since in moving_no_shift:
+                if (sh_vid, mv_vid) in recent_pairs:
+                    continue
+                await notify_owner(
+                    owner_bot, session, owner,
+                    "⚠️ <b>Возможно, перепутана машина.</b>\n"
+                    f"<b>{driver_name}</b> в смене на <b>{shift_plate}</b>, но она стоит "
+                    f"уже {telemetry_service.duration_label(stop_since, now)}, "
+                    f"а <b>{mv_plate}</b> без смены едет ({speed:.0f} км/ч).\n"
+                    "Если водитель сел не в ту машину — поменять машину у смены "
+                    "можно на сайте, в карточке смены.",
+                )
+                await log_event(
+                    session, owner_id=owner.id, shift_id=shift_id,
+                    event_type="vehicle_mixup_alert",
+                    payload={"shift_vehicle_id": sh_vid, "moving_vehicle_id": mv_vid},
+                )
+                recent_pairs.add((sh_vid, mv_vid))
+                sent_any = True
+    else:
+        # никто в смене не «застрял» — тогда это просто движение без смены
+        for mv_vid, mv_plate, speed, mv_since in moving_no_shift:
+            if mv_vid in recent_moving:
+                continue
+            await notify_owner(
+                owner_bot, session, owner,
+                f"🚨 <b>{mv_plate}</b> едет без открытой смены "
+                f"({speed:.0f} км/ч, движется {telemetry_service.duration_label(mv_since, now)}).",
+            )
+            await log_event(
+                session, owner_id=owner.id,
+                event_type="moving_without_shift_alert",
+                payload={"vehicle_id": mv_vid},
+            )
+            recent_moving.add(mv_vid)
+            sent_any = True
+    if sent_any:
+        await session.commit()
+
+
+# =========================================================================
 # Чистка телеметрии — раз в сутки. Сырые EGTS-пакеты нужны только для
 # отладки/калибровки датчиков, держим 7 дней; разобранные GPS-точки — 60
 # дней (для сверки пробега за смену хватает с запасом). Иначе таблицы

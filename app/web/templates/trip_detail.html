@@ -24,6 +24,36 @@
   <div class="kpi"><small>Груз</small><strong>{{ trip.cargo_name or '—' }}</strong></div>
 </section>
 
+{% if request is defined and request.query_params.get('saved') %}
+<p style="color:var(--pico-ins-color, green);">✅ Сохранено: водитель/машина рейса изменены.</p>
+{% endif %}
+
+<details class="add-panel" style="margin-top:1rem;">
+  <summary class="add-toggle">✏️ Исправить водителя / машину (миссклик)</summary>
+  <form action="/trips/{{ trip.id }}/reassign" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Водитель
+        <select name="driver_id">
+          {% for d in all_drivers | default([]) %}
+          <option value="{{ d.id }}" {% if d.id == trip.driver_id %}selected{% endif %}>{{ d.full_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Машина
+        <select name="vehicle_id">
+          {% for v in all_vehicles | default([]) %}
+          <option value="{{ v.id }}" {% if v.id == trip.vehicle_id %}selected{% endif %}>{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <button type="submit">Сохранить</button>
+  </form>
+  <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+    Меняется только этот рейс. Если ошибка во всей смене — исправьте на странице смены, там обновятся все её рейсы.
+  </p>
+</details>
+
 <h3 style="margin-top:1.5rem;">Финансы</h3>
 <section class="kpi-grid">
   <div class="kpi">

@@ -21,6 +21,40 @@
   <div class="kpi"><small>Статус</small><strong><span class="pill {{ shift.status | pillclass }}">{% if shift.status == 'started' %}в смене{% elif shift.status == 'completed' %}завершена{% elif shift.status == 'cancelled' %}отменена{% else %}{{ shift.status }}{% endif %}</span></strong></div>
 </section>
 
+{% if request is defined and request.query_params.get('saved') %}
+<p style="color:var(--pico-ins-color, green);">✅ Сохранено: водитель/машина смены изменены, рейсы смены обновлены.</p>
+{% elif request is defined and request.query_params.get('err') == 'driver_busy' %}
+<p style="color:var(--pico-del-color, red);">⛔ Этот водитель сейчас в другой активной смене — сначала завершите её.</p>
+{% elif request is defined and request.query_params.get('err') == 'vehicle_busy' %}
+<p style="color:var(--pico-del-color, red);">⛔ Эта машина сейчас в другой активной смене — сначала завершите её.</p>
+{% endif %}
+
+<details class="add-panel" style="margin-top:1rem;">
+  <summary class="add-toggle">✏️ Исправить водителя / машину (миссклик)</summary>
+  <form action="/shifts/{{ shift.id }}/reassign" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Водитель
+        <select name="driver_id">
+          {% for d in all_drivers | default([]) %}
+          <option value="{{ d.id }}" {% if d.id == shift.driver_id %}selected{% endif %}>{{ d.full_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Машина
+        <select name="vehicle_id">
+          {% for v in all_vehicles | default([]) %}
+          <option value="{{ v.id }}" {% if v.id == shift.vehicle_id %}selected{% endif %}>{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <button type="submit">Сохранить</button>
+  </form>
+  <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+    Рейсы этой смены тоже переедут на нового водителя/машину. Зарплата пересчитается автоматически.
+  </p>
+</details>
+
 <h3 style="margin-top:1.5rem;">📸 Фото одометров</h3>
 <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
   {% if shift.odometer_start_photo_url %}

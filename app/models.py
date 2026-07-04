@@ -88,6 +88,8 @@ class Admin(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(255))
+    # Дублировать ли этому админу уведомления бота владельца (второй телефон).
+    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -132,6 +134,12 @@ class Driver(Base):
     salary_type: Mapped[str] = mapped_column(String(20), default="per_km")
     salary_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     per_diem_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
+
+    # «Обычная машина» водителя: при старте смены на другой машине бот
+    # переспрашивает (анти-миссклик), владельцу уходит уведомление.
+    default_vehicle_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vehicles.id", ondelete="SET NULL")
+    )
 
     # ожидаемое время начала смены, формат "HH:MM" в TZ владельца.
     # Используется APScheduler-ом, чтобы алёртить если водитель не начал.

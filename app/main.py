@@ -39,6 +39,7 @@ from app.services.scheduler_jobs import (
     no_show_detector_job,
     silence_detector_job,
     telemetry_cleanup_job,
+    vehicle_mixup_detector_job,
     weekly_review_job,
 )
 from app.web.router import app as web_app
@@ -148,6 +149,11 @@ async def main() -> None:
     scheduler.add_job(
         no_show_detector_job, "cron", minute="5", args=[owner_bot],
         max_instances=1,
+    )
+    # GPS-детектор «поехала не та машина» / «движение без смены»: каждые 10 мин.
+    scheduler.add_job(
+        vehicle_mixup_detector_job, "cron", minute="*/10", args=[owner_bot],
+        max_instances=1, misfire_grace_time=120,
     )
     # Чистка телеметрии: раз в сутки ночью — сырые пакеты >7 дней,
     # GPS-точки >60 дней, чтобы база не росла бесконечно.

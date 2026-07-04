@@ -51,6 +51,7 @@ from app.models import (
 )
 from app.config import settings
 from app.services import act_service, auth_service, billing, rc_service, telemetry_service
+from app.services.event_service import log_event
 from app.services.timeutil import (
     RU_MONTHS_SHORT,
     add_months,
@@ -985,6 +986,15 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
     )
     drivers = list(drivers_res.scalars().all())
 
+    # гос.номера машин владельца — для подписи «обычная машина» в карточке
+    plates: dict[int, str] = dict(
+        (
+            await session.execute(
+                select(Vehicle.id, Vehicle.license_plate).where(Vehicle.owner_id == owner_id)
+            )
+        ).all()
+    )
+
     rows = []
     for d in drivers:
         # Простой/невыход (Блок F): активна ли смена и с какого времени тишина.
@@ -1032,6 +1042,7 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
             "fuel_cost": Decimal(fuel_cost or 0),
             "active_shift": active_shift,
             "idle_label": idle_label,
+            "default_vehicle_plate": plates.get(d.default_vehicle_id),
         })
     return rows
 
@@ -1096,6 +1107,7 @@ async def update_driver(
     phone: Annotated[str, Form()] = "",
     per_diem_rub: Annotated[str, Form()] = "0",
     shift_start_time: Annotated[str, Form()] = "",
+    default_vehicle_id: Annotated[str, Form()] = "",
 ):
     driver = await session.get(Driver, driver_id)
     if driver is None or driver.owner_id != owner.id:
@@ -1115,6 +1127,20 @@ async def update_driver(
     sst = shift_start_time.strip()
     if sst and not _SHIFT_TIME_RE_WEB.match(sst):
         raise HTTPException(status_code=400, detail="Bad shift_start_time")
+
+    # «обычная машина» (анти-миссклик): пустое значение = не закреплена
+    dv_raw = default_vehicle_id.strip()
+    if not dv_raw:
+        driver.default_vehicle_id = None
+    else:
+        try:
+            dv_id = int(dv_raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Bad default_vehicle_id")
+        dv = await session.get(Vehicle, dv_id)
+        if dv is None or dv.owner_id != owner.id:
+            raise HTTPException(status_code=400, detail="Bad default_vehicle_id")
+        driver.default_vehicle_id = dv_id
 
     driver.full_name = full_name.strip()
     driver.phone = phone.strip() or None
@@ -1176,8 +1202,18 @@ async def driver_edit_form(
         raise HTTPException(status_code=404)
     rows = await _drivers_stats(session, owner.id)
     row = next((r for r in rows if r["driver"].id == driver.id), None)
+    vehicles = list(
+        (
+            await session.execute(
+                select(Vehicle)
+                .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+                .order_by(Vehicle.license_plate)
+            )
+        ).scalars().all()
+    )
     return templates.TemplateResponse(
-        "_driver_row.html", {"request": request, "row": row, "edit": True}
+        "_driver_row.html",
+        {"request": request, "row": row, "edit": True, "vehicles": vehicles},
     )
 
 
@@ -2131,6 +2167,21 @@ async def admins_add(
     return RedirectResponse("/requisites", status_code=303)
 
 
+@app.post("/admins/{admin_id}/notifications")
+async def admins_toggle_notifications(
+    admin_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Вкл/выкл дубли уведомлений бота этому админу (второй телефон)."""
+    admin = await session.get(Admin, admin_id)
+    if admin is None or admin.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    admin.notifications_enabled = not admin.notifications_enabled
+    await session.commit()
+    return RedirectResponse("/requisites", status_code=303)
+
+
 @app.post("/admins/{admin_id}/delete")
 async def admins_delete(
     admin_id: int,
@@ -2996,6 +3047,7 @@ async def trip_detail(
     if travel:
         h, m = divmod(travel["minutes"], 60)
         travel_label = (f"{h} ч " if h else "") + f"{m} мин"
+    all_drivers, all_vehicles = await _reassign_options(session, owner.id)
     return templates.TemplateResponse(
         "trip_detail.html",
         {
@@ -3005,9 +3057,35 @@ async def trip_detail(
             "waybill_uploaded_at": waybill_uploaded_at,
             "documents": documents,
             "travel": travel, "travel_label": travel_label,
+            "all_drivers": all_drivers, "all_vehicles": all_vehicles,
             "active_page": "trips",
         },
     )
+
+
+async def _reassign_options(
+    session: AsyncSession, owner_id: int
+) -> tuple[list[Driver], list[Vehicle]]:
+    """Активные водители и машины — для селектов «исправить миссклик»."""
+    drivers = list(
+        (
+            await session.execute(
+                select(Driver)
+                .where(Driver.owner_id == owner_id, Driver.is_active.is_(True))
+                .order_by(Driver.full_name)
+            )
+        ).scalars().all()
+    )
+    vehicles = list(
+        (
+            await session.execute(
+                select(Vehicle)
+                .where(Vehicle.owner_id == owner_id, Vehicle.is_active.is_(True))
+                .order_by(Vehicle.license_plate)
+            )
+        ).scalars().all()
+    )
+    return drivers, vehicles
 
 
 # =========================================================================
@@ -3062,6 +3140,7 @@ async def shift_detail(
         )
     )
     times = {et: dt for et, dt in events_times.all()}
+    all_drivers, all_vehicles = await _reassign_options(session, owner.id)
     return templates.TemplateResponse(
         "shift_detail.html",
         {
@@ -3070,9 +3149,128 @@ async def shift_detail(
             "trips": trips, "expenses": expenses,
             "photo_start_at": times.get("shift_started"),
             "photo_end_at": times.get("shift_completed"),
+            "all_drivers": all_drivers, "all_vehicles": all_vehicles,
             "active_page": "trips",
         },
     )
+
+
+# =========================================================================
+# Исправление миссклика: поменять водителя/машину у смены и рейса
+# =========================================================================
+async def _reassign_targets(
+    session: AsyncSession, owner: Owner, driver_id: str, vehicle_id: str
+) -> tuple[Driver, Vehicle]:
+    """Проверить, что выбранные водитель и машина существуют и принадлежат владельцу."""
+    try:
+        d_id, v_id = int(driver_id), int(vehicle_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Bad driver/vehicle id")
+    driver = await session.get(Driver, d_id)
+    vehicle = await session.get(Vehicle, v_id)
+    if (
+        driver is None or driver.owner_id != owner.id
+        or vehicle is None or vehicle.owner_id != owner.id
+    ):
+        raise HTTPException(status_code=400, detail="Bad driver/vehicle id")
+    return driver, vehicle
+
+
+@app.post("/shifts/{shift_id}/reassign")
+async def shift_reassign(
+    shift_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    driver_id: Annotated[str, Form()],
+    vehicle_id: Annotated[str, Form()],
+):
+    """Поменять водителя/машину у смены задним числом (исправить миссклик).
+    Рейсы смены обновляются каскадно; зарплата пересчитывается на лету."""
+    shift = await session.get(Shift, shift_id)
+    if shift is None or shift.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    driver, vehicle = await _reassign_targets(session, owner, driver_id, vehicle_id)
+    if driver.id == shift.driver_id and vehicle.id == shift.vehicle_id:
+        return RedirectResponse(f"/shifts/{shift.id}", status_code=303)
+
+    # активную смену нельзя перевесить на водителя/машину из другой активной смены
+    if shift.status == "started":
+        if driver.id != shift.driver_id:
+            busy = (
+                await session.execute(
+                    select(Shift.id).where(
+                        Shift.driver_id == driver.id,
+                        Shift.status == "started",
+                        Shift.id != shift.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if busy is not None:
+                return RedirectResponse(f"/shifts/{shift.id}?err=driver_busy", status_code=303)
+        if vehicle.id != shift.vehicle_id:
+            busy = (
+                await session.execute(
+                    select(Shift.id).where(
+                        Shift.vehicle_id == vehicle.id,
+                        Shift.status == "started",
+                        Shift.id != shift.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if busy is not None:
+                return RedirectResponse(f"/shifts/{shift.id}?err=vehicle_busy", status_code=303)
+
+    old = {"driver_id": shift.driver_id, "vehicle_id": shift.vehicle_id}
+    shift.driver_id = driver.id
+    shift.vehicle_id = vehicle.id
+    # каскад: рейсы этой смены переезжают на нового водителя/машину
+    await session.execute(
+        update(Trip)
+        .where(Trip.shift_id == shift.id)
+        .values(driver_id=driver.id, vehicle_id=vehicle.id)
+    )
+    await log_event(
+        session, owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+        event_type="shift_reassigned",
+        payload={
+            "old": old,
+            "new": {"driver_id": driver.id, "vehicle_id": vehicle.id},
+            "source": "web",
+        },
+    )
+    await session.commit()
+    return RedirectResponse(f"/shifts/{shift.id}?saved=1", status_code=303)
+
+
+@app.post("/trips/{trip_id}/reassign")
+async def trip_reassign(
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    driver_id: Annotated[str, Form()],
+    vehicle_id: Annotated[str, Form()],
+):
+    """Поменять водителя/машину у ОДНОГО рейса (смена не трогается)."""
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    driver, vehicle = await _reassign_targets(session, owner, driver_id, vehicle_id)
+    if driver.id == trip.driver_id and vehicle.id == trip.vehicle_id:
+        return RedirectResponse(f"/trips/{trip.id}", status_code=303)
+    old = {"driver_id": trip.driver_id, "vehicle_id": trip.vehicle_id}
+    trip.driver_id = driver.id
+    trip.vehicle_id = vehicle.id
+    await log_event(
+        session, owner_id=owner.id, driver_id=driver.id, trip_id=trip.id,
+        event_type="trip_reassigned",
+        payload={
+            "old": old,
+            "new": {"driver_id": driver.id, "vehicle_id": vehicle.id},
+            "source": "web",
+        },
+    )
+    await session.commit()
+    return RedirectResponse(f"/trips/{trip.id}?saved=1", status_code=303)
 
 
 # =========================================================================

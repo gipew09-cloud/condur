@@ -48,7 +48,8 @@ class Settings(BaseSettings):
     feature_trip_status_steps: bool = False     # промежуточные статусы рейса (выгрузка)
     feature_cargo_geolocation: bool = True      # геопозиция при сдаче груза (включена — наполняет карту)
     feature_cash_handover: bool = False         # «сдал деньги»
-    feature_show_salary: bool = False           # показ зарплаты в конце смены
+    # показ зарплаты водителю УДАЛЁН насовсем (не флаг): решение владельца,
+    # водитель не должен видеть заработок — см. driver_bot._do_end_shift
     feature_notify_driver_approval: bool = False  # уведомлять водителя об одобрении расхода
     feature_receipt_ocr: bool = True            # распознавание суммы с чека (дормант без ключа)
     feature_odometer_ocr: bool = False          # распознавание одометра с фото (на будущее)

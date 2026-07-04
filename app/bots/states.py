@@ -83,8 +83,10 @@ class TripCalc(StatesGroup):
 
 # ========== ВОДИТЕЛЬ ==========
 class StartShift(StatesGroup):
-    """Начало смены: выбор машины → фото одометра → значение одометра."""
+    """Начало смены: выбор машины → фото одометра → значение одометра.
+    confirming_vehicle — переспрос, если выбрана не «обычная» машина водителя."""
     selecting_vehicle = State()
+    confirming_vehicle = State()
     waiting_for_odometer_photo = State()
     waiting_for_odometer_value = State()
 

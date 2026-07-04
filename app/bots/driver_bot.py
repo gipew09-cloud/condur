@@ -180,7 +180,7 @@ async def start_no_token(message: Message, state: FSMContext, session: AsyncSess
 
 
 # =========================================================================
-# /help, /status, /cancel, /balance
+# /help, /status, /cancel
 # =========================================================================
 @driver_router.message(Command("help"), StateFilter(any_state))
 async def cmd_help(message: Message) -> None:
@@ -238,48 +238,9 @@ async def cmd_cancel(message: Message, state: FSMContext, session: AsyncSession)
     await _refresh_ui(message, session, driver, msg.CANCELLED)
 
 
-@driver_router.message(Command("balance"), StateFilter(any_state))
-async def cmd_balance(message: Message, session: AsyncSession) -> None:
-    driver = await _driver_by_telegram(session, message.from_user.id)
-    if driver is None:
-        await message.answer(msg.DRIVER_LINK_EXPECTED)
-        return
-
-    # Завершённые смены текущего месяца
-    now = datetime.now(timezone.utc)
-    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    shifts_res = await session.execute(
-        select(Shift).where(
-            Shift.driver_id == driver.id,
-            Shift.status == "completed",
-            Shift.ended_at >= month_start,
-        )
-    )
-    shifts = list(shifts_res.scalars().all())
-
-    earned = Decimal(0)
-    for sh in shifts:
-        trips = await shift_service.get_shift_trips(session, sh.id)
-        earned += salary_service.calculate_salary(driver, sh, trips)
-
-    expenses_res = await session.execute(
-        select(Expense).where(
-            Expense.driver_id == driver.id,
-            Expense.status == "approved",
-            Expense.created_at >= month_start,
-        )
-    )
-    expenses_sum = sum(
-        (e.amount_rub or Decimal(0)) for e in expenses_res.scalars().all()
-    ) or Decimal(0)
-
-    await message.answer(
-        msg.DRIVER_BALANCE.format(
-            earned=f"{earned:.0f}",
-            expenses=f"{Decimal(expenses_sum):.0f}",
-            total=f"{(earned - Decimal(expenses_sum)):.0f}",
-        )
-    )
+# /balance удалён по решению владельца: водитель не должен видеть свой
+# заработок в боте — суммы объясняет сам владелец. Владельцу зарплата
+# по-прежнему приходит в уведомлении о завершении смены и видна на сайте.
 
 
 # =========================================================================
@@ -372,8 +333,22 @@ async def btn_start_shift(
     # Упрощённый старт: без одометра и, если машина одна — без выбора,
     # сразу открываем смену (FEATURE_ODOMETER_PHOTO выключен).
     if not settings.feature_odometer_photo and len(vehicles) == 1:
+        vehicle = vehicles[0]
+        # Анти-миссклик: даже единственная свободная машина может оказаться
+        # чужой (свою уже занял другой водитель) — переспросим.
+        default_plate = await _unusual_vehicle_plate(session, driver, vehicle)
+        if default_plate is not None:
+            await state.set_state(StartShift.confirming_vehicle)
+            await state.update_data(vehicle_id=vehicle.id, default_plate=default_plate)
+            await message.answer(
+                msg.SHIFT_CONFIRM_UNUSUAL_VEHICLE.format(
+                    default_plate=default_plate, plate=vehicle.license_plate
+                ),
+                reply_markup=kb.vehicle_confirm_keyboard(),
+            )
+            return
         await _do_start_shift(
-            message, state, session, owner_bot, driver, vehicles[0],
+            message, state, session, owner_bot, driver, vehicle,
             odometer_start=None, photo_file_id=None,
         )
         return
@@ -392,17 +367,28 @@ async def cb_shift_cancel(call: CallbackQuery, state: FSMContext, session: Async
     await call.answer()
 
 
-@driver_router.callback_query(StartShift.selecting_vehicle, F.data.startswith("shift:pick:"))
-async def cb_shift_pick_vehicle(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession, owner_bot: Bot
-) -> None:
-    vehicle_id = int(call.data.split(":")[2])
-    vehicle = await session.get(Vehicle, vehicle_id)
-    driver = await _driver_by_telegram(session, call.from_user.id)
-    if vehicle is None or driver is None or vehicle.owner_id != driver.owner_id:
-        await call.answer("Машина недоступна", show_alert=True)
-        return
+async def _unusual_vehicle_plate(
+    session: AsyncSession, driver: Driver, vehicle: Vehicle
+) -> str | None:
+    """Гос.номер «обычной» машины водителя, если он берёт ДРУГУЮ.
+    None — выбор обычный (или «обычная машина» не назначена)."""
+    if driver.default_vehicle_id is None or driver.default_vehicle_id == vehicle.id:
+        return None
+    default_vehicle = await session.get(Vehicle, driver.default_vehicle_id)
+    if default_vehicle is None or not default_vehicle.is_active:
+        return None
+    return default_vehicle.license_plate
 
+
+async def _continue_shift_start(
+    call: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_bot: Bot,
+    driver: Driver,
+    vehicle: Vehicle,
+) -> None:
+    """Общее продолжение после выбора (и, если надо, подтверждения) машины."""
     # Без одометра — открываем смену сразу после выбора машины.
     if not settings.feature_odometer_photo:
         await call.message.edit_text(f"Машина: <b>{vehicle.license_plate}</b>")
@@ -417,6 +403,99 @@ async def cb_shift_pick_vehicle(
     await state.set_state(StartShift.waiting_for_odometer_photo)
     await call.message.edit_text(f"Машина: <b>{vehicle.license_plate}</b>")
     await call.message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_START + " 📷")
+    await call.answer()
+
+
+@driver_router.callback_query(StartShift.selecting_vehicle, F.data.startswith("shift:pick:"))
+async def cb_shift_pick_vehicle(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    vehicle_id = int(call.data.split(":")[2])
+    vehicle = await session.get(Vehicle, vehicle_id)
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if vehicle is None or driver is None or vehicle.owner_id != driver.owner_id:
+        await call.answer("Машина недоступна", show_alert=True)
+        return
+
+    # Анти-миссклик: выбрана не «обычная» машина — мягко переспросим.
+    default_plate = await _unusual_vehicle_plate(session, driver, vehicle)
+    if default_plate is not None:
+        await state.set_state(StartShift.confirming_vehicle)
+        await state.update_data(vehicle_id=vehicle.id, default_plate=default_plate)
+        await call.message.edit_text(
+            msg.SHIFT_CONFIRM_UNUSUAL_VEHICLE.format(
+                default_plate=default_plate, plate=vehicle.license_plate
+            ),
+            reply_markup=kb.vehicle_confirm_keyboard(),
+        )
+        await call.answer()
+        return
+
+    await _continue_shift_start(call, state, session, owner_bot, driver, vehicle)
+
+
+@driver_router.callback_query(StartShift.confirming_vehicle, F.data == "shift:pickok")
+async def cb_shift_confirm_vehicle(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, owner_bot: Bot
+) -> None:
+    """Водитель подтвердил, что осознанно берёт не свою обычную машину."""
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    data = await state.get_data()
+    vehicle = await session.get(Vehicle, data.get("vehicle_id") or 0)
+    if driver is None or vehicle is None or vehicle.owner_id != driver.owner_id:
+        await state.clear()
+        await call.answer(msg.SOMETHING_WRONG, show_alert=True)
+        return
+
+    # Пока водитель думал, машину мог занять другой — перепроверяем.
+    free = await shift_service.get_free_vehicles(session, driver.owner_id)
+    if vehicle.id not in {v.id for v in free}:
+        if not free:
+            await state.clear()
+            await call.message.edit_text(msg.SHIFT_NO_FREE_VEHICLES)
+        else:
+            await state.set_state(StartShift.selecting_vehicle)
+            await call.message.edit_text(
+                "Эту машину уже заняли. " + msg.SHIFT_PICK_VEHICLE,
+                reply_markup=kb.vehicle_pick_keyboard(free),
+            )
+        await call.answer()
+        return
+
+    # Владельцу — сигнал, что водитель сел не в свою обычную машину.
+    owner = await session.get(Owner, driver.owner_id)
+    if owner is not None:
+        await notify_owner(
+            owner_bot, session, owner,
+            msg.NOTIFY_UNUSUAL_VEHICLE.format(
+                driver=driver.full_name,
+                plate=vehicle.license_plate,
+                default_plate=data.get("default_plate") or "—",
+            ),
+        )
+    await _continue_shift_start(call, state, session, owner_bot, driver, vehicle)
+
+
+@driver_router.callback_query(StartShift.confirming_vehicle, F.data == "shift:repick")
+async def cb_shift_repick_vehicle(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    """«Выбрать заново» — вернуться к списку свободных машин."""
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if driver is None:
+        await state.clear()
+        await call.answer(msg.SOMETHING_WRONG, show_alert=True)
+        return
+    free = await shift_service.get_free_vehicles(session, driver.owner_id)
+    if not free:
+        await state.clear()
+        await call.message.edit_text(msg.SHIFT_NO_FREE_VEHICLES)
+        await call.answer()
+        return
+    await state.set_state(StartShift.selecting_vehicle)
+    await call.message.edit_text(
+        msg.SHIFT_PICK_VEHICLE, reply_markup=kb.vehicle_pick_keyboard(free)
+    )
     await call.answer()
 
 
@@ -552,15 +631,9 @@ async def _do_end_shift(
     await session.commit()
     await state.clear()
 
-    if settings.feature_show_salary:
-        driver_text = msg.SHIFT_COMPLETED_DRIVER.format(
-            distance=shift.distance_km or 0,
-            trips=len(trips),
-            expenses=f"{expenses_total:.2f}",
-            salary=f"{salary:.0f}",
-        )
-    else:
-        driver_text = msg.SHIFT_COMPLETED_DRIVER_SIMPLE.format(trips=len(trips))
+    # Водителю зарплату НЕ показываем (решение владельца): только факт
+    # завершения. Сумма уходит владельцу в уведомлении ниже.
+    driver_text = msg.SHIFT_COMPLETED_DRIVER_SIMPLE.format(trips=len(trips))
     await _refresh_ui(reply_target, session, driver, driver_text)
 
     owner = await session.get(Owner, driver.owner_id)

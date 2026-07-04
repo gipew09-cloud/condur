@@ -104,7 +104,8 @@
   <p class="sub" style="margin-top:-.3rem;">
     Полный доступ к кабинету, как у вас. Админ открывает бот владельца, шлёт <code>/login</code>,
     получает код и входит на странице входа. Свой Telegram ID он может узнать в боте
-    (он написан рядом с кодом) или у @userinfobot.
+    (он написан рядом с кодом) или у @userinfobot. Админу также приходят все
+    уведомления бота владельца (удобно для второго телефона) — это можно выключить кнопкой ниже.
   </p>
 
   {% for a in admins %}
@@ -112,11 +113,22 @@
     <div>
       <strong>{{ a.name or 'Админ' }}</strong>
       <span style="color:var(--text-muted); font-size:.85rem;"> · Telegram ID {{ a.telegram_id }}</span>
+      {% if not a.notifications_enabled %}
+      <span style="color:var(--text-muted); font-size:.85rem;"> · 🔕 уведомления выключены</span>
+      {% endif %}
     </div>
-    <form method="POST" action="/admins/{{ a.id }}/delete" style="margin:0;">
-      <button type="submit" class="secondary outline"
-              onclick="return confirm('Убрать доступ у «{{ a.name or a.telegram_id }}»?')">Убрать</button>
-    </form>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <form method="POST" action="/admins/{{ a.id }}/notifications" style="margin:0;">
+        <button type="submit" class="secondary outline"
+                title="Дублировать этому админу уведомления бота владельца">
+          {{ '🔕 Выключить уведомления' if a.notifications_enabled else '🔔 Включить уведомления' }}
+        </button>
+      </form>
+      <form method="POST" action="/admins/{{ a.id }}/delete" style="margin:0;">
+        <button type="submit" class="secondary outline"
+                onclick="return confirm('Убрать доступ у «{{ a.name or a.telegram_id }}»?')">Убрать</button>
+      </form>
+    </div>
   </div>
   {% else %}
   <p style="color:var(--text-muted);">Пока нет ни одного администратора.</p>

@@ -22,7 +22,7 @@ from aiogram.exceptions import (
     TelegramServerError,
 )
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenacity import (
     AsyncRetrying,
@@ -32,7 +32,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.models import Owner
+from app.models import Admin, Owner
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,38 @@ async def _disable(session: AsyncSession, owner_id: int) -> None:
     await session.commit()
 
 
+async def _admin_chat_ids(session: AsyncSession, owner_id: int) -> list[int]:
+    """Telegram ID админов кабинета, которым дублируем уведомления владельца.
+
+    Второй телефон владельца — это отдельный аккаунт, добавленный админом.
+    """
+    result = await session.execute(
+        select(Admin.telegram_id).where(
+            Admin.owner_id == owner_id,
+            Admin.notifications_enabled.is_(True),
+        )
+    )
+    return [row[0] for row in result.all()]
+
+
+async def _copy_to_admins(
+    bot: Bot,
+    session: AsyncSession,
+    owner: Owner,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None,
+) -> None:
+    """Дубли уведомления админам. Любая ошибка по одному адресату — молча
+    пропускаем (админ мог не нажать /start у бота), рассылку не роняем."""
+    for chat_id in await _admin_chat_ids(session, owner.id):
+        if chat_id == owner.telegram_id:
+            continue  # владелец сам добавлен админом — не дублируем ему же
+        try:
+            await _send_message_with_retry(bot, chat_id, text, reply_markup)
+        except Exception as exc:
+            logger.info("Admin %s notification skipped: %s", chat_id, exc)
+
+
 async def notify_owner(
     bot: Bot,
     session: AsyncSession,
@@ -89,26 +121,27 @@ async def notify_owner(
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> int | None:
-    """Отправить владельцу сообщение. Возвращает message_id или None."""
+    """Отправить владельцу сообщение (+дубли всем админам кабинета).
+    Возвращает message_id сообщения владельцу или None."""
     if not owner.notifications_enabled or owner.telegram_id is None:
         return None
+    message_id: int | None = None
     try:
         sent = await _send_message_with_retry(
             bot, owner.telegram_id, text, reply_markup
         )
-        return sent.message_id
+        message_id = sent.message_id
     except TelegramForbiddenError:
         logger.warning("Owner %s blocked the bot, disabling notifications", owner.id)
         await _disable(session, owner.id)
-        return None
     except TelegramBadRequest as exc:
         logger.error("Failed to notify owner %s: %s", owner.id, exc)
-        return None
     except (RetryError, *_RETRYABLE_TELEGRAM_ERRORS) as exc:
         # временный сбой не разрешился за 3 попытки — логируем и НЕ валим
         # вызывающий код (важно для циклов рассылки по всем владельцам)
         logger.error("Failed to notify owner %s after retries: %s", owner.id, exc)
-        return None
+    await _copy_to_admins(bot, session, owner, text, reply_markup)
+    return message_id
 
 
 async def transfer_photo_to_owner(
@@ -143,21 +176,36 @@ async def transfer_photo_to_owner(
     if buf is None:
         return None
 
+    message_id: int | None = None
     try:
-        photo = BufferedInputFile(buf.read(), filename="photo.jpg")
+        photo_bytes = buf.read()
+        photo = BufferedInputFile(photo_bytes, filename="photo.jpg")
         sent = await owner_bot.send_photo(
             owner.telegram_id, photo, caption=caption, reply_markup=reply_markup
         )
-        return sent.message_id
+        message_id = sent.message_id
     except TelegramForbiddenError:
         logger.warning("Owner %s blocked the bot, disabling notifications", owner.id)
         await _disable(session, owner.id)
-        return None
     except TelegramBadRequest as exc:
         logger.error("Failed to send photo to owner %s: %s", owner.id, exc)
-        return None
     finally:
         buf.close()
+
+    # дубли фото админам (второй телефон владельца); ошибки — молча пропускаем
+    for chat_id in await _admin_chat_ids(session, owner.id):
+        if chat_id == owner.telegram_id:
+            continue
+        try:
+            await owner_bot.send_photo(
+                chat_id,
+                BufferedInputFile(photo_bytes, filename="photo.jpg"),
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+        except Exception as exc:
+            logger.info("Admin %s photo notification skipped: %s", chat_id, exc)
+    return message_id
 
 
 async def notify_driver(

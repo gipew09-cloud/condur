@@ -275,6 +275,17 @@ def vehicle_pick_keyboard(vehicles) -> InlineKeyboardMarkup:
 
 
 # =========================================================================
+# ВОДИТЕЛЬ — подтверждение «не обычной» машины (анти-миссклик)
+# =========================================================================
+def vehicle_confirm_keyboard() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, беру эту", callback_data="shift:pickok")
+    kb.button(text="↩️ Выбрать заново", callback_data="shift:repick")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# =========================================================================
 # ВОДИТЕЛЬ — выбор категории расхода (inline)
 # =========================================================================
 def expense_category_keyboard() -> InlineKeyboardMarkup:
