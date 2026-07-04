@@ -1729,10 +1729,12 @@ async def cmd_wipe(message: Message, state: FSMContext, session: AsyncSession) -
     await state.clear()
     await state.set_state(WipeAll.waiting_for_confirm)
     await message.answer(
-        "⚠️ <b>Полный сброс данных</b>\n\n"
+        "⚠️ <b>ПОЛНЫЙ сброс — всё в ноль</b>\n\n"
         "Будут БЕЗВОЗВРАТНО удалены: рейсы, смены, водители, машины, расходы, "
-        "документы, GPS-данные, справочник РЦ, заказчики, ручные записи и события.\n\n"
-        "Останутся: ваш аккаунт, реквизиты Исполнителя, админы и входы в кабинет.\n\n"
+        "документы, GPS-данные, справочник РЦ, заказчики, ручные записи, события, "
+        "админы, входы в кабинет, тариф И САМ АККАУНТ с реквизитами.\n\n"
+        "В базе не останется ничего. Бот и сайт начнут с чистой регистрации, "
+        "как в первый день (/start заново спросит компанию и телефон).\n\n"
         f"Чтобы подтвердить, отправьте точную фразу:\n<b>{maintenance_service.WIPE_CONFIRM_PHRASE}</b>\n\n"
         "Отменить — /cancel или любой другой текст."
     )
@@ -1751,14 +1753,13 @@ async def wipe_confirm(message: Message, state: FSMContext, session: AsyncSessio
         return
     counts = await maintenance_service.wipe_owner_data(session, owner.id)
     await session.commit()
-    if counts:
-        lines = "\n".join(f"• {name}: {n}" for name, n in counts.items())
-        await message.answer(
-            f"🧹 Готово — тестовые данные стёрты:\n{lines}\n\n"
-            "Кабинет чистый, можно начинать новую стадию теста. /start"
-        )
-    else:
-        await message.answer("Удалять было нечего — кабинет уже пуст. /start")
+    lines = "\n".join(f"• {name}: {n}" for name, n in counts.items())
+    # Аккаунта больше нет — меню не показываем, только приглашение к регистрации.
+    await message.answer(
+        f"🧹 Готово — стёрто всё, включая аккаунт:\n{lines}\n\n"
+        "База по этому пользователю пуста. Отправьте /start — бот начнёт "
+        "регистрацию с нуля, как в первый день."
+    )
 
 
 @owner_router.message()

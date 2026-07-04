@@ -1,10 +1,11 @@
 """
-Полный сброс тестовых данных владельца (скрытая команда /wipe в боте владельца).
+Полный сброс владельца (скрытая команда /wipe в боте владельца).
 
-Удаляет ВСЕ рабочие данные кабинета: рейсы, смены, водителей, машины, расходы,
-документы, GPS-телеметрию, справочники. НЕ трогает сам аккаунт владельца
-(вход в бот и кабинет остаётся), его реквизиты Исполнителя, админов,
-веб-сессии (устройства) и тариф.
+Удаляет ВООБЩЕ ВСЁ, что связано с владельцем, включая сам аккаунт: рейсы,
+смены, водителей, машины, расходы, документы, GPS-телеметрию, справочники,
+заказчиков, админов, входы в кабинет (устройства), тариф и запись owners
+с реквизитами. После этого бот встречает как нового пользователя — /start
+начинает регистрацию с нуля, в базе не остаётся ни одной строки.
 
 Команды нет в /help — она только для перехода на новую стадию теста.
 """
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import delete, select
 
 from app.models import (
+    Admin,
     Customer,
     DailySummary,
     DistributionCenter,
@@ -22,14 +24,17 @@ from app.models import (
     Event,
     Expense,
     ManualEntry,
+    Owner,
     RouteTemplate,
     Shift,
+    Subscription,
     Trip,
     TripDocument,
     Vehicle,
     VehicleState,
     VehicleTelemetryPoint,
     VehicleTelemetryRawPacket,
+    WebSession,
 )
 
 if TYPE_CHECKING:
@@ -40,7 +45,7 @@ WIPE_CONFIRM_PHRASE = "УДАЛИТЬ ВСЁ"
 
 
 async def wipe_owner_data(session: AsyncSession, owner_id: int) -> dict[str, int]:
-    """Стереть все данные владельца. Возвращает счётчики по разделам.
+    """Стереть владельца ПОЛНОСТЬЮ (включая аккаунт). Возвращает счётчики.
 
     Порядок удаления учитывает связи между таблицами. Коммит — на вызывающей
     стороне (бот), чтобы всё прошло одной транзакцией.
@@ -89,4 +94,13 @@ async def wipe_owner_data(session: AsyncSession, owner_id: int) -> dict[str, int
         delete(DistributionCenter).where(DistributionCenter.owner_id == owner_id)
     )
     counts["заказчики"] = await _del(delete(Customer).where(Customer.owner_id == owner_id))
+    counts["админы"] = await _del(delete(Admin).where(Admin.owner_id == owner_id))
+    counts["входы в кабинет"] = await _del(
+        delete(WebSession).where(WebSession.owner_id == owner_id)
+    )
+    counts["тариф"] = await _del(
+        delete(Subscription).where(Subscription.owner_id == owner_id)
+    )
+    # Последним — сам аккаунт с реквизитами: /start начнёт регистрацию заново.
+    counts["аккаунт владельца"] = await _del(delete(Owner).where(Owner.id == owner_id))
     return {k: v for k, v in counts.items() if v}

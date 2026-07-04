@@ -38,6 +38,7 @@ from app.services.scheduler_jobs import (
     monthly_econometer_job,
     no_show_detector_job,
     silence_detector_job,
+    telemetry_cleanup_job,
     weekly_review_job,
 )
 from app.web.router import app as web_app
@@ -147,6 +148,12 @@ async def main() -> None:
     scheduler.add_job(
         no_show_detector_job, "cron", minute="5", args=[owner_bot],
         max_instances=1,
+    )
+    # Чистка телеметрии: раз в сутки ночью — сырые пакеты >7 дней,
+    # GPS-точки >60 дней, чтобы база не росла бесконечно.
+    scheduler.add_job(
+        telemetry_cleanup_job, "cron", hour="0", minute="37", args=[owner_bot],
+        max_instances=1, misfire_grace_time=3600,
     )
     scheduler.start()
 

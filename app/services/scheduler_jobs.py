@@ -701,3 +701,49 @@ async def no_show_detector_job(owner_bot: Bot) -> None:
                 logger.exception("no_show_detector_job failed for driver %s", driver.id)
                 await session.rollback()
                 continue
+
+
+# =========================================================================
+# Чистка телеметрии — раз в сутки. Сырые EGTS-пакеты нужны только для
+# отладки/калибровки датчиков, держим 7 дней; разобранные GPS-точки — 60
+# дней (для сверки пробега за смену хватает с запасом). Иначе таблицы
+# растут бесконечно и зря едят диск на Railway.
+# =========================================================================
+RAW_PACKETS_KEEP_DAYS = 7
+TELEMETRY_POINTS_KEEP_DAYS = 60
+
+
+async def telemetry_cleanup_job(owner_bot: Bot) -> None:  # noqa: ARG001 — сигнатура как у всех джобов
+    from sqlalchemy import delete
+
+    from app.models import VehicleTelemetryPoint, VehicleTelemetryRawPacket
+
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        try:
+            raw_deleted = (
+                await session.execute(
+                    delete(VehicleTelemetryRawPacket).where(
+                        VehicleTelemetryRawPacket.received_at
+                        < now - timedelta(days=RAW_PACKETS_KEEP_DAYS)
+                    )
+                )
+            ).rowcount or 0
+            points_deleted = (
+                await session.execute(
+                    delete(VehicleTelemetryPoint).where(
+                        VehicleTelemetryPoint.received_at
+                        < now - timedelta(days=TELEMETRY_POINTS_KEEP_DAYS)
+                    )
+                )
+            ).rowcount or 0
+            await session.commit()
+            if raw_deleted or points_deleted:
+                logger.info(
+                    "telemetry_cleanup: raw>%sd deleted=%s, points>%sd deleted=%s",
+                    RAW_PACKETS_KEEP_DAYS, raw_deleted,
+                    TELEMETRY_POINTS_KEEP_DAYS, points_deleted,
+                )
+        except Exception:
+            logger.exception("telemetry_cleanup_job failed")
+            await session.rollback()

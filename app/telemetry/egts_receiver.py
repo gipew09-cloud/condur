@@ -106,21 +106,8 @@ async def _process_packet(
     terminal_id = str(oid) if oid is not None else None
 
     async with async_session() as session:
-        raw = VehicleTelemetryRawPacket(
-            protocol="egts",
-            source="stavtrack",
-            peer_host=peer_host,
-            peer_port=peer_port,
-            terminal_id=terminal_id,
-            payload=payload,
-            payload_size=len(payload),
-            parse_status="failed" if parse_error else "parsed",
-            parse_error=parse_error,
-        )
-        session.add(raw)
-        await session.flush()
-
         vehicle: Vehicle | None = None
+        skip_reason: str | None = None
         if parsed is not None and terminal_id is not None:
             matches = (
                 await session.execute(
@@ -132,13 +119,35 @@ async def _process_packet(
             ).scalars().all()
             if len(matches) == 1:
                 vehicle = matches[0]
-                raw.vehicle_id = vehicle.id
             elif len(matches) > 1:
-                raw.parse_status = "ignored"
-                raw.parse_error = "ambiguous terminal id (несколько машин с этим Stavtrack ID)"
+                skip_reason = "ambiguous terminal id (несколько машин с этим Stavtrack ID)"
             else:
-                raw.parse_status = "ignored"
-                raw.parse_error = "unknown terminal id (машина с этим Stavtrack ID не найдена)"
+                skip_reason = "unknown terminal id (машина не привязана)"
+
+        # Чужой/непривязанный трекер: в БАЗУ НЕ ПИШЕМ (иначе она пухнет от
+        # мусора), только строка в лог. ACK всё равно отправим — пусть
+        # Stavtrack не ретраит.
+        if parsed is not None and vehicle is None:
+            logger.info(
+                "EGTS skipped (%s): terminal=%s bytes=%s",
+                skip_reason or "no terminal id", terminal_id, len(payload),
+            )
+            return egts.build_response(parsed)
+
+        raw = VehicleTelemetryRawPacket(
+            protocol="egts",
+            source="stavtrack",
+            peer_host=peer_host,
+            peer_port=peer_port,
+            terminal_id=terminal_id,
+            vehicle_id=vehicle.id if vehicle else None,
+            payload=payload,
+            payload_size=len(payload),
+            parse_status="failed" if parse_error else "parsed",
+            parse_error=parse_error,
+        )
+        session.add(raw)
+        await session.flush()
 
         points_saved = 0
         last_good: VehicleTelemetryPoint | None = None   # достоверная точка

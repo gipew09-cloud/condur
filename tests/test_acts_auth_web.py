@@ -552,3 +552,30 @@ def test_wipe_not_in_help_and_phrase_consistent():
     assert 'Command("wipe")' in bot_src
     assert "maintenance_service.WIPE_CONFIRM_PHRASE" in bot_src
     assert "wipe_owner_data" in bot_src
+
+
+def test_wipe_deletes_everything_including_owner():
+    """Полный ноль: /wipe стирает и сам аккаунт (бот начинает регистрацию заново)."""
+    src = open("app/services/maintenance_service.py", encoding="utf-8").read()
+    for model in ("Owner", "Admin", "WebSession", "Subscription", "Customer",
+                  "DistributionCenter", "Driver", "Vehicle", "Trip", "Shift",
+                  "Expense", "Event", "VehicleTelemetryPoint", "VehicleTelemetryRawPacket"):
+        assert f"delete({model})" in src, f"wipe должен удалять {model}"
+    # аккаунт удаляется последним
+    assert src.index("delete(Owner)") > src.index("delete(WebSession)")
+
+
+def test_receiver_skips_unknown_terminals_and_acks():
+    """Пакеты чужих трекеров не пишутся в БД (мусор), но ACK отправляется."""
+    src = open("app/telemetry/egts_receiver.py", encoding="utf-8").read()
+    assert "EGTS skipped" in src
+    skip_block = src.split("EGTS skipped")[1][:400]
+    assert "build_response(parsed)" in skip_block  # ACK до какой-либо записи в БД
+
+
+def test_telemetry_cleanup_job_registered():
+    jobs_src = open("app/services/scheduler_jobs.py", encoding="utf-8").read()
+    assert "telemetry_cleanup_job" in jobs_src
+    assert "RAW_PACKETS_KEEP_DAYS = 7" in jobs_src
+    main_src = open("app/main.py", encoding="utf-8").read()
+    assert "telemetry_cleanup_job" in main_src
