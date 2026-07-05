@@ -460,6 +460,7 @@ def test_map_template_uses_yandex_not_leaflet():
                    yandex_maps_api_key="test-key-123")
     assert "api-maps.yandex.ru/2.1/?apikey=test-key-123" in html
     assert "vehicle-marker" in html and "visibilitychange" in html
+    assert "removeMissing(vehicleMarkers" in html and "removeMissing(driverMarkers" in html
 
 
 def test_map_template_without_key_shows_hint():

@@ -848,17 +848,45 @@ async def _check_vehicle_mixup(session, owner_bot: Bot, owner: Owner) -> None:
 
 # =========================================================================
 # Геозоны РЦ — каждые ~5 минут. У РЦ из справочника есть координаты
-# (кнопка «Определить координаты» на /routes). Машина оказалась ближе
-# RC_GEOFENCE_RADIUS_M к точке РЦ → событие «приехал» + уведомление;
-# удалилась дальше RC_GEOFENCE_EXIT_RADIUS_M → «уехал» с временем стоянки
-# под выгрузкой. Вход/выход разнесены (гистерезис), чтобы дрожание GPS
-# на границе зоны не рождало ложные события. Состояние «внутри/снаружи»
-# храним в events (rc_arrived / rc_departed) — переживает рестарты.
+# (владелец расставляет точки мышкой на /routes). «Приехал» засчитываем,
+# только когда машина ОСТАНОВИЛАСЬ в зоне и стоит ≥ RC_MIN_PARKED_MINUTES:
+# основные дороги проходят вплотную к РЦ, и проезжающий мимо грузовик
+# (или вставший на светофоре) не должен давать ложный «приехал».
+# «Уехал» — удалилась дальше выходного радиуса (гистерезис от дрожания GPS).
+# Радиус у каждого РЦ может быть свой (geofence_radius_m — большие склады),
+# NULL = глобальный RC_GEOFENCE_RADIUS_M. Состояние «внутри/снаружи» — в
+# events (rc_arrived / rc_departed), переживает рестарты.
 # =========================================================================
 RC_GEOFENCE_RADIUS_M = 400
-RC_GEOFENCE_EXIT_RADIUS_M = 600
+RC_GEOFENCE_EXIT_FACTOR = 1.5   # выходной радиус = входной × 1.5
+RC_MIN_PARKED_MINUTES = 4       # столько нужно простоять в зоне для «приехал»
 RC_GPS_FRESH_MINUTES = 30
-RC_EVENTS_LOOKBACK_DAYS = 7
+RC_EVENTS_LOOKBACK_DAYS = 30
+# Совместимость с тестом гистерезиса и старым кодом
+RC_GEOFENCE_EXIT_RADIUS_M = int(RC_GEOFENCE_RADIUS_M * RC_GEOFENCE_EXIT_FACTOR)
+
+
+def _rc_entry_radius_m(rc) -> int:
+    radius = getattr(rc, "geofence_radius_m", None)
+    return int(radius) if radius else RC_GEOFENCE_RADIUS_M
+
+
+def _rc_exit_radius_m(rc) -> int:
+    return int(_rc_entry_radius_m(rc) * RC_GEOFENCE_EXIT_FACTOR)
+
+
+def _event_datetime(value, fallback: datetime) -> datetime:
+    if fallback.tzinfo is None:
+        fallback = fallback.replace(tzinfo=timezone.utc)
+    if not value:
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return fallback
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 async def rc_geofence_job(owner_bot: Bot) -> None:
@@ -914,32 +942,49 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
 
     # кто сейчас в смене на машине — для текста уведомления
     shifts_res = await session.execute(
-        select(Shift.vehicle_id, Driver.full_name)
+        select(Shift.vehicle_id, Shift.driver_id, Driver.full_name)
         .join(Driver, Driver.id == Shift.driver_id)
         .where(Shift.owner_id == owner.id, Shift.status == "started")
     )
-    driver_by_vehicle = {vid: name for vid, name in shifts_res.all()}
+    driver_by_vehicle = {vid: (driver_id, name) for vid, driver_id, name in shifts_res.all()}
 
-    # последнее состояние «внутри/снаружи» по каждой паре (машина, РЦ)
+    # последнее состояние «внутри/снаружи» по каждой паре (машина, РЦ);
+    # для rc_arrived помним и parked_since — когда машина фактически встала.
+    # rc_downtime_alert — одноразовый сигнал «стоит 12+ часов, возможны 8000 ₽».
     events_res = await session.execute(
         select(Event.event_type, Event.payload, Event.created_at)
         .where(
             Event.owner_id == owner.id,
-            Event.event_type.in_(("rc_arrived", "rc_departed")),
+            Event.event_type.in_(("rc_arrived", "rc_departed", "rc_downtime_alert")),
             Event.created_at >= now - timedelta(days=RC_EVENTS_LOOKBACK_DAYS),
         )
         .order_by(Event.created_at)
     )
-    pair_state: dict[tuple[int, int], tuple[str, datetime]] = {}
+    pair_state: dict[tuple[int, int], dict] = {}
+    downtime_alerted: set[tuple[int, int, str]] = set()
     for event_type, payload, created_at in events_res.all():
         payload = payload or {}
-        vid, rcid = payload.get("vehicle_id"), payload.get("rc_id")
-        if vid is not None and rcid is not None:
-            pair_state[(vid, rcid)] = (event_type, created_at)
+        vid = telemetry_service.int_or_none(payload.get("vehicle_id"))
+        rcid = telemetry_service.int_or_none(payload.get("rc_id"))
+        if vid is None or rcid is None:
+            continue
+        if event_type == "rc_downtime_alert":
+            parked_key = str(payload.get("parked_since") or payload.get("arrived_at") or "")
+            if parked_key:
+                downtime_alerted.add((vid, rcid, parked_key))
+            continue
+        if event_type in ("rc_arrived", "rc_departed"):
+            pair_state[(vid, rcid)] = {
+                "type": event_type,
+                "at": created_at,
+                "parked_since": payload.get("parked_since"),
+                "driver_id": payload.get("driver_id"),
+                "driver_name": payload.get("driver_name"),
+            }
 
     sent_any = False
     for st, plate in states:
-        driver_name = driver_by_vehicle.get(st.vehicle_id)
+        driver_id, driver_name = driver_by_vehicle.get(st.vehicle_id, (None, None))
         who = f" ({driver_name})" if driver_name else ""
         distances = {
             rc.id: rc_service.haversine_m(
@@ -952,46 +997,151 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
         still_inside = False
         for rc in rcs:
             last = pair_state.get((st.vehicle_id, rc.id))
-            if last is None or last[0] != "rc_arrived":
+            if last is None or last["type"] != "rc_arrived":
                 continue
-            if distances[rc.id] >= RC_GEOFENCE_EXIT_RADIUS_M:
-                waited = telemetry_service.duration_label(last[1], now)
+            if distances[rc.id] >= _rc_exit_radius_m(rc):
+                departure_driver_id = telemetry_service.int_or_none(last.get("driver_id")) or driver_id
+                departure_driver_name = last.get("driver_name") or driver_name
+                departure_who = f" ({departure_driver_name})" if departure_driver_name else ""
+                # стоянку считаем с момента фактической остановки (parked_since),
+                # а не с момента срабатывания детектора
+                arrived_ref = _event_datetime(last.get("parked_since"), last["at"])
+                waited_minutes = max(0, int((now - arrived_ref).total_seconds() // 60))
+                billable_amount = telemetry_service.rc_billable_downtime_rub(waited_minutes)
+                waited = telemetry_service.duration_label(arrived_ref, now)
+                # сколько из стоянки двигатель был заглушен (по точкам трекера)
+                engine_off = await telemetry_service.engine_off_minutes(
+                    session, vehicle_id=st.vehicle_id, start=arrived_ref, end=now
+                )
+                engine_part = ""
+                if engine_off is not None:
+                    engine_part = (
+                        "\nИз них с заглушенным двигателем: "
+                        f"<b>~{telemetry_service.minutes_label(engine_off)}</b>."
+                    )
+                billable_part = ""
+                if billable_amount:
+                    billable_part = (
+                        "\nПотенциальный простой к выставлению: "
+                        f"<b>{telemetry_service.rub_label(billable_amount)}</b> "
+                        f"(порог {telemetry_service.minutes_label(telemetry_service.RC_BILLABLE_WAIT_MINUTES)}). "
+                        "Автоматически в финансы не добавляю."
+                    )
                 await notify_owner(
                     owner_bot, session, owner,
-                    f"🏁 <b>{plate}</b>{who} уехал с РЦ <b>{rc.name}</b>. "
-                    f"Был там: <b>{waited}</b>.",
+                    f"🏁 <b>{plate}</b>{departure_who} уехал с РЦ <b>{rc.name}</b>. "
+                    f"Стоял там: <b>{waited}</b>.{engine_part}{billable_part}",
                 )
                 await log_event(
-                    session, owner_id=owner.id, event_type="rc_departed",
+                    session, owner_id=owner.id, driver_id=departure_driver_id,
+                    event_type="rc_departed",
                     payload={
                         "vehicle_id": st.vehicle_id,
                         "rc_id": rc.id,
-                        "waited_minutes": int((now - last[1]).total_seconds() // 60),
+                        "plate": plate,
+                        "rc_name": rc.name,
+                        "driver_id": departure_driver_id,
+                        "driver_name": departure_driver_name,
+                        "arrived_at": arrived_ref.isoformat(),
+                        "departed_at": now.isoformat(),
+                        "waited_minutes": waited_minutes,
+                        "engine_off_minutes": engine_off,
+                        "billable_threshold_minutes": telemetry_service.RC_BILLABLE_WAIT_MINUTES,
+                        "billable_downtime_rub": billable_amount,
+                        "billable_status": (
+                            "pending_owner_decision" if billable_amount else "not_billable"
+                        ),
                     },
                 )
-                pair_state[(st.vehicle_id, rc.id)] = ("rc_departed", now)
+                pair_state[(st.vehicle_id, rc.id)] = {"type": "rc_departed", "at": now}
                 sent_any = True
             else:
                 still_inside = True
+                arrived_ref = _event_datetime(last.get("parked_since"), last["at"])
+                waited_minutes = max(0, int((now - arrived_ref).total_seconds() // 60))
+                billable_amount = telemetry_service.rc_billable_downtime_rub(waited_minutes)
+                parked_key = arrived_ref.isoformat()
+                alert_key = (st.vehicle_id, rc.id, parked_key)
+                if billable_amount and alert_key not in downtime_alerted:
+                    alert_driver_id = telemetry_service.int_or_none(last.get("driver_id")) or driver_id
+                    alert_driver_name = last.get("driver_name") or driver_name
+                    alert_who = f" ({alert_driver_name})" if alert_driver_name else ""
+                    await notify_owner(
+                        owner_bot, session, owner,
+                        f"⏱ <b>{plate}</b>{alert_who} стоит на РЦ <b>{rc.name}</b> уже "
+                        f"<b>{telemetry_service.minutes_label(waited_minutes)}</b>.\n"
+                        f"Возможный платный простой: "
+                        f"<b>{telemetry_service.rub_label(billable_amount)}</b>.\n"
+                        "Пока деньги не добавляю автоматически — проверьте и решите вручную.",
+                    )
+                    await log_event(
+                        session, owner_id=owner.id, driver_id=alert_driver_id,
+                        event_type="rc_downtime_alert",
+                        payload={
+                            "vehicle_id": st.vehicle_id,
+                            "rc_id": rc.id,
+                            "plate": plate,
+                            "rc_name": rc.name,
+                            "driver_id": alert_driver_id,
+                            "driver_name": alert_driver_name,
+                            "parked_since": parked_key,
+                            "waited_minutes": waited_minutes,
+                            "billable_threshold_minutes": telemetry_service.RC_BILLABLE_WAIT_MINUTES,
+                            "suggested_amount_rub": billable_amount,
+                            "status": "pending_owner_decision",
+                        },
+                    )
+                    downtime_alerted.add(alert_key)
+                    sent_any = True
 
-        # 2) Въезд. РЦ часто стоят кучно (промзоны): фиксируем только
-        # БЛИЖАЙШИЙ РЦ в радиусе, и пока машина «внутри» одного РЦ —
-        # на соседние не реагируем (нельзя быть на двух складах сразу).
+        # 2) Въезд. Только если машина ОСТАНОВИЛАСЬ и стоит уже несколько
+        # минут: проезжающий мимо по соседней дороге (у нас основные трассы
+        # идут вплотную к РЦ) и стоящий на светофоре — не «приехал».
         if still_inside:
             continue
-        candidates = [rc for rc in rcs if distances[rc.id] <= RC_GEOFENCE_RADIUS_M]
+        status = st.motion_status or telemetry_service.vehicle_motion_status(
+            st.speed_kmh, st.ignition
+        )
+        if not telemetry_service.parked_long_enough(
+            status, st.motion_since_at, now, RC_MIN_PARKED_MINUTES
+        ):
+            continue
+        # РЦ часто стоят кучно (промзоны): фиксируем только БЛИЖАЙШИЙ РЦ
+        # в радиусе — нельзя быть на двух складах сразу.
+        candidates = [rc for rc in rcs if distances[rc.id] <= _rc_entry_radius_m(rc)]
         if not candidates:
             continue
         nearest = min(candidates, key=lambda rc: distances[rc.id])
+        engine = (
+            "двигатель работает"
+            if status == telemetry_service.MOTION_IDLE_ENGINE
+            else "двигатель заглушен"
+        )
+        parked_since = st.motion_since_at or now
+        since_label = fmt_dt(parked_since, owner.timezone, "%H:%M")
         await notify_owner(
             owner_bot, session, owner,
-            f"🏬 <b>{plate}</b>{who} приехал на РЦ <b>{nearest.name}</b>.",
+            f"🏬 <b>{plate}</b>{who} приехал на РЦ <b>{nearest.name}</b> — "
+            f"стоит с {since_label}, {engine}.",
         )
         await log_event(
-            session, owner_id=owner.id, event_type="rc_arrived",
-            payload={"vehicle_id": st.vehicle_id, "rc_id": nearest.id},
+            session, owner_id=owner.id, driver_id=driver_id, event_type="rc_arrived",
+            payload={
+                "vehicle_id": st.vehicle_id,
+                "rc_id": nearest.id,
+                "plate": plate,
+                "rc_name": nearest.name,
+                "driver_id": driver_id,
+                "driver_name": driver_name,
+                "parked_since": parked_since.isoformat(),
+            },
         )
-        pair_state[(st.vehicle_id, nearest.id)] = ("rc_arrived", now)
+        pair_state[(st.vehicle_id, nearest.id)] = {
+            "type": "rc_arrived", "at": now,
+            "parked_since": parked_since.isoformat(),
+            "driver_id": driver_id,
+            "driver_name": driver_name,
+        }
         sent_any = True
     if sent_any:
         await session.commit()

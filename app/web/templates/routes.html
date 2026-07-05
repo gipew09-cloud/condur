@@ -8,7 +8,7 @@
   .rc-list { display: grid; gap: 10px; margin-top: .75rem; }
   .rc-row {
     display: grid;
-    grid-template-columns: minmax(150px, 1fr) minmax(240px, 2fr) minmax(160px, 1fr) 110px 110px auto;
+    grid-template-columns: minmax(150px, 1fr) minmax(220px, 2fr) minmax(140px, 1fr) 105px 105px 90px auto;
     gap: 10px;
     align-items: end;
     margin: 0;
@@ -79,6 +79,13 @@
   </article>
   {% endif %}
 
+  {% if request is defined and request.query_params.get('geo_none') %}
+  <article class="add-banner">
+    У всех РЦ координаты уже проставлены — автопоиску нечего делать.
+    Поправить точку можно мышкой в панели «🗺 Проверить и поправить точки на карте» ниже.
+  </article>
+  {% endif %}
+
   {% if request is defined and request.query_params.get('geo_ok') is not none %}
   <article class="add-banner">
     📍 Координаты найдены: <b>{{ request.query_params.get('geo_ok') }}</b>
@@ -91,9 +98,7 @@
 
   <div class="rc-tools">
     <form method="post" action="/routes/rc/geocode" class="add-form" style="margin:0;">
-      <button type="submit" onclick="this.disabled=true; this.innerText='Ищем координаты (до полминуты)…'; this.form.submit();">
-        📍 Определить координаты по адресам
-      </button>
+      <button type="submit">📍 Определить координаты по адресам</button>
     </form>
     <p class="sub" style="margin:.3rem 0 .8rem;">
       Черновая расстановка: найдёт примерные точки для РЦ без координат (по адресу,
@@ -111,6 +116,7 @@
           <label>Алиасы <input name="aliases" placeholder="Шушары; РЦ СПб"></label>
           <label>Широта <input name="latitude" inputmode="decimal" placeholder="59.8"></label>
           <label>Долгота <input name="longitude" inputmode="decimal" placeholder="30.3"></label>
+          <label>Радиус зоны, м <input name="geofence_radius_m" inputmode="numeric" placeholder="400 (пусто = 400)"></label>
         </div>
         <button type="submit"><i class="ph ph-plus"></i> Добавить</button>
       </form>
@@ -167,6 +173,9 @@
       </label>
       <label>Долгота
         <input name="longitude" inputmode="decimal" value="{{ c.longitude or '' }}">
+      </label>
+      <label>Радиус, м
+        <input name="geofence_radius_m" inputmode="numeric" value="{{ c.geofence_radius_m or '' }}" placeholder="400" title="Зона «приехал»: расстояние от точки до машины. Большим складам ставьте больше (500–800).">
       </label>
       <div class="rc-row__actions">
         <button type="submit"><i class="ph ph-check"></i> Сохранить</button>

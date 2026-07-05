@@ -2483,6 +2483,18 @@ def _apply_distribution_center_form(center: DistributionCenter, form: dict) -> N
         center.longitude = rc_service.decimal_or_none(form.get("longitude"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # радиус геозоны: пусто = глобальный (400 м); большие склады ставят больше
+    radius_raw = str(form.get("geofence_radius_m") or "").strip()
+    if not radius_raw:
+        center.geofence_radius_m = None
+    else:
+        try:
+            radius = int(radius_raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Радиус — целое число метров")
+        if not (50 <= radius <= 5000):
+            raise HTTPException(status_code=400, detail="Радиус: от 50 до 5000 м")
+        center.geofence_radius_m = radius
 
 
 @app.get("/routes", response_class=HTMLResponse)
@@ -2552,6 +2564,7 @@ async def routes_rc_add(
     aliases: Annotated[str, Form()] = "",
     latitude: Annotated[str, Form()] = "",
     longitude: Annotated[str, Form()] = "",
+    geofence_radius_m: Annotated[str, Form()] = "",
 ):
     if not name.strip() or not address.strip():
         raise HTTPException(status_code=400, detail="Укажите название и адрес РЦ")
@@ -2569,6 +2582,7 @@ async def routes_rc_add(
     _apply_distribution_center_form(center, {
         "name": name, "address": address, "aliases": aliases,
         "latitude": latitude, "longitude": longitude,
+        "geofence_radius_m": geofence_radius_m,
     })
     center.is_active = True
     await session.commit()
@@ -2634,6 +2648,9 @@ async def routes_rc_geocode(
         .order_by(DistributionCenter.name)
     )
     pending = [c for c in centers_res.scalars().all() if (c.address or "").strip()]
+    if not pending:
+        # у всех РЦ координаты уже стоят — кнопке нечего делать
+        return RedirectResponse("/routes?geo_none=1", status_code=303)
     batch = pending[:20]
     left = len(pending) - len(batch)
     found = failed = 0
@@ -2660,6 +2677,7 @@ async def routes_rc_edit(
     aliases: Annotated[str, Form()] = "",
     latitude: Annotated[str, Form()] = "",
     longitude: Annotated[str, Form()] = "",
+    geofence_radius_m: Annotated[str, Form()] = "",
 ):
     center = await session.get(DistributionCenter, center_id)
     if center is None or center.owner_id != owner.id:
@@ -2669,6 +2687,7 @@ async def routes_rc_edit(
     _apply_distribution_center_form(center, {
         "name": name, "address": address, "aliases": aliases,
         "latitude": latitude, "longitude": longitude,
+        "geofence_radius_m": geofence_radius_m,
     })
     try:
         await session.commit()
@@ -2690,6 +2709,286 @@ async def routes_rc_delete(
     center.is_active = False
     await session.commit()
     return RedirectResponse("/routes", status_code=303)
+
+
+# =========================================================================
+# /stats — глобальная статистика: журнал простоев на РЦ, сводки
+# =========================================================================
+def _minutes_label(minutes: int | None) -> str:
+    return telemetry_service.minutes_label(minutes)
+
+
+def _payload_dt(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+@app.get("/stats", response_class=HTMLResponse)
+async def stats_page(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    period_from: Annotated[str | None, Query()] = None,
+    period_to: Annotated[str | None, Query()] = None,
+):
+    """Статистика: простои на РЦ (для счетов за простой), сводка по РЦ,
+    по водителям, заказы по неделям. Источник простоев — события
+    rc_departed от детектора геозон."""
+    tz = owner_tz(owner.timezone)
+    today = datetime.now(tz).date()
+
+    def _parse_date(raw: str | None, default: date) -> date:
+        try:
+            return date.fromisoformat((raw or "").strip())
+        except ValueError:
+            return default
+
+    df = _parse_date(period_from, month_floor(today))
+    dt_ = _parse_date(period_to, today)
+    if df > dt_:
+        df, dt_ = dt_, df
+    start_utc = datetime.combine(df, datetime.min.time()).replace(tzinfo=tz).astimezone(timezone.utc)
+    end_utc = (
+        datetime.combine(dt_, datetime.min.time()).replace(tzinfo=tz) + timedelta(days=1)
+    ).astimezone(timezone.utc)
+
+    # --- справочники ---
+    plates = dict(
+        (
+            await session.execute(
+                select(Vehicle.id, Vehicle.license_plate).where(Vehicle.owner_id == owner.id)
+            )
+        ).all()
+    )
+    rc_names = dict(
+        (
+            await session.execute(
+                select(DistributionCenter.id, DistributionCenter.name).where(
+                    DistributionCenter.owner_id == owner.id
+                )
+            )
+        ).all()
+    )
+    driver_names = dict(
+        (
+            await session.execute(
+                select(Driver.id, Driver.full_name).where(Driver.owner_id == owner.id)
+            )
+        ).all()
+    )
+
+    # --- смены, пересекающие период (для привязки водителя к простою) ---
+    shifts_rows = (
+        await session.execute(
+            select(Shift.vehicle_id, Shift.driver_id, Shift.started_at, Shift.ended_at)
+            .where(
+                Shift.owner_id == owner.id,
+                Shift.started_at <= end_utc,
+                (Shift.ended_at.is_(None)) | (Shift.ended_at >= start_utc),
+            )
+        )
+    ).all()
+
+    def _driver_at(vehicle_id: int | None, at: datetime | None) -> int | None:
+        if vehicle_id is None or at is None:
+            return None
+        for vid, did, s, e in shifts_rows:
+            if vid == vehicle_id and s is not None and s <= at and (e is None or at <= e):
+                return did
+        return None
+
+    # --- журнал простоев (rc_departed). Итоги считаем по всему периоду, а
+    # в таблицу отдаём последние 500 строк, чтобы страница не тяжелела.
+    ev_rows = (
+        await session.execute(
+            select(Event.created_at, Event.payload)
+            .where(
+                Event.owner_id == owner.id,
+                Event.event_type == "rc_departed",
+                Event.created_at >= start_utc,
+                Event.created_at < end_utc,
+            )
+            .order_by(desc(Event.created_at))
+        )
+    ).all()
+    journal_all = []
+    for created_at, payload in ev_rows:
+        payload = payload or {}
+        waited = max(0, telemetry_service.int_or_none(payload.get("waited_minutes")) or 0)
+        payload_billable = telemetry_service.int_or_none(payload.get("billable_downtime_rub"))
+        billable = (
+            max(0, payload_billable)
+            if payload_billable is not None
+            else telemetry_service.rc_billable_downtime_rub(waited)
+        )
+        vid = telemetry_service.int_or_none(payload.get("vehicle_id"))
+        rcid = telemetry_service.int_or_none(payload.get("rc_id"))
+        arrived_at = _payload_dt(payload.get("arrived_at")) or (created_at - timedelta(minutes=waited))
+        departed_at = _payload_dt(payload.get("departed_at")) or created_at
+        driver_id = (
+            telemetry_service.int_or_none(payload.get("driver_id"))
+            or _driver_at(vid, departed_at)
+            or _driver_at(vid, arrived_at)
+        )
+        driver_name = payload.get("driver_name") or driver_names.get(driver_id)
+        journal_all.append({
+            "arrived_at": arrived_at,
+            "departed_at": departed_at,
+            "plate": payload.get("plate") or plates.get(vid, "—"),
+            "rc_name": payload.get("rc_name") or rc_names.get(rcid, "—"),
+            "rc_id": rcid,
+            "driver_id": driver_id,
+            "driver": driver_name,
+            "waited_minutes": waited,
+            "waited_label": _minutes_label(waited),
+            "engine_off_label": _minutes_label(payload.get("engine_off_minutes")),
+            "billable_downtime_rub": billable,
+            "billable_label": telemetry_service.rub_label(billable),
+        })
+
+    journal = journal_all[:500]
+    total_wait_min = sum(r["waited_minutes"] for r in journal_all)
+    billable_total = sum(r["billable_downtime_rub"] for r in journal_all)
+    kpi = {
+        "visits": len(journal_all),
+        "total_wait": _minutes_label(total_wait_min),
+        "avg_wait": _minutes_label(total_wait_min // len(journal_all)) if journal_all else "—",
+        "billable_label": telemetry_service.rub_label(billable_total),
+    }
+
+    # --- сводка по РЦ ---
+    rc_agg: dict[int, dict] = {}
+    for r in journal_all:
+        agg = rc_agg.setdefault(
+            r["rc_id"], {"name": r["rc_name"], "visits": 0, "total": 0, "billable": 0}
+        )
+        agg["visits"] += 1
+        agg["total"] += r["waited_minutes"]
+        agg["billable"] += r["billable_downtime_rub"]
+    rc_summary = sorted(
+        (
+            {
+                "name": a["name"], "visits": a["visits"],
+                "total_label": _minutes_label(a["total"]),
+                "avg_label": _minutes_label(a["total"] // a["visits"]) if a["visits"] else "—",
+                "total": a["total"],
+                "billable_label": telemetry_service.rub_label(a["billable"]),
+                "billable": a["billable"],
+            }
+            for a in rc_agg.values()
+        ),
+        key=lambda x: x["total"], reverse=True,
+    )
+
+    # --- сводка по водителям: простой + рейсы + км (одометр смен) ---
+    idle_by_driver: dict[int, int] = {}
+    billable_by_driver: dict[int, int] = {}
+    idle_name_only: dict[str, int] = {}
+    billable_name_only: dict[str, int] = {}
+    for r in journal_all:
+        if r["driver_id"]:
+            idle_by_driver[r["driver_id"]] = idle_by_driver.get(r["driver_id"], 0) + r["waited_minutes"]
+            billable_by_driver[r["driver_id"]] = (
+                billable_by_driver.get(r["driver_id"], 0) + r["billable_downtime_rub"]
+            )
+        elif r["driver"]:
+            idle_name_only[r["driver"]] = idle_name_only.get(r["driver"], 0) + r["waited_minutes"]
+            billable_name_only[r["driver"]] = (
+                billable_name_only.get(r["driver"], 0) + r["billable_downtime_rub"]
+            )
+    trips_by_driver = dict(
+        (
+            await session.execute(
+                select(Trip.driver_id, func.count(Trip.id))
+                .where(
+                    Trip.owner_id == owner.id,
+                    Trip.status == "completed",
+                    Trip.completed_at >= start_utc,
+                    Trip.completed_at < end_utc,
+                )
+                .group_by(Trip.driver_id)
+            )
+        ).all()
+    )
+    km_by_driver = dict(
+        (
+            await session.execute(
+                select(Shift.driver_id, func.coalesce(func.sum(Shift.distance_km), 0))
+                .where(
+                    Shift.owner_id == owner.id,
+                    Shift.status == "completed",
+                    Shift.ended_at >= start_utc,
+                    Shift.ended_at < end_utc,
+                )
+                .group_by(Shift.driver_id)
+            )
+        ).all()
+    )
+    driver_ids = set(trips_by_driver) | set(km_by_driver) | set(idle_by_driver)
+    driver_summary = []
+    for did in driver_ids:
+        name = driver_names.get(did, f"Водитель {did}")
+        driver_summary.append({
+            "name": name,
+            "trips": trips_by_driver.get(did, 0),
+            "km": int(km_by_driver.get(did, 0) or 0),
+            "idle_label": _minutes_label(idle_by_driver.get(did, 0)),
+            "idle_minutes": idle_by_driver.get(did, 0),
+            "billable_label": telemetry_service.rub_label(billable_by_driver.get(did, 0)),
+            "billable": billable_by_driver.get(did, 0),
+        })
+    for name, idle_minutes in idle_name_only.items():
+        driver_summary.append({
+            "name": name,
+            "trips": 0,
+            "km": 0,
+            "idle_label": _minutes_label(idle_minutes),
+            "idle_minutes": idle_minutes,
+            "billable_label": telemetry_service.rub_label(billable_name_only.get(name, 0)),
+            "billable": billable_name_only.get(name, 0),
+        })
+    driver_summary.sort(key=lambda x: x["idle_minutes"], reverse=True)
+
+    # --- заказы по неделям (завершённые рейсы) ---
+    week_rows = (
+        await session.execute(
+            select(Trip.completed_at, Trip.revenue_rub)
+            .where(
+                Trip.owner_id == owner.id,
+                Trip.status == "completed",
+                Trip.completed_at >= start_utc,
+                Trip.completed_at < end_utc,
+            )
+        )
+    ).all()
+    weeks: dict[date, dict] = {}
+    for completed_at, revenue in week_rows:
+        local_day = completed_at.astimezone(tz).date()
+        monday = local_day - timedelta(days=local_day.weekday())
+        agg = weeks.setdefault(monday, {"trips": 0, "revenue": Decimal(0)})
+        agg["trips"] += 1
+        agg["revenue"] += Decimal(revenue or 0)
+    week_summary = [
+        {"week": f"нед. {k:%d.%m}", "trips": v["trips"], "revenue": v["revenue"]}
+        for k, v in sorted(weeks.items())
+    ]
+
+    return templates.TemplateResponse(
+        "stats.html",
+        {
+            "request": request, "owner": owner, "active_page": "stats",
+            "period_from": df.isoformat(), "period_to": dt_.isoformat(),
+            "kpi": kpi, "journal": journal, "rc_summary": rc_summary,
+            "driver_summary": driver_summary, "week_summary": week_summary,
+        },
+    )
 
 
 # =========================================================================

@@ -182,6 +182,15 @@ ymaps.ready(function () {
     return pm;
   }
 
+  function removeMissing(store, seenKeys) {
+    for (const key of Object.keys(store)) {
+      if (!seenKeys.has(key)) {
+        map.geoObjects.remove(store[key]);
+        delete store[key];
+      }
+    }
+  }
+
   async function refresh() {
     try {
       const r = await fetch('/api/drivers-locations');
@@ -189,12 +198,16 @@ ymaps.ready(function () {
       const data = await r.json();
       addRcs(data.rcs);
       const points = [];
+      const seenVehicles = new Set();
+      const seenDrivers = new Set();
 
       for (const v of (data.vehicles || [])) {
+        const key = 'v' + v.vehicle_id;
+        seenVehicles.add(key);
         const st = vehicleStatus(v);
         const cls = st.cls + (isFresh(v) ? '' : ' stale');
         upsertPlacemark(
-          vehicleMarkers, 'v' + v.vehicle_id, [v.lat, v.lon],
+          vehicleMarkers, key, [v.lat, v.lon],
           { plate: v.plate, markerCls: cls, balloonContentBody: vehicleBalloon(v) },
           VehicleLayout,
           { type: 'Rectangle', coordinates: [[-52, -16], [52, 16]] },
@@ -203,8 +216,10 @@ ymaps.ready(function () {
       }
 
       for (const d of (data.drivers || [])) {
+        const key = 'd' + d.driver_id;
+        seenDrivers.add(key);
         upsertPlacemark(
-          driverMarkers, 'd' + d.driver_id, [d.lat, d.lon],
+          driverMarkers, key, [d.lat, d.lon],
           { initials: d.initials || '—', markerCls: d.active_shift ? 'active' : 'idle',
             balloonContentBody: driverBalloon(d) },
           DriverLayout,
@@ -212,6 +227,9 @@ ymaps.ready(function () {
         );
         points.push([d.lat, d.lon]);
       }
+
+      removeMissing(vehicleMarkers, seenVehicles);
+      removeMissing(driverMarkers, seenDrivers);
 
       // Камеру подгоняем ОДИН раз — дальше не дёргаем, чтобы карта не прыгала,
       // пока владелец её рассматривает.

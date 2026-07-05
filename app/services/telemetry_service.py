@@ -8,7 +8,7 @@ max − min за период), а НЕ суммой расстояний меж
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
 # Больше этой доли расхождение одометра и GPS считаем подозрительным.
 MILEAGE_MISMATCH_ALERT_RATIO = Decimal("0.10")
+
+# После 12 часов в геозоне РЦ считаем простой потенциально платным.
+# Пока это только сигнал владельцу и статистика, без автозаписи в финансы:
+# GPS/геозона могут ошибиться, поэтому деньги должен подтвердить человек.
+RC_BILLABLE_WAIT_MINUTES = 12 * 60
+RC_BILLABLE_DOWNTIME_RUB = 8000
 
 MOTION_MOVING = "moving"
 MOTION_IDLE_ENGINE = "idle_engine"
@@ -74,6 +80,28 @@ def vehicle_control_signal(
     return SIGNAL_OK
 
 
+def parked_long_enough(
+    motion_status: str | None,
+    motion_since_at: datetime | None,
+    now: datetime,
+    min_minutes: int,
+) -> bool:
+    """Машина реально СТОИТ (не едет) уже минимум min_minutes.
+
+    Ключ к геозонам без ложных срабатываний: грузовик, проезжающий мимо РЦ
+    по соседней дороге (или вставший на светофоре на пару минут), не должен
+    считаться «приехавшим». Стоянка = stopped или idle_engine; отсчёт — от
+    motion_since_at (когда текущее состояние началось).
+    """
+    if motion_status not in (MOTION_STOPPED, MOTION_IDLE_ENGINE):
+        return False
+    if motion_since_at is None:
+        return False
+    if motion_since_at.tzinfo is None:
+        motion_since_at = motion_since_at.replace(tzinfo=timezone.utc)
+    return (now - motion_since_at) >= timedelta(minutes=min_minutes)
+
+
 def duration_label(start: datetime | None, end: datetime | None = None) -> str:
     """Короткая длительность: 8 мин, 2 ч 15 мин, 3 д 4 ч."""
     if start is None:
@@ -92,6 +120,46 @@ def duration_label(start: datetime | None, end: datetime | None = None) -> str:
         return f"{hours} ч {minutes} мин" if minutes else f"{hours} ч"
     days, hours = divmod(hours, 24)
     return f"{days} д {hours} ч" if hours else f"{days} д"
+
+
+def int_or_none(value) -> int | None:
+    """Безопасно привести значение из JSON/env/form к int.
+
+    В events.payload значения обычно числа, но после ручных правок/старых версий
+    там могут оказаться строки или мусор. Для статистики лучше показать прочерк,
+    чем уронить страницу владельца.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def minutes_label(minutes) -> str:
+    value = int_or_none(minutes)
+    if value is None:
+        return "—"
+    value = max(0, value)
+    if value < 60:
+        return f"{value} мин"
+    hours, mins = divmod(value, 60)
+    return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
+
+
+def rub_label(amount) -> str:
+    value = int_or_none(amount) or 0
+    if value <= 0:
+        return "—"
+    return f"{value:,}".replace(",", " ") + " ₽"
+
+
+def rc_billable_downtime_rub(waited_minutes) -> int:
+    value = int_or_none(waited_minutes)
+    if value is None or value < RC_BILLABLE_WAIT_MINUTES:
+        return 0
+    return RC_BILLABLE_DOWNTIME_RUB
 
 
 async def gps_mileage_for_period(
@@ -122,6 +190,52 @@ async def gps_mileage_for_period(
         return None
     distance = Decimal(mx) - Decimal(mn)
     return distance if distance >= 0 else None
+
+
+def sum_engine_off_seconds(
+    points: list[tuple[datetime, bool | None]],
+    gap_cap_seconds: int = 600,
+) -> int:
+    """Сколько секунд двигатель был ВЫКЛЮЧЕН по последовательности точек
+    (observed_at, ignition). Интервал между соседними точками приписываем
+    состоянию первой; дыры длиннее gap_cap_seconds не приписываем никому
+    (трекер молчал — не знаем, что было)."""
+    total = 0
+    for (t1, ign1), (t2, _ign2) in zip(points, points[1:]):
+        if t1 is None or t2 is None:
+            continue
+        delta = (t2 - t1).total_seconds()
+        if delta <= 0 or delta > gap_cap_seconds:
+            continue
+        if ign1 is False:
+            total += int(delta)
+    return total
+
+
+async def engine_off_minutes(
+    session: AsyncSession, *, vehicle_id: int, start: datetime, end: datetime
+) -> int | None:
+    """Минуты с заглушенным двигателем в интервале, по точкам телеметрии.
+    None — данных мало (меньше двух точек с известным зажиганием)."""
+    from sqlalchemy import select
+
+    from app.models import VehicleTelemetryPoint
+
+    rows = (
+        await session.execute(
+            select(VehicleTelemetryPoint.observed_at, VehicleTelemetryPoint.ignition)
+            .where(
+                VehicleTelemetryPoint.vehicle_id == vehicle_id,
+                VehicleTelemetryPoint.observed_at >= start,
+                VehicleTelemetryPoint.observed_at <= end,
+                VehicleTelemetryPoint.ignition.is_not(None),
+            )
+            .order_by(VehicleTelemetryPoint.observed_at)
+        )
+    ).all()
+    if len(rows) < 2:
+        return None
+    return sum_engine_off_seconds([(t, ign) for t, ign in rows]) // 60
 
 
 def format_mileage_comparison(odometer_km: int, gps_km: Decimal) -> str:

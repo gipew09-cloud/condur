@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Статистика{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Статистика</h1>
+  <p class="sub">Простои на РЦ (по геозонам GPS), сводки по складам и водителям, заказы по неделям.
+  Простой считается от фактической остановки машины в зоне РЦ до выезда. После 12 часов система помечает возможные 8 000 ₽ к выставлению, но не добавляет их в финансы автоматически.</p>
+</div>
+
+<form method="get" action="/stats" style="display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin-bottom:1rem;">
+  <label style="margin:0;">С даты
+    <input type="date" name="period_from" value="{{ period_from }}" style="margin:.25rem 0 0;">
+  </label>
+  <label style="margin:0;">По дату
+    <input type="date" name="period_to" value="{{ period_to }}" style="margin:.25rem 0 0;">
+  </label>
+  <button type="submit" style="margin:0;">Показать</button>
+</form>
+
+<section class="kpi-grid">
+  <div class="kpi"><small>Приездов на РЦ</small><strong>{{ kpi.visits }}</strong></div>
+  <div class="kpi"><small>Суммарный простой</small><strong>{{ kpi.total_wait }}</strong></div>
+  <div class="kpi"><small>Средний простой</small><strong>{{ kpi.avg_wait }}</strong></div>
+  <div class="kpi"><small>Потенциально к выставлению</small><strong>{{ kpi.billable_label }}</strong></div>
+</section>
+
+<h3 style="margin-top:1.5rem;">🏬 По складам (РЦ)</h3>
+{% if rc_summary %}
+<table>
+  <thead><tr><th>РЦ</th><th class="num">Приездов</th><th class="num">Простой всего</th><th class="num">В среднем</th><th class="num">К выставлению</th></tr></thead>
+  <tbody>
+    {% for r in rc_summary %}
+    <tr>
+      <td data-label="РЦ">{{ r.name }}</td>
+      <td data-label="Приездов" class="num">{{ r.visits }}</td>
+      <td data-label="Всего" class="num"><b>{{ r.total_label }}</b></td>
+      <td data-label="В среднем" class="num">{{ r.avg_label }}</td>
+      <td data-label="К выставлению" class="num">{{ r.billable_label }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:var(--text-muted);">За период приездов на РЦ не зафиксировано. Проверьте, что у РЦ проставлены координаты (Направления → справочник РЦ).</p>
+{% endif %}
+
+<h3 style="margin-top:1.5rem;">👤 По водителям</h3>
+{% if driver_summary %}
+<table>
+  <thead><tr><th>Водитель</th><th class="num">Рейсов</th><th class="num">Пробег, км</th><th class="num">Простой на РЦ</th><th class="num">К выставлению</th></tr></thead>
+  <tbody>
+    {% for d in driver_summary %}
+    <tr>
+      <td data-label="Водитель">{{ d.name }}</td>
+      <td data-label="Рейсов" class="num">{{ d.trips }}</td>
+      <td data-label="Пробег" class="num">{{ d.km }}</td>
+      <td data-label="Простой" class="num">{{ d.idle_label }}</td>
+      <td data-label="К выставлению" class="num">{{ d.billable_label }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="sub">Пробег — по одометру завершённых смен. Простой — по геозонам РЦ (кто был в смене на машине в момент стоянки).</p>
+{% else %}
+<p style="color:var(--text-muted);">За период нет завершённых рейсов и смен.</p>
+{% endif %}
+
+<h3 style="margin-top:1.5rem;">📅 Заказы по неделям</h3>
+{% if week_summary %}
+<table>
+  <thead><tr><th>Неделя (с понедельника)</th><th class="num">Рейсов</th><th class="num">Выручка, ₽</th></tr></thead>
+  <tbody>
+    {% for w in week_summary %}
+    <tr>
+      <td data-label="Неделя">{{ w.week }}</td>
+      <td data-label="Рейсов" class="num">{{ w.trips }}</td>
+      <td data-label="Выручка" class="num">{{ "{:,.0f}".format(w.revenue).replace(',', ' ') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:var(--text-muted);">Завершённых рейсов за период нет.</p>
+{% endif %}
+
+<h3 style="margin-top:1.5rem;">⏱ Журнал простоев на РЦ</h3>
+<p class="sub">Каждая стоянка в геозоне РЦ — чтобы видеть, где машину держат сверх нормы, и выставлять счета за простой. Показаны последние 500 за период.</p>
+{% if journal %}
+<table>
+  <thead><tr><th>Приехал</th><th>Уехал</th><th>Машина</th><th>Водитель</th><th>РЦ</th><th class="num">Стоял</th><th class="num">Мотор заглушен</th><th class="num">К выставлению</th></tr></thead>
+  <tbody>
+    {% for r in journal %}
+    <tr>
+      <td data-label="Приехал">{{ r.arrived_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+      <td data-label="Уехал">{{ r.departed_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+      <td data-label="Машина">{{ r.plate }}</td>
+      <td data-label="Водитель">{{ r.driver or '—' }}</td>
+      <td data-label="РЦ">{{ r.rc_name }}</td>
+      <td data-label="Стоял" class="num"><b>{{ r.waited_label }}</b></td>
+      <td data-label="Мотор заглушен" class="num">{{ r.engine_off_label }}</td>
+      <td data-label="К выставлению" class="num">{{ r.billable_label }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:var(--text-muted);">Записей за период нет.</p>
+{% endif %}
+{% endblock %}
