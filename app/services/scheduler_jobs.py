@@ -716,21 +716,27 @@ async def no_show_detector_job(owner_bot: Bot) -> None:
 MIXUP_SHIFT_STOPPED_MINUTES = 15
 MIXUP_DEDUP_HOURS = 2
 MIXUP_GPS_STALE_MINUTES = 30
+# Напоминание водителю «поехал — начни смену»: не чаще раза в N часов на машину,
+# и только если машина едет уже не мельком (фильтр от кратких скачков GPS).
+START_REMINDER_DEDUP_HOURS = 2
+START_REMINDER_MIN_MOVING_MINUTES = 3
 
 
-async def vehicle_mixup_detector_job(owner_bot: Bot) -> None:
+async def vehicle_mixup_detector_job(owner_bot: Bot, driver_bot: Bot | None = None) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
         for owner in owners_res.scalars().all():
             try:
-                await _check_vehicle_mixup(session, owner_bot, owner)
+                await _check_vehicle_mixup(session, owner_bot, owner, driver_bot)
             except Exception:
                 logger.exception("vehicle_mixup_detector_job failed for owner %s", owner.id)
                 await session.rollback()
                 continue
 
 
-async def _check_vehicle_mixup(session, owner_bot: Bot, owner: Owner) -> None:
+async def _check_vehicle_mixup(
+    session, owner_bot: Bot, owner: Owner, driver_bot: Bot | None = None
+) -> None:
     now = datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(minutes=MIXUP_GPS_STALE_MINUTES)
     stopped_cutoff = now - timedelta(minutes=MIXUP_SHIFT_STOPPED_MINUTES)
@@ -746,6 +752,18 @@ async def _check_vehicle_mixup(session, owner_bot: Bot, owner: Owner) -> None:
     shift_by_vehicle = {
         vehicle_id: (shift_id, driver_name, plate)
         for shift_id, vehicle_id, driver_name, plate in shifts_res.all()
+    }
+    # водители, у кого сейчас есть активная смена (на любой машине) — им
+    # напоминание «начни смену» не шлём
+    active_driver_ids = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(Shift.driver_id).where(
+                    Shift.owner_id == owner.id, Shift.status == "started"
+                )
+            )
+        ).all()
     }
 
     # свежие GPS-состояния всех машин владельца
@@ -842,8 +860,81 @@ async def _check_vehicle_mixup(session, owner_bot: Bot, owner: Owner) -> None:
             )
             recent_moving.add(mv_vid)
             sent_any = True
+
+    # Напоминание ВОДИТЕЛЮ: его закреплённая машина поехала, а смена не начата.
+    if driver_bot is not None:
+        sent_any = await _remind_drivers_to_start_shift(
+            session, driver_bot, owner, moving_no_shift, active_driver_ids, now
+        ) or sent_any
+
     if sent_any:
         await session.commit()
+
+
+async def _remind_drivers_to_start_shift(
+    session, driver_bot: Bot, owner: Owner,
+    moving_no_shift: list[tuple], active_driver_ids: set[int], now: datetime,
+) -> bool:
+    """Водителю, за кем закреплена машина (default_vehicle_id), которая едет без
+    смены, шлём «начните смену». Защита от спама/скачков GPS:
+      - машина едет уже ≥ START_REMINDER_MIN_MOVING_MINUTES (не мельком);
+      - не чаще раза в START_REMINDER_DEDUP_HOURS на машину (дедуп через events);
+      - только если у водителя нет активной смены."""
+    from app.bots.notifications import notify_driver
+
+    # оставляем только машины, которые едут достаточно долго (фильтр от скачков GPS)
+    steady_vids = telemetry_service.steady_moving_vehicle_ids(
+        [(vid, since) for vid, _plate, _speed, since in moving_no_shift],
+        now, START_REMINDER_MIN_MOVING_MINUTES,
+    )
+    if not steady_vids:
+        return False
+
+    drivers = (
+        await session.execute(
+            select(Driver.id, Driver.telegram_id, Driver.default_vehicle_id, Vehicle.license_plate)
+            .join(Vehicle, Vehicle.id == Driver.default_vehicle_id)
+            .where(
+                Driver.owner_id == owner.id,
+                Driver.is_active.is_(True),
+                Driver.telegram_id.is_not(None),
+                Driver.default_vehicle_id.in_(steady_vids),
+            )
+        )
+    ).all()
+    if not drivers:
+        return False
+
+    reminded_recently = {
+        (row[0] or {}).get("vehicle_id")
+        for row in (
+            await session.execute(
+                select(Event.payload).where(
+                    Event.owner_id == owner.id,
+                    Event.event_type == "start_shift_reminder",
+                    Event.created_at >= now - timedelta(hours=START_REMINDER_DEDUP_HOURS),
+                )
+            )
+        ).all()
+    }
+
+    sent = False
+    for driver_id, telegram_id, vehicle_id, plate in drivers:
+        if driver_id in active_driver_ids:
+            continue  # уже в смене (возможно, на другой машине)
+        if vehicle_id in reminded_recently:
+            continue
+        await notify_driver(
+            driver_bot, session, telegram_id,
+            msg.DRIVER_START_SHIFT_REMINDER.format(plate=plate),
+        )
+        await log_event(
+            session, owner_id=owner.id, driver_id=driver_id,
+            event_type="start_shift_reminder", payload={"vehicle_id": vehicle_id},
+        )
+        reminded_recently.add(vehicle_id)
+        sent = True
+    return sent
 
 
 # =========================================================================
@@ -950,7 +1041,7 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
 
     # последнее состояние «внутри/снаружи» по каждой паре (машина, РЦ);
     # для rc_arrived помним и parked_since — когда машина фактически встала.
-    # rc_downtime_alert — одноразовый сигнал «стоит 12+ часов, возможны 8000 ₽».
+    # rc_downtime_alert — сигнал при каждом новом 12-часовом блоке платного простоя.
     events_res = await session.execute(
         select(Event.event_type, Event.payload, Event.created_at)
         .where(
@@ -961,7 +1052,7 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
         .order_by(Event.created_at)
     )
     pair_state: dict[tuple[int, int], dict] = {}
-    downtime_alerted: set[tuple[int, int, str]] = set()
+    downtime_alerted: dict[tuple[int, int, str], int] = {}
     for event_type, payload, created_at in events_res.all():
         payload = payload or {}
         vid = telemetry_service.int_or_none(payload.get("vehicle_id"))
@@ -971,7 +1062,9 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
         if event_type == "rc_downtime_alert":
             parked_key = str(payload.get("parked_since") or payload.get("arrived_at") or "")
             if parked_key:
-                downtime_alerted.add((vid, rcid, parked_key))
+                amount = telemetry_service.int_or_none(payload.get("suggested_amount_rub")) or 0
+                key = (vid, rcid, parked_key)
+                downtime_alerted[key] = max(downtime_alerted.get(key, 0), amount)
             continue
         if event_type in ("rc_arrived", "rc_departed"):
             pair_state[(vid, rcid)] = {
@@ -1062,7 +1155,8 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
                 billable_amount = telemetry_service.rc_billable_downtime_rub(waited_minutes)
                 parked_key = arrived_ref.isoformat()
                 alert_key = (st.vehicle_id, rc.id, parked_key)
-                if billable_amount and alert_key not in downtime_alerted:
+                alerted_amount = downtime_alerted.get(alert_key, 0)
+                if billable_amount and billable_amount > alerted_amount:
                     alert_driver_id = telemetry_service.int_or_none(last.get("driver_id")) or driver_id
                     alert_driver_name = last.get("driver_name") or driver_name
                     alert_who = f" ({alert_driver_name})" if alert_driver_name else ""
@@ -1072,6 +1166,7 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
                         f"<b>{telemetry_service.minutes_label(waited_minutes)}</b>.\n"
                         f"Возможный платный простой: "
                         f"<b>{telemetry_service.rub_label(billable_amount)}</b>.\n"
+                        "Считаю по 8 000 ₽ за каждые полные 12 часов. "
                         "Пока деньги не добавляю автоматически — проверьте и решите вручную.",
                     )
                     await log_event(
@@ -1091,7 +1186,7 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
                             "status": "pending_owner_decision",
                         },
                     )
-                    downtime_alerted.add(alert_key)
+                    downtime_alerted[alert_key] = billable_amount
                     sent_any = True
 
         # 2) Въезд. Только если машина ОСТАНОВИЛАСЬ и стоит уже несколько
@@ -1112,17 +1207,20 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
         if not candidates:
             continue
         nearest = min(candidates, key=lambda rc: distances[rc.id])
-        engine = (
-            "двигатель работает"
+        # Про мотор говорим ТОЛЬКО когда точно знаем (idle_engine = зажигание
+        # пришло). Датчик «выкл» в EGTS пока не приходит, поэтому при stopped
+        # НЕ утверждаем «заглушен» — это была бы ложь (см. NEXT_SESSION_PROMPT).
+        engine_part = (
+            ", двигатель работает"
             if status == telemetry_service.MOTION_IDLE_ENGINE
-            else "двигатель заглушен"
+            else ""
         )
         parked_since = st.motion_since_at or now
         since_label = fmt_dt(parked_since, owner.timezone, "%H:%M")
         await notify_owner(
             owner_bot, session, owner,
             f"🏬 <b>{plate}</b>{who} приехал на РЦ <b>{nearest.name}</b> — "
-            f"стоит с {since_label}, {engine}.",
+            f"стоит с {since_label}{engine_part}.",
         )
         await log_event(
             session, owner_id=owner.id, driver_id=driver_id, event_type="rc_arrived",

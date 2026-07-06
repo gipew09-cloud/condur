@@ -1,8 +1,10 @@
 {% if totals %}
 {# KPI внутри партиала: при HTMX-фильтре по датам/водителю цифры обновляются вместе с таблицей #}
-<div class="sp-kpi" style="margin-bottom:1.25rem; grid-template-columns: repeat(3, 1fr);">
+{% set expenses_total = totals.expenses | default(0) %}
+<div class="sp-kpi" style="margin-bottom:1.25rem;">
   <div class="c"><div class="lbl">Рейсов по фильтру</div><div class="val">{{ totals.count }}</div></div>
   <div class="c"><div class="lbl">Выручка</div><div class="val">{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} <span class="rub">₽</span></div></div>
+  <div class="c"><div class="lbl">Расходы</div><div class="val">{{ "{:,.0f}".format(expenses_total).replace(',', ' ') }} <span class="rub">₽</span></div></div>
   <div class="c dark"><div class="lbl">Прибыль</div><div class="val">{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} <span class="rub">₽</span></div></div>
 </div>
 {% endif %}
@@ -10,18 +12,22 @@
 {% if not rows %}
   <p>По выбранным фильтрам рейсов не найдено.</p>
 {% else %}
-  <table>
+  <div class="sp-trip-open" style="margin-bottom:1rem;">
+    <b>Карточка рейса открывается кликом по строке</b>
+    <span>таймлайн, РЦ, документы, выручка, удаление дубля</span>
+  </div>
+  <table class="sp-trip-table">
     <thead>
       <tr>
-        <th>Дата</th><th>Маршрут</th><th>Водитель</th><th>Машина</th>
-        <th class="num">Выручка</th><th class="num">Топливо</th><th class="num">Прибыль</th><th>Статус</th>
+        <th>Маршрут</th><th>Машина</th><th>Водитель</th><th>Время</th>
+        <th class="num">Выручка</th><th class="num">Расходы</th><th class="num">Прибыль</th><th>Статус</th>
       </tr>
     </thead>
     <tbody>
     {% for trip, driver_name, plate in rows %}
       {% set revenue = (trip.revenue_rub or 0) | float %}
       {% set profit = (trip.profit_rub or 0) | float %}
-      {% set fuel = (trip.fuel_cost_rub or 0) | float %}
+      {% set expenses = ((trip.fuel_cost_rub or 0) + (trip.other_costs_rub or 0)) | float %}
       {% set margin = (profit / revenue * 100) if revenue > 0 else 0 %}
       {% if profit < 0 %}
         {% set cls = "row-loss" %}
@@ -31,20 +37,47 @@
         {% set cls = "row-profit" %}
       {% endif %}
       <tr class="{{ cls }}" onclick="location.href='/trips/{{ trip.id }}'" style="cursor:pointer;">
-        <td data-label="Дата">{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
-        <td data-label="Маршрут">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}
-          {% if trip.is_manual %}<span class="badge badge--neutral" title="Добавлено вручную, км неизвестен">вручную</span>{% endif %}</td>
+        <td data-label="Маршрут">
+          <span class="sp-trip-route">
+            <b>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</b>
+            <small>
+              {% if trip.is_manual %}вручную · км неизвестен{% else %}из бота водителя{% endif %}
+              {% if trip.cargo_name %} · груз: {{ trip.cargo_name }}{% endif %}
+            </small>
+          </span>
+        </td>
+        <td data-label="Машина"><b>{{ plate }}</b></td>
         <td data-label="Водитель">{{ driver_name }}</td>
-        <td data-label="Машина">{{ plate }}</td>
+        <td data-label="Время">
+          <b>{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</b>
+          <span class="sp-trip-sub">
+            {% if trip.completed_at %}
+              завершён {{ trip.completed_at | localdt(owner.timezone, '%d.%m %H:%M') }}
+            {% else %}
+              рейс открыт
+            {% endif %}
+          </span>
+        </td>
         <td data-label="Выручка" class="num">
-          {{ "{:,.0f}".format(revenue).replace(',', ' ') }}
+          <span class="sp-money {% if revenue == 0 %}zero{% endif %}">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</span>
           {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
             <br><span class="badge badge--warning">на подтверждении {{ "{:,.0f}".format(trip.driver_revenue_pending_rub).replace(',', ' ') }} ₽</span>
           {% endif %}
         </td>
-        <td data-label="Топливо" class="num">{{ "{:,.0f}".format(fuel).replace(',', ' ') }}</td>
-        <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</td>
-        <td data-label="Статус"><span class="pill {{ trip.status | pillclass }}">{{ trip.status | tstatus }}</span></td>
+        <td data-label="Расходы" class="num">
+          <span class="sp-money {% if expenses == 0 %}zero{% endif %}">{{ "{:,.0f}".format(expenses).replace(',', ' ') }}</span>
+        </td>
+        <td data-label="Прибыль" class="num">
+          <span class="sp-money {% if profit > 0 %}pos{% elif profit == 0 %}zero{% endif %}">{{ "{:,.0f}".format(profit).replace(',', ' ') }}</span>
+        </td>
+        <td data-label="Статус">
+          <span class="sp-trip-status">
+            <span class="pill {{ trip.status | pillclass }}">{{ trip.status | tstatus }}</span>
+            {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
+              <span class="badge badge--warning">выручка</span>
+            {% endif %}
+          </span>
+        </td>
       </tr>
     {% endfor %}
     </tbody>

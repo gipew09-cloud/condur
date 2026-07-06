@@ -159,7 +159,8 @@ def rc_billable_downtime_rub(waited_minutes) -> int:
     value = int_or_none(waited_minutes)
     if value is None or value < RC_BILLABLE_WAIT_MINUTES:
         return 0
-    return RC_BILLABLE_DOWNTIME_RUB
+    blocks = value // RC_BILLABLE_WAIT_MINUTES
+    return blocks * RC_BILLABLE_DOWNTIME_RUB
 
 
 async def gps_mileage_for_period(
@@ -212,11 +213,52 @@ def sum_engine_off_seconds(
     return total
 
 
+def steady_moving_vehicle_ids(
+    moving_points: list[tuple[int, datetime | None]],
+    now: datetime,
+    min_minutes: int,
+) -> set[int]:
+    """ID машин, которые едут ДОЛЬШЕ min_minutes — фильтр от кратких скачков GPS
+    (одиночный «прыжок» скорости не должен слать напоминание «начни смену»).
+    moving_points: список (vehicle_id, motion_since_at)."""
+    cutoff = now - timedelta(minutes=min_minutes)
+    result: set[int] = set()
+    for vid, since in moving_points:
+        if since is None:
+            continue
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if since <= cutoff:
+            result.add(vid)
+    return result
+
+
+def engine_off_minutes_from_points(
+    points: list[tuple[datetime, bool | None]],
+) -> int | None:
+    """Минуты с заглушенным двигателем по точкам (observed_at, ignition).
+
+    ВАЖНО (см. NEXT_SESSION_PROMPT.md, разбор EGTS): датчик зажигания в
+    ретрансляции Stavtrack пока НЕ приходит — парсер даёт ignition только
+    True или None, но никогда False. Пока в данных нет НИ ОДНОЙ точки с
+    ignition=False, честно возвращаем None («нет данных»), а НЕ 0 — иначе
+    в статистике простоя и в счетах за простой будет ложь. Когда датчик
+    включат в Stavtrack и пойдут реальные False — функция сама начнёт
+    считать настоящие минуты.
+    """
+    known = [(t, ign) for t, ign in points if ign is not None]
+    if len(known) < 2:
+        return None
+    if not any(ign is False for _, ign in known):
+        return None
+    return sum_engine_off_seconds(known) // 60
+
+
 async def engine_off_minutes(
     session: AsyncSession, *, vehicle_id: int, start: datetime, end: datetime
 ) -> int | None:
     """Минуты с заглушенным двигателем в интервале, по точкам телеметрии.
-    None — данных мало (меньше двух точек с известным зажиганием)."""
+    None — датчик зажигания «выкл» не приходит (см. engine_off_minutes_from_points)."""
     from sqlalchemy import select
 
     from app.models import VehicleTelemetryPoint
@@ -233,9 +275,7 @@ async def engine_off_minutes(
             .order_by(VehicleTelemetryPoint.observed_at)
         )
     ).all()
-    if len(rows) < 2:
-        return None
-    return sum_engine_off_seconds([(t, ign) for t, ign in rows]) // 60
+    return engine_off_minutes_from_points([(t, ign) for t, ign in rows])
 
 
 def format_mileage_comparison(odometer_km: int, gps_km: Decimal) -> str:

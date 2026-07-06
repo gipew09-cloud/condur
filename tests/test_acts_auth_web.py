@@ -467,6 +467,19 @@ def test_trip_detail_shows_pending_driver_revenue_separately():
 
     assert "на подтверждении 12 000 ₽" in html
     assert "<strong>0 ₽</strong>" in html
+    assert "Карточка рейса · таймлайн" in html
+    assert "Удалить рейс" in html
+
+
+def test_trip_and_shift_delete_routes_are_safe_detach_handlers():
+    src = open("app/web/router.py", encoding="utf-8").read()
+    assert '@app.post("/trips/{trip_id}/delete")' in src
+    assert '@app.post("/shifts/{shift_id}/delete")' in src
+    assert "Expense.trip_id == trip.id" in src
+    assert "Event.trip_id == trip.id" in src
+    assert "TripDocument.trip_id == trip.id" in src
+    assert "Expense.shift_id == shift.id" in src
+    assert "Event.shift_id == shift.id" in src
 
 
 # ------------------------------------------------------------------ карта (Яндекс)

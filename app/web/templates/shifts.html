@@ -9,6 +9,10 @@
   <p class="sub">Последние 200 смен. Клик по строке — фото одометров, рейсы и расходы.</p>
 </div>
 
+{% if request is defined and request.query_params.get('deleted') %}
+<p style="color:var(--pico-ins-color, green); font-weight:700;">Смена удалена. Расходы и события оставлены в истории.</p>
+{% endif %}
+
 {% if not rows %}
   <p>Смен ещё не было.</p>
 {% else %}

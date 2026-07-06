@@ -29,15 +29,41 @@ def test_render_stats_page():
         owner=owner, active_page="stats",
         period_from="2026-07-01", period_to="2026-07-05",
         kpi={
-            "visits": 3, "total_wait": "5 ч 10 мин",
-            "avg_wait": "1 ч 43 мин", "billable_label": "8 000 ₽",
+            "visits": 4, "total_wait": "33 ч 10 мин",
+            "avg_wait": "8 ч 17 мин", "billable_label": "24 000 ₽",
         },
-        journal=[{
-            "arrived_at": when, "departed_at": when,
-            "plate": "Т772НХ178", "driver": "Иван", "rc_name": "Дикси Шушары",
-            "rc_id": 1, "waited_minutes": 260, "waited_label": "4 ч 20 мин",
-            "engine_off_label": "3 ч 50 мин", "billable_label": "8 000 ₽",
-        }],
+        journal=[
+            {
+                "arrived_at": when, "departed_at": when,
+                "plate": "У774ЕТ178", "driver": "Пётр", "rc_name": "РЦ 7 шагов",
+                "rc_id": 2, "route": "СПб → РЦ 7 шагов",
+                "waited_minutes": 1680, "waited_label": "28 ч",
+                "engine_off_label": "27 ч 40 мин",
+                "billable_downtime_rub": 16000,
+                "billable_label": "16 000 ₽",
+                "billable_blocks": 2,
+            },
+            {
+                "arrived_at": when, "departed_at": when,
+                "plate": "Т772НХ178", "driver": "Иван", "rc_name": "Дикси Шушары",
+                "rc_id": 1, "route": None,
+                "waited_minutes": 260, "waited_label": "4 ч 20 мин",
+                "engine_off_label": "3 ч 50 мин",
+                "billable_downtime_rub": 8000,
+                "billable_label": "8 000 ₽",
+                "billable_blocks": 1,
+            },
+        ],
+        billable_alerts=[
+            {
+                "plate": "У774ЕТ178", "rc_name": "РЦ 7 шагов", "route": "СПб → РЦ 7 шагов",
+                "waited_label": "28 ч", "billable_label": "16 000 ₽", "billable_blocks": 2,
+            },
+            {
+                "plate": "Т772НХ178", "rc_name": "Дикси Шушары", "route": None,
+                "waited_label": "4 ч 20 мин", "billable_label": "8 000 ₽", "billable_blocks": 1,
+            },
+        ],
         rc_summary=[{"name": "Дикси Шушары", "visits": 3,
                      "total_label": "5 ч 10 мин", "avg_label": "1 ч 43 мин",
                      "total": 310, "billable_label": "8 000 ₽", "billable": 8000}],
@@ -55,7 +81,8 @@ def test_render_stats_page():
     assert "Журнал простоев" in html
     assert "Т772НХ178" in html and "Дикси Шушары" in html
     assert "4 ч 20 мин" in html and "3 ч 50 мин" in html
-    assert "Потенциально к выставлению" in html and "8 000 ₽" in html
+    assert "Потенциально к выставлению" in html and "24 000 ₽" in html
+    assert "16 000 ₽" in html and "2 блок(а) по 12 часов" in html
     assert "106 000" in html
     assert "Операционный контроль сейчас" in html
     assert "GPS давно не обновлялся" in html and "1 срочно" in html
@@ -119,7 +146,7 @@ def test_minutes_label_and_safe_int_for_dirty_event_payloads():
 
 
 def test_rc_billable_downtime_threshold():
-    """12 часов на РЦ дают потенциальные 8000 ₽, но раньше порога — нет."""
+    """Каждые полные 12 часов на РЦ добавляют ещё 8000 ₽ к проверке."""
     from app.services.telemetry_service import (
         RC_BILLABLE_DOWNTIME_RUB,
         RC_BILLABLE_WAIT_MINUTES,
@@ -131,6 +158,9 @@ def test_rc_billable_downtime_threshold():
     assert RC_BILLABLE_DOWNTIME_RUB == 8000
     assert rc_billable_downtime_rub(RC_BILLABLE_WAIT_MINUTES - 1) == 0
     assert rc_billable_downtime_rub(RC_BILLABLE_WAIT_MINUTES) == 8000
+    assert rc_billable_downtime_rub(RC_BILLABLE_WAIT_MINUTES * 2 - 1) == 8000
+    assert rc_billable_downtime_rub(RC_BILLABLE_WAIT_MINUTES * 2) == 16000
+    assert rc_billable_downtime_rub(RC_BILLABLE_WAIT_MINUTES * 3) == 24000
     assert rc_billable_downtime_rub("bad") == 0
     assert rub_label(8000) == "8 000 ₽"
 
@@ -145,6 +175,7 @@ def test_scheduler_records_single_rc_downtime_alert_source():
     assert '"rc_downtime_alert"' in source
     assert "pending_owner_decision" in source
     assert "Пока деньги не добавляю автоматически" in source
+    assert "billable_amount > alerted_amount" in source
 
 
 def test_parse_nominatim_ok():
@@ -188,6 +219,46 @@ def test_sum_engine_off_seconds():
 
     assert sum_engine_off_seconds([]) == 0
     assert sum_engine_off_seconds([pt(0, False)]) == 0
+
+
+def test_engine_off_minutes_none_when_sensor_absent():
+    """Честность: пока датчик зажигания «выкл» не приходит (ignition только
+    True/None, никогда False), функция возвращает None — «нет данных», а НЕ 0.
+    Иначе простой и деньги считались бы неправильно."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.telemetry_service import engine_off_minutes_from_points
+
+    t0 = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
+    pt = lambda minutes, ign: (t0 + timedelta(minutes=minutes), ign)  # noqa: E731
+
+    # Реальность СЕЙЧАС: только True и None (датчик выкл не приходит) → None
+    assert engine_off_minutes_from_points([pt(0, True), pt(10, True), pt(20, None)]) is None
+    # Совсем нет данных о зажигании → None
+    assert engine_off_minutes_from_points([pt(0, None), pt(10, None)]) is None
+    # Меньше двух известных точек → None
+    assert engine_off_minutes_from_points([pt(0, True)]) is None
+    # Когда датчик ВКЛЮЧАТ и пойдут реальные False — считаем настоящие минуты
+    assert engine_off_minutes_from_points([pt(0, False), pt(10, False), pt(20, True)]) == 20
+
+
+def test_steady_moving_filters_gps_glitches():
+    """Напоминание «начни смену» — только если машина едет не мельком.
+    Одиночный скачок GPS (движется < порога) отфильтровывается."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.telemetry_service import steady_moving_vehicle_ids
+
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+    points = [
+        (1, now - timedelta(minutes=10)),   # едет 10 мин → включаем
+        (2, now - timedelta(minutes=1)),    # едет 1 мин → скачок, отбрасываем
+        (3, None),                          # нет данных о начале → отбрасываем
+        (4, (now - timedelta(minutes=5)).replace(tzinfo=None)),  # naive → 5 мин, включаем
+    ]
+    assert steady_moving_vehicle_ids(points, now, min_minutes=3) == {1, 4}
+    # порог больше — остаётся только тот, кто едет давно
+    assert steady_moving_vehicle_ids(points, now, min_minutes=8) == {1}
 
 
 def test_parked_long_enough_filters_drive_by_and_short_stops():

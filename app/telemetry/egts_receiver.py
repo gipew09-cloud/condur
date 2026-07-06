@@ -245,6 +245,12 @@ async def _process_packet(
         unknown_types = sorted({
             t for rec in (parsed.records if parsed else []) for t in rec.unknown_subrecords
         })
+        ext_pos_payloads = sorted({
+            pos.ext_pos_data.hex(" ")
+            for rec in (parsed.records if parsed else [])
+            for pos in rec.positions
+            if pos.ext_pos_data
+        })
         state_v = next(
             (rec.state.main_power_v for rec in (parsed.records if parsed else [])
              if rec.state is not None),
@@ -252,11 +258,12 @@ async def _process_packet(
         )
         logger.info(
             "EGTS packet id=%s status=%s terminal=%s vehicle=%s points=%s bytes=%s "
-            "power=%sV unknown_sr=%s hex=%s",
+            "power=%sV ext_pos=%s unknown_sr=%s hex=%s",
             raw.id, raw.parse_status, terminal_id,
             vehicle.license_plate if vehicle else "—",
             points_saved, len(payload),
             state_v if state_v is not None else "—",
+            ext_pos_payloads or "—",
             unknown_types or "—",
             _preview_hex(payload, limit=96),
         )

@@ -109,7 +109,24 @@ def test_ignition_from_movement_or_speed_when_din_empty():
     parsed = egts.parse_packet(_sample_packet(din=0x00, moving=False, speed_kmh=54))
     assert parsed.records[0].positions[0].ignition is True
     parsed = egts.parse_packet(_sample_packet(din=0x00, moving=False, speed_kmh=0))
-    assert parsed.records[0].positions[0].ignition is False
+    assert parsed.records[0].positions[0].ignition is None
+
+
+def test_ext_pos_data_is_not_treated_as_unknown_or_ignition():
+    when = datetime(2026, 7, 6, 12, 34, 11, tzinfo=timezone.utc)
+    pos = _encode_pos_data(when=when, lat=59.832085, lon=30.4411716,
+                           speed_kmh=0, course=340, odometer_km=88518.5,
+                           moving=False, valid=True, din=0)
+    ext_pos = bytes([egts.SR_EXT_POS_DATA]) + struct.pack("<H", 2) + bytes.fromhex("08 0a")
+    packet = _encode_appdata(pid=12061, rn=1, oid=129772, when=when, pos=pos,
+                             extra_sub=ext_pos)
+
+    (rec,) = egts.parse_packet(packet).records
+    assert rec.unknown_subrecords == []
+    (parsed_pos,) = rec.positions
+    assert parsed_pos.ext_pos_data == bytes.fromhex("08 0a")
+    # SR_EXT_POS_DATA у Stavtrack — точность/спутники, а не датчик зажигания.
+    assert parsed_pos.ignition is None
 
 
 def test_southern_western_hemispheres():

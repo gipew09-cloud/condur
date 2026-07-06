@@ -74,10 +74,9 @@
     </ul>
     <ul class="topbar-actions" aria-label="Быстрые действия">
       <li>
-        <a class="nav-icon-button" href="/stats" title="Операционный контроль">
+        <a class="nav-icon-button" href="/stats" title="Операционный контроль" aria-label="Операционный контроль">
           <i class="ph ph-bell"></i>
           {% if nav_alert_count %}<span class="nav-alert-dot" aria-hidden="true"></span>{% endif %}
-          <span class="sr-only">Операционный контроль</span>
         </a>
       </li>
       <li>
@@ -86,9 +85,8 @@
         </span>
       </li>
       <li>
-        <a class="nav-icon-button" href="/logout" title="Выйти">
+        <a class="nav-icon-button" href="/logout" title="Выйти" aria-label="Выйти">
           <i class="ph ph-sign-out"></i>
-          <span class="sr-only">Выйти</span>
         </a>
       </li>
     </ul>

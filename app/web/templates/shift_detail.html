@@ -130,4 +130,14 @@
   </tbody>
 </table>
 {% endif %}
+
+<section style="margin-top:1.5rem; padding:1rem; border:1px solid #fecaca; border-radius:12px; background:#fff7f7;">
+  <h3 style="margin-top:0; color:#991b1b;">Удаление смены</h3>
+  <p style="color:#991b1b; font-weight:700;">
+    Удаляйте только дубль или ошибочную тестовую смену. Рейсы этой смены будут удалены, расходы и события останутся в истории без привязки к смене.
+  </p>
+  <form action="/shifts/{{ shift.id }}/delete" method="post" onsubmit="return confirm('Удалить смену и её рейсы? Это действие нельзя отменить.');">
+    <button type="submit" style="width:auto; background:#dc2626; border-color:#dc2626;">Удалить смену</button>
+  </form>
+</section>
 {% endblock %}

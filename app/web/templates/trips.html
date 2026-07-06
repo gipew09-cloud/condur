@@ -10,6 +10,10 @@
   <p class="sub">Все рейсы автопарка. Фильтруйте по водителю и датам или добавьте рейс вручную.</p>
 </div>
 
+{% if request is defined and request.query_params.get('deleted') %}
+<p style="color:var(--pico-ins-color, green); font-weight:700;">Рейс удалён. Связанные расходы и события оставлены в истории.</p>
+{% endif %}
+
 <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
   <div class="grid">
     <label>

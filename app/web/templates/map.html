@@ -69,6 +69,7 @@
   .map-dot.moving { background: #16a34a; }
   .map-dot.idle-engine { background: #d97706; }
   .map-dot.off { background: #64748b; }
+  .map-dot.unknown { background: #94a3b8; }
   .map-dot.stale { background: #ef4444; }
   .map-dot.invalid {
     background: transparent;
@@ -125,6 +126,7 @@
   .vehicle-marker.moving { background: linear-gradient(135deg, #16a34a, #15803d); }
   .vehicle-marker.idle-engine { background: linear-gradient(135deg, #d97706, #b45309); }
   .vehicle-marker.off { background: linear-gradient(135deg, #94a3b8, #475569); }
+  .vehicle-marker.unknown { background: linear-gradient(135deg, #94a3b8, #64748b); }
   .vehicle-marker.stale { opacity: .6; }
 
   /* Балуны */
@@ -162,7 +164,7 @@
       <div class="map-legend">
         <div class="map-legend__row"><i class="map-dot moving"></i><span>Едет по маршруту</span></div>
         <div class="map-legend__row"><i class="map-dot idle-engine"></i><span>Стоит, двигатель работает</span></div>
-        <div class="map-legend__row"><i class="map-dot off"></i><span>Стоит, двигатель заглушен</span></div>
+        <div class="map-legend__row"><i class="map-dot unknown"></i><span>Стоит, зажигание не передано</span></div>
         <div class="map-legend__row"><i class="map-dot stale"></i><span>GPS давно не обновлялся</span></div>
         <div class="map-legend__row"><i class="map-dot invalid"></i><span>GPS недостоверный</span></div>
       </div>
@@ -233,10 +235,11 @@ ymaps.ready(function () {
   function vehicleStatus(v) {
     if (v.motion_status === 'moving') return { text: `🟢 ${v.motion_status_text}`, cls: 'moving' };
     if (v.motion_status === 'idle_engine') return { text: `🟡 ${v.motion_status_text}`, cls: 'idle-engine' };
+    if (v.motion_status === 'stopped' && !v.ignition_known) return { text: '⚪️ стоит · зажигание не передано', cls: 'unknown' };
     if (v.motion_status === 'stopped') return { text: '⚪️ стоит', cls: 'off' };
     if (v.speed_kmh > 3) return { text: `🟢 едет · ${Math.round(v.speed_kmh)} км/ч`, cls: 'moving' };
     if (v.ignition) return { text: '🟡 стоит, двигатель работает', cls: 'idle-engine' };
-    return { text: '⚪️ стоит', cls: 'off' };
+    return { text: '⚪️ стоит · зажигание не передано', cls: 'unknown' };
   }
 
   function isFresh(v) {

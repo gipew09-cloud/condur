@@ -2,139 +2,532 @@
 {% block title %}Рейс #{{ trip.id }}{% endblock %}
 {% set history_section = 'trips' %}
 
+{% block head %}
+<style>
+  .trip-page {
+    display: grid;
+    gap: 18px;
+  }
+  .trip-back {
+    color: #2563eb;
+    font-weight: 800;
+    text-decoration: none;
+  }
+  .trip-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: end;
+    padding: 22px;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, .06);
+  }
+  .trip-hero h1 {
+    margin: 0 0 8px;
+    color: #0f172a;
+    font-size: 34px;
+    line-height: 1.08;
+    letter-spacing: 0;
+  }
+  .trip-hero__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: #64748b;
+    font-weight: 700;
+  }
+  .trip-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: #eef4ff;
+    color: #2563eb;
+    font-size: 13px;
+    font-weight: 900;
+  }
+  .trip-hero__actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+  .trip-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .trip-kpi,
+  .trip-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, .05);
+  }
+  .trip-kpi {
+    padding: 16px;
+  }
+  .trip-kpi small,
+  .trip-card small {
+    display: block;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+  }
+  .trip-kpi strong {
+    display: block;
+    margin-top: 8px;
+    color: #0f172a;
+    font-size: 24px;
+    line-height: 1.1;
+  }
+  .trip-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, .75fr);
+    gap: 18px;
+    align-items: start;
+  }
+  .trip-card__head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 18px 20px;
+    border-bottom: 1px solid #eef2f7;
+  }
+  .trip-card__head h2,
+  .trip-card__head h3 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 20px;
+    line-height: 1.2;
+  }
+  .trip-timeline {
+    list-style: none;
+    margin: 0;
+    padding: 20px 20px 22px;
+  }
+  .trip-timeline__item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 12px;
+    padding-bottom: 20px;
+  }
+  .trip-timeline__item::before {
+    content: "";
+    position: absolute;
+    left: 13px;
+    top: 28px;
+    bottom: 0;
+    width: 2px;
+    background: #e2e8f0;
+  }
+  .trip-timeline__item:last-child {
+    padding-bottom: 0;
+  }
+  .trip-timeline__item:last-child::before {
+    display: none;
+  }
+  .trip-dot {
+    position: relative;
+    z-index: 1;
+    width: 28px;
+    height: 28px;
+    border: 5px solid #e8eef9;
+    border-radius: 999px;
+    background: #3b82f6;
+  }
+  .trip-timeline__item--success .trip-dot { background: #22c55e; border-color: #dcfce7; }
+  .trip-timeline__item--warn .trip-dot { background: #f59e0b; border-color: #fef3c7; }
+  .trip-timeline__item--danger .trip-dot { background: #ef4444; border-color: #fee2e2; }
+  .trip-event {
+    min-width: 0;
+    padding: 2px 0;
+  }
+  .trip-event__top {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .trip-event strong {
+    color: #0f172a;
+    font-size: 17px;
+    line-height: 1.25;
+  }
+  .trip-event time,
+  .trip-event p,
+  .trip-event small {
+    color: #64748b;
+    font-weight: 700;
+  }
+  .trip-event time {
+    display: block;
+    margin-top: 4px;
+    font-size: 13px;
+  }
+  .trip-event p {
+    margin: 6px 0 0;
+  }
+  .trip-event small {
+    margin-top: 4px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .trip-amount {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: #fff7ed;
+    color: #c2410c;
+    font-size: 13px;
+    font-weight: 950;
+    white-space: nowrap;
+  }
+  .trip-inline-form {
+    margin-top: 10px;
+  }
+  .trip-inline-form button {
+    width: auto;
+    margin: 0;
+    padding: 9px 14px;
+  }
+  .trip-side {
+    display: grid;
+    gap: 14px;
+  }
+  .trip-card__body {
+    padding: 18px 20px;
+  }
+  .finance-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-top: 1px solid #eef2f7;
+    border-left: 1px solid #eef2f7;
+  }
+  .finance-cell {
+    padding: 16px;
+    border-right: 1px solid #eef2f7;
+    border-bottom: 1px solid #eef2f7;
+  }
+  .finance-cell strong {
+    display: block;
+    margin-top: 8px;
+    color: #0f172a;
+    font-size: 28px;
+    line-height: 1;
+  }
+  .finance-cell--profit strong {
+    color: #15803d;
+  }
+  .trip-alert {
+    border: 1px solid #fed7aa;
+    border-radius: 12px;
+    background: #fff7ed;
+    color: #9a3412;
+    padding: 14px 16px;
+    font-weight: 750;
+  }
+  .trip-doc-grid,
+  .trip-photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .trip-doc {
+    padding: 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
+  }
+  .trip-danger {
+    border-color: #fecaca;
+    background: #fff7f7;
+  }
+  .trip-danger .trip-card__head {
+    border-bottom-color: #fee2e2;
+  }
+  .danger-action {
+    width: auto;
+    margin: 0;
+    border-color: #dc2626;
+    background: #dc2626;
+    color: #fff;
+  }
+  @media (max-width: 980px) {
+    .trip-hero,
+    .trip-layout {
+      grid-template-columns: 1fr;
+    }
+    .trip-hero__actions {
+      justify-content: flex-start;
+    }
+    .trip-kpis {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 640px) {
+    .trip-hero {
+      padding: 16px;
+    }
+    .trip-hero h1 {
+      font-size: 26px;
+    }
+    .trip-kpis,
+    .finance-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 {% include "_history_nav.html" %}
-<p><a href="/trips">← к списку рейсов</a></p>
+{% set timeline_items = timeline | default([]) %}
 
-<div class="page-head">
-  <h1>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}
-    {% if trip.is_manual %}<span class="badge badge--neutral" style="font-size:.55em; vertical-align:middle;">вручную · км неизвестен</span>{% endif %}
-  </h1>
-  <p class="sub">
-    Создан {{ trip.created_at | localdt(owner.timezone) }} ·
-    {% if trip.completed_at %}завершён {{ trip.completed_at | localdt(owner.timezone) }}{% else %}не завершён{% endif %}
-    {% if travel %} · 🕒 в пути по маршруту ~{{ travel_label }} (примерно, по {{ travel.count }} рейс{{ 'у' if travel.count == 1 else 'ам' }}){% endif %}
-  </p>
+<div class="trip-page">
+  <a class="trip-back" href="/trips">← к списку рейсов</a>
+
+  {% if request is defined and request.query_params.get('saved') %}
+  <p style="color:var(--pico-ins-color, green); margin:0;">Сохранено: водитель/машина рейса изменены.</p>
+  {% endif %}
+
+  <section class="trip-hero">
+    <div>
+      <h1>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</h1>
+      <div class="trip-hero__meta">
+        <span>создан {{ trip.created_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</span>
+        <span>·</span>
+        <span>{% if trip.completed_at %}завершён {{ trip.completed_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}{% else %}рейс открыт{% endif %}</span>
+        <span>·</span>
+        <span>в пути {{ trip_duration_label | default('—') }}</span>
+      </div>
+    </div>
+    <div class="trip-hero__actions">
+      {% if trip.is_manual %}<span class="trip-chip">вручную · км неизвестен</span>{% endif %}
+      <span class="pill {{ trip.status | pillclass }}">{{ trip.status | tstatus }}</span>
+    </div>
+  </section>
+
+  <section class="trip-kpis">
+    <div class="trip-kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
+    <div class="trip-kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
+    <div class="trip-kpi"><small>Груз</small><strong>{{ trip.cargo_name or '—' }}</strong></div>
+    <div class="trip-kpi"><small>Смена</small><strong>{% if shift %}#{{ shift.id }}{% else %}—{% endif %}</strong></div>
+  </section>
+
+  <section class="trip-layout">
+    <div class="trip-card">
+      <div class="trip-card__head">
+        <h2>Карточка рейса · таймлайн</h2>
+        <small>даты, РЦ, документы, выручка</small>
+      </div>
+      {% if timeline_items %}
+      <ol class="trip-timeline">
+        {% for item in timeline_items %}
+        <li class="trip-timeline__item trip-timeline__item--{{ item.kind }}">
+          <span class="trip-dot" aria-hidden="true"></span>
+          <div class="trip-event">
+            <div class="trip-event__top">
+              <strong>{{ item.title }}</strong>
+              {% if item.amount %}<span class="trip-amount">{{ item.amount }}</span>{% endif %}
+            </div>
+            {% if item.at %}<time>{{ item.at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</time>{% endif %}
+            {% if item.subtitle %}<p>{{ item.subtitle }}</p>{% endif %}
+            {% if item.meta %}<small>{{ item.meta }}</small>{% endif %}
+            {% if item.action == 'confirm_revenue' and trip.driver_revenue_pending_rub and trip.revenue_rub is none %}
+            <form action="/trips/{{ trip.id }}/revenue" method="post" class="trip-inline-form">
+              <input type="hidden" name="revenue_rub" value="{{ trip.driver_revenue_pending_rub }}">
+              <button type="submit">Подтвердить выручку</button>
+            </form>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <div class="trip-card__body">
+        <p style="color:#64748b; margin:0;">По этому рейсу пока нет событий. Новые действия водителя и владельца будут появляться здесь.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <aside class="trip-side">
+      <div class="trip-card">
+        <div class="trip-card__head">
+          <h3>Финансы рейса</h3>
+        </div>
+        <div class="finance-grid">
+          <div class="finance-cell">
+            <small>Выручка</small>
+            <strong>{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }} ₽</strong>
+          </div>
+          <div class="finance-cell">
+            <small>Топливо</small>
+            <strong>{{ "{:,.0f}".format(trip.fuel_cost_rub or 0).replace(',', ' ') }} ₽</strong>
+          </div>
+          <div class="finance-cell">
+            <small>Прочее</small>
+            <strong>{{ "{:,.0f}".format(trip.other_costs_rub or 0).replace(',', ' ') }} ₽</strong>
+          </div>
+          <div class="finance-cell finance-cell--profit">
+            <small>Прибыль</small>
+            <strong>{{ "{:,.0f}".format(trip.profit_rub or 0).replace(',', ' ') }} ₽</strong>
+          </div>
+        </div>
+      </div>
+
+      {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
+      <div class="trip-alert">
+        Выручка на подтверждении {{ "{:,.0f}".format(trip.driver_revenue_pending_rub).replace(',', ' ') }} ₽. Проверьте документы и подтвердите сумму в таймлайне или измените ниже.
+      </div>
+      {% endif %}
+
+      {% if travel %}
+      <div class="trip-card">
+        <div class="trip-card__body">
+          <small>Ориентир по маршруту</small>
+          <p style="margin:.5rem 0 0; color:#0f172a; font-weight:850;">
+            Среднее время: {{ travel_label }} по {{ travel.count }} похожим рейс{{ 'у' if travel.count == 1 else 'ам' }}.
+          </p>
+        </div>
+      </div>
+      {% endif %}
+
+      <details class="add-panel">
+        <summary class="add-toggle">Изменить выручку</summary>
+        <form action="/trips/{{ trip.id }}/revenue" method="post" class="add-form">
+          <div class="add-grid">
+            <label>Выручка, ₽
+              <input type="text" name="revenue_rub" value="{{ (trip.revenue_rub or 0) | int }}" inputmode="decimal" required>
+            </label>
+          </div>
+          <button type="submit">Сохранить выручку</button>
+        </form>
+        <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+          Прибыль и итоги в финансах пересчитаются автоматически.
+        </p>
+      </details>
+
+      <details class="add-panel">
+        <summary class="add-toggle">Исправить водителя / машину</summary>
+        <form action="/trips/{{ trip.id }}/reassign" method="post" class="add-form">
+          <div class="add-grid">
+            <label>Водитель
+              <select name="driver_id">
+                {% for d in all_drivers | default([]) %}
+                <option value="{{ d.id }}" {% if d.id == trip.driver_id %}selected{% endif %}>{{ d.full_name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Машина
+              <select name="vehicle_id">
+                {% for v in all_vehicles | default([]) %}
+                <option value="{{ v.id }}" {% if v.id == trip.vehicle_id %}selected{% endif %}>{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+          <button type="submit">Сохранить</button>
+        </form>
+        <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+          Меняется только этот рейс. Если ошибка во всей смене — исправьте смену.
+        </p>
+      </details>
+    </aside>
+  </section>
+
+  {% if trip.waybill_photo_url %}
+  <section class="trip-card">
+    <div class="trip-card__head">
+      <h3>ТТН</h3>
+      {% if waybill_uploaded_at %}<small>загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>{% endif %}
+    </div>
+    <div class="trip-card__body">
+      <a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
+        <img src="/api/photo/{{ trip.waybill_photo_url }}"
+             style="max-width: 100%; max-height: 600px; border-radius: 10px; border: 1px solid #e2e8f0;">
+      </a>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="trip-card">
+    <div class="trip-card__head">
+      <h3>Документы рейса</h3>
+      <small>фото, сканы, PDF</small>
+    </div>
+    <div class="trip-card__body">
+      {% if documents %}
+      <div class="trip-doc-grid">
+        {% for doc in documents %}
+        <div class="trip-doc">
+          <a href="/api/trip-doc/{{ doc.id }}" target="_blank"><b>{{ doc.filename or 'документ' }}</b></a>
+          <small>загружено {{ doc.uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="color:#64748b; margin-top:0;">Вы пока не загружали документы к этому рейсу.</p>
+      {% endif %}
+      <form action="/trips/{{ trip.id }}/document" method="post" enctype="multipart/form-data" style="margin:1rem 0 0;">
+        <div class="add-grid">
+          <label>Загрузить документ (фото/скан, до 6 МБ)
+            <input type="file" name="file" accept="image/*,application/pdf" required>
+          </label>
+        </div>
+        <button type="submit">Загрузить</button>
+      </form>
+    </div>
+  </section>
+
+  {% if expenses %}
+  <section class="trip-card">
+    <div class="trip-card__head"><h3>Расходы рейса</h3></div>
+    <div class="stats-table-wrap">
+      <table>
+        <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
+        <tbody>
+          {% for e in expenses %}
+          <tr>
+            <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+            <td data-label="Категория">{{ e.category }}{% if e.description %}<br><small style="color:var(--text-muted);">{{ e.description }}</small>{% endif %}</td>
+            <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
+            <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
+            <td data-label="Чек">
+              {% if e.receipt_photo_url %}
+                <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">чек</a>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="trip-card trip-danger">
+    <div class="trip-card__head">
+      <h3>Удаление рейса</h3>
+      <small>для ошибочно созданных записей</small>
+    </div>
+    <div class="trip-card__body">
+      <p style="margin-top:0; color:#991b1b; font-weight:750;">
+        Удаляйте только дубль или ошибочный тестовый рейс. Расходы и события не пропадут, но будут отвязаны от этого рейса.
+      </p>
+      <form action="/trips/{{ trip.id }}/delete" method="post" onsubmit="return confirm('Удалить рейс? Это действие нельзя отменить.');">
+        <button type="submit" class="danger-action">Удалить рейс</button>
+      </form>
+    </div>
+  </section>
 </div>
-
-<section class="kpi-grid">
-  <div class="kpi"><small>Статус</small><strong><span class="pill {{ trip.status | pillclass }}">{{ trip.status | tstatus }}</span></strong></div>
-  <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
-  <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
-  <div class="kpi"><small>Груз</small><strong>{{ trip.cargo_name or '—' }}</strong></div>
-</section>
-
-{% if request is defined and request.query_params.get('saved') %}
-<p style="color:var(--pico-ins-color, green);">✅ Сохранено: водитель/машина рейса изменены.</p>
-{% endif %}
-
-<details class="add-panel" style="margin-top:1rem;">
-  <summary class="add-toggle">✏️ Исправить водителя / машину (миссклик)</summary>
-  <form action="/trips/{{ trip.id }}/reassign" method="post" class="add-form">
-    <div class="add-grid">
-      <label>Водитель
-        <select name="driver_id">
-          {% for d in all_drivers | default([]) %}
-          <option value="{{ d.id }}" {% if d.id == trip.driver_id %}selected{% endif %}>{{ d.full_name }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Машина
-        <select name="vehicle_id">
-          {% for v in all_vehicles | default([]) %}
-          <option value="{{ v.id }}" {% if v.id == trip.vehicle_id %}selected{% endif %}>{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>
-          {% endfor %}
-        </select>
-      </label>
-    </div>
-    <button type="submit">Сохранить</button>
-  </form>
-  <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
-    Меняется только этот рейс. Если ошибка во всей смене — исправьте на странице смены, там обновятся все её рейсы.
-  </p>
-</details>
-
-<h3 style="margin-top:1.5rem;">Финансы</h3>
-<section class="kpi-grid">
-  <div class="kpi">
-    <small>Выручка</small>
-    <strong>{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }} ₽</strong>
-    {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
-      <span class="badge badge--warning">на подтверждении {{ "{:,.0f}".format(trip.driver_revenue_pending_rub).replace(',', ' ') }} ₽</span>
-    {% endif %}
-  </div>
-  <div class="kpi"><small>Топливо</small><strong>{{ "{:,.0f}".format(trip.fuel_cost_rub or 0).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Прочее</small><strong>{{ "{:,.0f}".format(trip.other_costs_rub or 0).replace(',', ' ') }} ₽</strong></div>
-  <div class="kpi"><small>Прибыль</small><strong>{{ "{:,.0f}".format(trip.profit_rub or 0).replace(',', ' ') }} ₽</strong></div>
-</section>
-
-<details class="add-panel" style="margin-top:1rem;">
-  <summary class="add-toggle">✏️ Изменить выручку</summary>
-  <form action="/trips/{{ trip.id }}/revenue" method="post" class="add-form">
-    <div class="add-grid">
-      <label>Выручка, ₽
-        <input type="text" name="revenue_rub" value="{{ (trip.revenue_rub or 0) | int }}" inputmode="decimal" required>
-      </label>
-    </div>
-    <button type="submit">Сохранить выручку</button>
-  </form>
-  <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
-    Прибыль и итоги в финансах пересчитаются автоматически.
-  </p>
-</details>
-
-{% if trip.waybill_photo_url %}
-<h3 style="margin-top:1.5rem;">📄 ТТН</h3>
-{% if waybill_uploaded_at %}
-<p><small>Загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y в %H:%M') }}</small></p>
-{% endif %}
-<a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
-  <img src="/api/photo/{{ trip.waybill_photo_url }}"
-       style="max-width: 100%; max-height: 600px; border-radius: 8px; border: 1px solid var(--border);">
-</a>
-{% endif %}
-
-<h3 style="margin-top:1.5rem;">📎 Документы рейса</h3>
-{% if documents %}
-<ul>
-  {% for doc in documents %}
-  <li>
-    <a href="/api/trip-doc/{{ doc.id }}" target="_blank">{{ doc.filename or 'документ' }}</a>
-    <small style="color:var(--text-muted);">· загружено {{ doc.uploaded_at | localdt(owner.timezone) }}</small>
-  </li>
-  {% endfor %}
-</ul>
-{% else %}
-<p style="color:var(--text-muted); font-size:.9rem;">Вы пока не загружали документы к этому рейсу.</p>
-{% endif %}
-<form action="/trips/{{ trip.id }}/document" method="post" enctype="multipart/form-data" style="margin:.5rem 0 0;">
-  <div class="add-grid">
-    <label>Загрузить документ (фото/скан, до 6 МБ)
-      <input type="file" name="file" accept="image/*,application/pdf" required>
-    </label>
-  </div>
-  <button type="submit">Загрузить</button>
-</form>
-
-{% if expenses %}
-<h3 style="margin-top:1.5rem;">Расходы рейса</h3>
-<table>
-  <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
-  <tbody>
-    {% for e in expenses %}
-    <tr>
-      <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
-      <td data-label="Категория">{{ e.category }}{% if e.description %}<br><small style="color:var(--text-muted);">{{ e.description }}</small>{% endif %}</td>
-      <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
-      <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
-      <td data-label="Чек">
-        {% if e.receipt_photo_url %}
-          <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">📷</a>
-        {% else %}—{% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endif %}
 {% endblock %}

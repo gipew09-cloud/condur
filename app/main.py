@@ -151,9 +151,10 @@ async def main() -> None:
         no_show_detector_job, "cron", minute="5", args=[owner_bot],
         max_instances=1,
     )
-    # GPS-детектор «поехала не та машина» / «движение без смены»: каждые 10 мин.
+    # GPS-детектор «поехала не та машина» / «движение без смены» + напоминание
+    # водителю «поехал — начни смену»: каждые 10 мин.
     scheduler.add_job(
-        vehicle_mixup_detector_job, "cron", minute="*/10", args=[owner_bot],
+        vehicle_mixup_detector_job, "cron", minute="*/10", args=[owner_bot, driver_bot],
         max_instances=1, misfire_grace_time=120,
     )
     # Геозоны РЦ: приехал/уехал + время под выгрузкой. Каждые 5 минут.

@@ -28,7 +28,7 @@ from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import and_, desc, func, select, update
+from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -905,11 +905,18 @@ async def trips_page(
         select(
             func.count(Trip.id),
             func.coalesce(func.sum(Trip.revenue_rub), 0),
+            func.coalesce(func.sum(Trip.fuel_cost_rub), 0),
+            func.coalesce(func.sum(Trip.other_costs_rub), 0),
             func.coalesce(func.sum(Trip.profit_rub), 0),
         ).where(and_(*conditions))
     )
-    t_count, t_rev, t_profit = agg.one()
-    totals = {"count": t_count or 0, "revenue": Decimal(t_rev or 0), "profit": Decimal(t_profit or 0)}
+    t_count, t_rev, t_fuel, t_other, t_profit = agg.one()
+    totals = {
+        "count": t_count or 0,
+        "revenue": Decimal(t_rev or 0),
+        "expenses": Decimal(t_fuel or 0) + Decimal(t_other or 0),
+        "profit": Decimal(t_profit or 0),
+    }
 
     drivers_res = await session.execute(
         select(Driver).where(Driver.owner_id == owner.id).order_by(Driver.full_name)
@@ -2818,6 +2825,24 @@ async def stats_page(
             )
         )
     ).all()
+    trip_route_rows = (
+        await session.execute(
+            select(
+                Trip.vehicle_id,
+                Trip.driver_id,
+                Trip.origin,
+                Trip.destination,
+                Trip.created_at,
+                Trip.completed_at,
+            )
+            .where(
+                Trip.owner_id == owner.id,
+                Trip.created_at <= end_utc,
+                (Trip.completed_at.is_(None)) | (Trip.completed_at >= start_utc),
+            )
+            .order_by(Trip.created_at)
+        )
+    ).all()
 
     def _driver_at(vehicle_id: int | None, at: datetime | None) -> int | None:
         if vehicle_id is None or at is None:
@@ -2825,6 +2850,21 @@ async def stats_page(
         for vid, did, s, e in shifts_rows:
             if vid == vehicle_id and s is not None and s <= at and (e is None or at <= e):
                 return did
+        return None
+
+    def _route_at(
+        vehicle_id: int | None, driver_id: int | None, at: datetime | None
+    ) -> str | None:
+        if vehicle_id is None or at is None:
+            return None
+        for vid, did, origin, destination, created_at, completed_at in trip_route_rows:
+            if vid != vehicle_id or created_at is None:
+                continue
+            if driver_id is not None and did != driver_id:
+                continue
+            finish = completed_at or end_utc
+            if created_at <= at <= finish + timedelta(hours=2):
+                return f"{origin or '—'} → {destination or '—'}"
         return None
 
     # --- журнал простоев (rc_departed). Итоги считаем по всему периоду, а
@@ -2846,11 +2886,8 @@ async def stats_page(
         payload = payload or {}
         waited = max(0, telemetry_service.int_or_none(payload.get("waited_minutes")) or 0)
         payload_billable = telemetry_service.int_or_none(payload.get("billable_downtime_rub"))
-        billable = (
-            max(0, payload_billable)
-            if payload_billable is not None
-            else telemetry_service.rc_billable_downtime_rub(waited)
-        )
+        computed_billable = telemetry_service.rc_billable_downtime_rub(waited)
+        billable = max(computed_billable, payload_billable or 0)
         vid = telemetry_service.int_or_none(payload.get("vehicle_id"))
         rcid = telemetry_service.int_or_none(payload.get("rc_id"))
         arrived_at = _payload_dt(payload.get("arrived_at")) or (created_at - timedelta(minutes=waited))
@@ -2861,6 +2898,11 @@ async def stats_page(
             or _driver_at(vid, arrived_at)
         )
         driver_name = payload.get("driver_name") or driver_names.get(driver_id)
+        route = (
+            payload.get("route")
+            or _route_at(vid, driver_id, departed_at)
+            or _route_at(vid, driver_id, arrived_at)
+        )
         journal_all.append({
             "arrived_at": arrived_at,
             "departed_at": departed_at,
@@ -2869,11 +2911,14 @@ async def stats_page(
             "rc_id": rcid,
             "driver_id": driver_id,
             "driver": driver_name,
+            "route": route,
             "waited_minutes": waited,
             "waited_label": _minutes_label(waited),
             "engine_off_label": _minutes_label(payload.get("engine_off_minutes")),
             "billable_downtime_rub": billable,
             "billable_label": telemetry_service.rub_label(billable),
+            "billable_blocks": billable // telemetry_service.RC_BILLABLE_DOWNTIME_RUB
+            if billable else 0,
         })
 
     journal = journal_all[:500]
@@ -2885,6 +2930,11 @@ async def stats_page(
         "avg_wait": _minutes_label(total_wait_min // len(journal_all)) if journal_all else "—",
         "billable_label": telemetry_service.rub_label(billable_total),
     }
+    billable_alerts = sorted(
+        (r for r in journal_all if r["billable_downtime_rub"] > 0),
+        key=lambda x: (x["billable_downtime_rub"], x["waited_minutes"]),
+        reverse=True,
+    )[:12]
 
     # --- сводка по РЦ ---
     rc_agg: dict[int, dict] = {}
@@ -3246,13 +3296,15 @@ async def stats_page(
         parked_since = _payload_dt(payload.get("parked_since")) or state["created_at"]
         waited_minutes = _minutes_between(parked_since, now_utc)
         billable = telemetry_service.rc_billable_downtime_rub(waited_minutes)
+        trip = active_trip_by_vehicle.get(_vid)
+        route_part = f" · {trip['route']}" if trip else ""
         if billable:
             add_issue(
                 "danger",
                 "🏬",
                 "Машина стоит на РЦ больше 12 часов",
                 telemetry_service.rub_label(billable),
-                f"{payload.get('plate') or 'машина'} · {payload.get('rc_name') or 'РЦ'} · {_minutes_label(waited_minutes)}",
+                f"{payload.get('plate') or 'машина'} · {payload.get('rc_name') or 'РЦ'}{route_part} · {_minutes_label(waited_minutes)}",
                 "/stats",
             )
         elif waited_minutes >= 6 * 60:
@@ -3277,6 +3329,7 @@ async def stats_page(
             "period_from": df.isoformat(), "period_to": dt_.isoformat(),
             "kpi": kpi, "journal": journal, "rc_summary": rc_summary,
             "driver_summary": driver_summary, "week_summary": week_summary,
+            "billable_alerts": billable_alerts,
             "live_issues": live_issues, "live_issue_counts": live_issue_counts,
         },
     )
@@ -3394,6 +3447,7 @@ async def api_drivers_locations(
             "lon": float(st.longitude),
             "speed_kmh": float(st.speed_kmh or 0),
             "ignition": st.ignition,
+            "ignition_known": st.ignition is not None,
             "motion_status": st.motion_status,
             "motion_status_text": telemetry_service.motion_status_text(st.motion_status, st.speed_kmh),
             "motion_since_at": st.motion_since_at.isoformat() if st.motion_since_at else None,
@@ -3656,6 +3710,267 @@ async def _route_travel_estimate(
     return {"minutes": avg_min, "count": len(durations)}
 
 
+def _money_label(value) -> str:
+    return telemetry_service.rub_label(value or 0)
+
+
+def _event_payload_amount(payload: dict | None, key: str) -> str | None:
+    payload = payload or {}
+    raw = payload.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return _money_label(Decimal(str(raw)))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _timeline_item(
+    *,
+    kind: str,
+    order: int,
+    at: datetime | None,
+    title: str,
+    subtitle: str | None = None,
+    meta: str | None = None,
+    amount: str | None = None,
+    action: str | None = None,
+) -> dict:
+    return {
+        "kind": kind,
+        "order": order,
+        "at": at,
+        "title": title,
+        "subtitle": subtitle,
+        "meta": meta,
+        "amount": amount,
+        "action": action,
+        "_sort_at": at or datetime.min.replace(tzinfo=timezone.utc),
+    }
+
+
+async def _trip_timeline(
+    session: AsyncSession,
+    owner: Owner,
+    trip: Trip,
+    shift: Shift | None,
+    driver: Driver | None,
+    vehicle: Vehicle | None,
+    waybill_uploaded_at: datetime | None,
+    documents: list[dict],
+) -> list[dict]:
+    """Собрать понятную владельцу историю рейса из событий и GPS-геозон."""
+    plate = vehicle.license_plate if vehicle else "—"
+    driver_name = driver.full_name if driver else "—"
+    route = f"{trip.origin or '—'} → {trip.destination or '—'}"
+    items: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(item: dict) -> None:
+        at = item.get("at")
+        key = (
+            item["title"],
+            at.isoformat() if isinstance(at, datetime) else "",
+            item.get("subtitle") or "",
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(item)
+
+    if shift is not None:
+        add(_timeline_item(
+            kind="info", order=10, at=shift.started_at, title="Смена открыта",
+            subtitle=f"{plate} · {driver_name}",
+            meta=(f"одометр {shift.odometer_start} км" if shift.odometer_start else None),
+        ))
+
+    add(_timeline_item(
+        kind="info", order=20, at=trip.created_at,
+        title="Рейс создан" if not trip.is_manual else "Рейс добавлен вручную",
+        subtitle=route,
+        meta=trip.cargo_name or ("ручной рейс · км неизвестен" if trip.is_manual else None),
+    ))
+
+    event_rows = (
+        await session.execute(
+            select(Event.event_type, Event.created_at, Event.payload)
+            .where(
+                Event.owner_id == owner.id,
+                or_(
+                    Event.trip_id == trip.id,
+                    and_(
+                        Event.shift_id == trip.shift_id,
+                        Event.event_type.in_(("shift_started", "shift_reassigned")),
+                    ),
+                ),
+            )
+            .order_by(Event.created_at)
+        )
+    ).all()
+    for event_type, created_at, payload in event_rows:
+        payload = payload or {}
+        if event_type == "trip_in_transit":
+            add(_timeline_item(
+                kind="info", order=30, at=created_at, title="Выехал по маршруту",
+                subtitle=route,
+            ))
+        elif event_type == "trip_unloading":
+            add(_timeline_item(
+                kind="warn", order=50, at=created_at, title="На выгрузке",
+                subtitle=f"{trip.destination or '—'} · водитель отметил сдачу груза",
+            ))
+        elif event_type == "waybill_uploaded":
+            add(_timeline_item(
+                kind="success", order=70, at=created_at, title="ТТН загружена",
+                subtitle="фото от водителя",
+            ))
+        elif event_type == "trip_completed":
+            fuel = _event_payload_amount(payload, "fuel_cost")
+            add(_timeline_item(
+                kind="success", order=80, at=created_at, title="Рейс завершён",
+                subtitle=route,
+                meta=f"топливо {fuel}" if fuel else None,
+            ))
+        elif event_type == "trip_revenue_from_driver":
+            amount = _event_payload_amount(payload, "revenue")
+            add(_timeline_item(
+                kind="warn", order=90, at=created_at,
+                title=f"Выручка {amount or '—'} — ждёт подтверждения",
+                subtitle="указал водитель · проверьте документы и подтвердите сумму",
+                action="confirm_revenue" if trip.revenue_rub is None else None,
+            ))
+        elif event_type == "trip_revenue_approved":
+            amount = _event_payload_amount(payload, "revenue")
+            add(_timeline_item(
+                kind="success", order=92, at=created_at,
+                title=f"Выручка подтверждена{f': {amount}' if amount else ''}",
+                subtitle="сумма вошла в финансы рейса",
+            ))
+        elif event_type == "trip_revenue_set":
+            amount = _event_payload_amount(payload, "revenue")
+            add(_timeline_item(
+                kind="success", order=92, at=created_at,
+                title=f"Выручка изменена владельцем{f': {amount}' if amount else ''}",
+                subtitle="сумма вошла в финансы рейса",
+            ))
+        elif event_type == "expense_submitted":
+            amount = _event_payload_amount(payload, "amount")
+            add(_timeline_item(
+                kind="warn", order=74, at=created_at,
+                title=f"Расход отправлен{f': {amount}' if amount else ''}",
+                subtitle=payload.get("category") or "чек/расход от водителя",
+            ))
+
+    window_start = (trip.created_at or datetime.now(timezone.utc)) - timedelta(hours=8)
+    window_end = (trip.completed_at or datetime.now(timezone.utc)) + timedelta(hours=8)
+    if vehicle is not None:
+        rc_rows = (
+            await session.execute(
+                select(Event.event_type, Event.created_at, Event.payload)
+                .where(
+                    Event.owner_id == owner.id,
+                    Event.event_type.in_(("rc_arrived", "rc_departed", "rc_downtime_alert")),
+                    Event.created_at >= window_start,
+                    Event.created_at <= window_end,
+                )
+                .order_by(Event.created_at)
+            )
+        ).all()
+        for event_type, created_at, payload in rc_rows:
+            payload = payload or {}
+            if telemetry_service.int_or_none(payload.get("vehicle_id")) != vehicle.id:
+                continue
+            rc_name = payload.get("rc_name") or "РЦ"
+            if event_type == "rc_arrived":
+                parked_since = _payload_dt(payload.get("parked_since")) or created_at
+                add(_timeline_item(
+                    kind="warn", order=42, at=parked_since,
+                    title="Приехал на РЦ",
+                    subtitle=rc_name,
+                    meta=f"начало стоянки {fmt_dt(parked_since, owner.timezone, '%d.%m %H:%M')}",
+                ))
+            elif event_type == "rc_downtime_alert":
+                waited = telemetry_service.int_or_none(payload.get("waited_minutes")) or 0
+                billable = telemetry_service.int_or_none(payload.get("suggested_amount_rub")) or telemetry_service.rc_billable_downtime_rub(waited)
+                blocks = billable // telemetry_service.RC_BILLABLE_DOWNTIME_RUB if billable else 0
+                add(_timeline_item(
+                    kind="danger", order=58, at=created_at,
+                    title="Простой на РЦ перешёл платный порог",
+                    subtitle=f"{rc_name} · стоял {_minutes_label(waited)}",
+                    meta=(f"{blocks} блок(а) по 12 часов" if blocks else None),
+                    amount=_money_label(billable) if billable else None,
+                ))
+            elif event_type == "rc_departed":
+                waited = telemetry_service.int_or_none(payload.get("waited_minutes")) or 0
+                engine_off = telemetry_service.int_or_none(payload.get("engine_off_minutes"))
+                payload_billable = telemetry_service.int_or_none(payload.get("billable_downtime_rub"))
+                billable = max(telemetry_service.rc_billable_downtime_rub(waited), payload_billable or 0)
+                blocks = billable // telemetry_service.RC_BILLABLE_DOWNTIME_RUB if billable else 0
+                arrived_at = _payload_dt(payload.get("arrived_at"))
+                departed_at = _payload_dt(payload.get("departed_at")) or created_at
+                meta_parts = []
+                if arrived_at:
+                    meta_parts.append(f"заехал {fmt_dt(arrived_at, owner.timezone, '%d.%m %H:%M')}")
+                meta_parts.append(f"уехал {fmt_dt(departed_at, owner.timezone, '%d.%m %H:%M')}")
+                if engine_off is not None:
+                    meta_parts.append(f"мотор заглушен {_minutes_label(engine_off)}")
+                if blocks:
+                    meta_parts.append(f"{blocks} блок(а) по 12 часов")
+                add(_timeline_item(
+                    kind="danger" if billable else "warn",
+                    order=60,
+                    at=departed_at,
+                    title=f"Простой на РЦ {rc_name}: {_minutes_label(waited)}",
+                    subtitle=" · ".join(meta_parts),
+                    amount=_money_label(billable) if billable else None,
+                ))
+
+    if waybill_uploaded_at:
+        add(_timeline_item(
+            kind="success", order=70, at=waybill_uploaded_at, title="ТТН загружена",
+            subtitle="фото от водителя",
+        ))
+
+    for doc in documents:
+        add(_timeline_item(
+            kind="success", order=76, at=doc.get("uploaded_at"),
+            title="Документ добавлен владельцем",
+            subtitle=doc.get("filename") or "документ",
+        ))
+
+    if trip.completed_at:
+        add(_timeline_item(
+            kind="success", order=80, at=trip.completed_at,
+            title="Рейс завершён", subtitle=route,
+        ))
+    else:
+        add(_timeline_item(
+            kind="info", order=95, at=datetime.now(timezone.utc),
+            title="Рейс ещё открыт",
+            subtitle="пока водитель не завершил рейс, финальные цифры могут меняться",
+        ))
+
+    if trip.driver_revenue_pending_rub is not None and trip.revenue_rub is None:
+        add(_timeline_item(
+            kind="warn", order=90, at=trip.completed_at or datetime.now(timezone.utc),
+            title=f"Выручка {_money_label(trip.driver_revenue_pending_rub)} — ждёт подтверждения",
+            subtitle="указал водитель · нажмите «Подтвердить» или измените сумму",
+            action="confirm_revenue",
+        ))
+    elif trip.revenue_rub is not None:
+        add(_timeline_item(
+            kind="success", order=92, at=trip.completed_at or trip.created_at,
+            title=f"Выручка подтверждена: {_money_label(trip.revenue_rub)}",
+            subtitle="сумма учитывается в финансах",
+        ))
+
+    items.sort(key=lambda x: (x["_sort_at"], x["order"]))
+    for item in items:
+        item.pop("_sort_at", None)
+    return items
+
+
 @app.get("/trips/{trip_id}", response_class=HTMLResponse)
 async def trip_detail(
     request: Request,
@@ -3668,6 +3983,7 @@ async def trip_detail(
         raise HTTPException(status_code=404)
     driver = await session.get(Driver, trip.driver_id)
     vehicle = await session.get(Vehicle, trip.vehicle_id)
+    shift = await session.get(Shift, trip.shift_id)
     expenses_res = await session.execute(
         select(Expense).where(Expense.trip_id == trip.id).order_by(Expense.created_at)
     )
@@ -3696,20 +4012,64 @@ async def trip_detail(
     if travel:
         h, m = divmod(travel["minutes"], 60)
         travel_label = (f"{h} ч " if h else "") + f"{m} мин"
+    timeline = await _trip_timeline(
+        session, owner, trip, shift, driver, vehicle, waybill_uploaded_at, documents
+    )
+    trip_duration_label = _minutes_label(
+        _minutes_between(trip.created_at, trip.completed_at or datetime.now(timezone.utc))
+    )
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
     return templates.TemplateResponse(
         "trip_detail.html",
         {
             "request": request, "owner": owner,
-            "trip": trip, "driver": driver, "vehicle": vehicle,
+            "trip": trip, "shift": shift, "driver": driver, "vehicle": vehicle,
             "expenses": expenses,
             "waybill_uploaded_at": waybill_uploaded_at,
             "documents": documents,
             "travel": travel, "travel_label": travel_label,
+            "timeline": timeline,
+            "trip_duration_label": trip_duration_label,
             "all_drivers": all_drivers, "all_vehicles": all_vehicles,
             "active_page": "trips",
         },
     )
+
+
+@app.post("/trips/{trip_id}/delete")
+async def trip_delete(
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Безопасно удалить рейс из рабочего контура владельца.
+
+    Расходы и события оставляем в истории, но отвязываем от рейса: так база не
+    падает на внешних ключах, а финансовые ручные записи не исчезают бесследно.
+    """
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+
+    await session.execute(
+        update(Expense)
+        .where(Expense.owner_id == owner.id, Expense.trip_id == trip.id)
+        .values(trip_id=None)
+    )
+    await session.execute(
+        update(Event)
+        .where(Event.owner_id == owner.id, Event.trip_id == trip.id)
+        .values(trip_id=None)
+    )
+    await session.execute(
+        delete(TripDocument).where(
+            TripDocument.owner_id == owner.id,
+            TripDocument.trip_id == trip.id,
+        )
+    )
+    await session.delete(trip)
+    await session.commit()
+    return RedirectResponse("/trips?deleted=1", status_code=303)
 
 
 async def _reassign_options(
@@ -3802,6 +4162,60 @@ async def shift_detail(
             "active_page": "trips",
         },
     )
+
+
+@app.post("/shifts/{shift_id}/delete")
+async def shift_delete(
+    shift_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Удалить смену вместе с её рейсами, не теряя ручные расходы и историю."""
+    shift = await session.get(Shift, shift_id)
+    if shift is None or shift.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+
+    trip_ids = list(
+        (
+            await session.execute(
+                select(Trip.id).where(Trip.owner_id == owner.id, Trip.shift_id == shift.id)
+            )
+        ).scalars().all()
+    )
+    if trip_ids:
+        await session.execute(
+            update(Expense)
+            .where(Expense.owner_id == owner.id, Expense.trip_id.in_(trip_ids))
+            .values(trip_id=None)
+        )
+        await session.execute(
+            update(Event)
+            .where(Event.owner_id == owner.id, Event.trip_id.in_(trip_ids))
+            .values(trip_id=None)
+        )
+        await session.execute(
+            delete(TripDocument).where(
+                TripDocument.owner_id == owner.id,
+                TripDocument.trip_id.in_(trip_ids),
+            )
+        )
+        await session.execute(
+            delete(Trip).where(Trip.owner_id == owner.id, Trip.id.in_(trip_ids))
+        )
+
+    await session.execute(
+        update(Expense)
+        .where(Expense.owner_id == owner.id, Expense.shift_id == shift.id)
+        .values(shift_id=None)
+    )
+    await session.execute(
+        update(Event)
+        .where(Event.owner_id == owner.id, Event.shift_id == shift.id)
+        .values(shift_id=None)
+    )
+    await session.delete(shift)
+    await session.commit()
+    return RedirectResponse("/shifts?deleted=1", status_code=303)
 
 
 # =========================================================================

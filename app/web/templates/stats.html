@@ -1,147 +1,514 @@
 {% extends "base.html" %}
 {% block title %}Статистика{% endblock %}
 
+{% block head %}
+<style>
+  .stats-page {
+    display: grid;
+    gap: 16px;
+  }
+  .stats-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: end;
+    margin-top: .2rem;
+  }
+  .stats-hero h1 {
+    margin: 0;
+    font-size: 28px;
+    line-height: 1.12;
+    letter-spacing: -.025em;
+    font-weight: 850;
+  }
+  .stats-hero p {
+    margin: .35rem 0 0;
+    max-width: 1060px;
+    color: var(--text-muted);
+    font-weight: 550;
+  }
+  .stats-policy {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    justify-self: end;
+    padding: 10px 13px;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+    background: #fff6f6;
+    color: #b91c1c;
+    font-size: 13px;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .stats-filter-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: end;
+    padding: 15px 17px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .stats-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(190px, 240px)) auto;
+    gap: 12px;
+    align-items: end;
+  }
+  .stats-filter-card label {
+    margin: 0;
+    font-size: 12px;
+    color: #697589;
+    font-weight: 800;
+  }
+  .stats-filter-card input {
+    margin: 5px 0 0;
+    min-height: 46px;
+  }
+  .stats-filter-card button {
+    margin: 0;
+    min-height: 46px;
+    min-width: 138px;
+  }
+  .stats-filter-note {
+    max-width: 520px;
+    color: #7c2d12;
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    border-radius: 10px;
+    padding: 10px 12px;
+    line-height: 1.35;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .stats-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .stats-kpi {
+    min-height: 104px;
+    padding: 17px 18px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+    display: grid;
+    align-content: space-between;
+  }
+  .stats-kpi small {
+    text-transform: uppercase;
+    letter-spacing: .045em;
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 850;
+  }
+  .stats-kpi strong {
+    color: #0f172a;
+    font-size: 30px;
+    line-height: 1.05;
+    font-weight: 850;
+    letter-spacing: -.03em;
+  }
+  .stats-kpi--danger {
+    background: #fff7f7;
+    border-color: #fecaca;
+  }
+  .stats-kpi--danger small,
+  .stats-kpi--danger strong {
+    color: #b91c1c;
+  }
+  .stats-kpi--dark {
+    background: #0f172a;
+    border-color: #0f172a;
+  }
+  .stats-kpi--dark small { color: #94a3b8; }
+  .stats-kpi--dark strong { color: #fff; }
+  .stats-control-grid {
+    display: grid;
+    grid-template-columns: 1.1fr .9fr;
+    gap: 16px;
+    align-items: start;
+  }
+  .stats-card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .stats-card__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 15px 17px;
+    border-bottom: 1px solid #eef2f7;
+  }
+  .stats-card__head strong {
+    font-size: 17px;
+    font-weight: 850;
+  }
+  .stats-card__head span {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 750;
+  }
+  .stats-issues {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .stats-issues__grid {
+    grid-template-columns: 1fr;
+  }
+  .billable-board {
+    border-color: #fecaca;
+  }
+  .billable-board .stats-card__head {
+    background: #fff7f7;
+    border-bottom-color: #fecaca;
+  }
+  .billable-board .stats-card__head strong,
+  .billable-board .stats-card__head span {
+    color: #b91c1c;
+  }
+  .billable-list {
+    display: grid;
+  }
+  .billable-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 14px 17px;
+    border-bottom: 1px solid #fee2e2;
+    background: #fff;
+  }
+  .billable-item:last-child { border-bottom: 0; }
+  .billable-item b {
+    display: block;
+    font-weight: 850;
+    color: #0f172a;
+  }
+  .billable-item small {
+    display: block;
+    color: #64748b;
+    font-weight: 650;
+    line-height: 1.35;
+    margin-top: 2px;
+  }
+  .billable-amount {
+    align-self: center;
+    color: #b91c1c;
+    background: #fee2e2;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+  .stats-empty {
+    margin: 0;
+    padding: 16px 17px;
+    color: var(--text-muted);
+    font-weight: 650;
+  }
+  .stats-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .stats-table-wrap {
+    overflow-x: auto;
+  }
+  .stats-card table {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
+  }
+  .stats-card table thead th {
+    background: #fafbfc;
+  }
+  .stats-row--danger {
+    background: #fff8f8;
+  }
+  .stats-row--danger td {
+    border-bottom-color: #fee2e2;
+  }
+  .amount-danger {
+    color: #b91c1c;
+    font-weight: 900;
+  }
+  .amount-muted {
+    color: #94a3b8;
+    font-weight: 750;
+  }
+  .route-muted {
+    display: block;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 650;
+    margin-top: 2px;
+  }
+  .stats-section-title {
+    margin: 6px 0 -2px;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 850;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  @media (max-width: 1100px) {
+    .stats-hero,
+    .stats-filter-card,
+    .stats-control-grid,
+    .stats-split {
+      grid-template-columns: 1fr;
+    }
+    .stats-policy {
+      justify-self: start;
+      white-space: normal;
+    }
+    .stats-filter-note { max-width: none; }
+    .stats-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .stats-hero h1 { font-size: 24px; }
+    .stats-filter-grid,
+    .stats-kpis {
+      grid-template-columns: 1fr;
+    }
+    .billable-item {
+      grid-template-columns: 1fr;
+    }
+    .billable-amount {
+      justify-self: start;
+    }
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="page-head">
-  <h1>Статистика</h1>
-  <p class="sub">Простои на РЦ (по геозонам GPS), сводки по складам и водителям, заказы по неделям.
-  Простой считается от фактической остановки машины в зоне РЦ до выезда. После 12 часов система помечает возможные 8 000 ₽ к выставлению, но не добавляет их в финансы автоматически.</p>
-</div>
-
-<form method="get" action="/stats" class="filter-panel">
-  <label>С даты
-    <input type="date" name="period_from" value="{{ period_from }}">
-  </label>
-  <label>По дату
-    <input type="date" name="period_to" value="{{ period_to }}">
-  </label>
-  <button type="submit">Показать</button>
-  <span class="filter-note"><i class="ph ph-warning-circle"></i> Простой не добавляется в доход автоматически — только помечается к выставлению.</span>
-</form>
-
-<section class="kpi-grid">
-  <div class="kpi"><small>Приездов на РЦ</small><strong>{{ kpi.visits }}</strong></div>
-  <div class="kpi"><small>Суммарный простой</small><strong>{{ kpi.total_wait }}</strong></div>
-  <div class="kpi"><small>Средний простой</small><strong>{{ kpi.avg_wait }}</strong></div>
-  <div class="kpi kpi--billable"><small>Потенциально к выставлению</small><strong>{{ kpi.billable_label }}</strong></div>
-</section>
-
 {% set live = live_issues | default([]) %}
 {% set issue_counts = live_issue_counts | default({"total": 0, "danger": 0, "warn": 0, "info": 0}) %}
-<h3 style="margin-top:1.5rem;">Операционный контроль сейчас</h3>
-<section class="stats-issues">
-  <div class="stats-issues__head">
+{% set bills = billable_alerts | default([]) %}
+
+<div class="stats-page">
+  <section class="stats-hero">
     <div>
-      <strong>Что требует внимания</strong>
-      <span>{{ issue_counts.total }} активн.</span>
+      <h1>Статистика</h1>
+      <p>Простои на РЦ по GPS, операционные проблемы, сводки по складам и водителям. Экран нужен, чтобы быстро понять: кто стоит, где держат машину, что можно выставить клиенту и что требует проверки.</p>
     </div>
-    <div class="stats-issues__counts">
-      {% if issue_counts.danger %}<b class="badge badge--danger">{{ issue_counts.danger }} срочно</b>{% endif %}
-      {% if issue_counts.warn %}<b class="badge badge--warning">{{ issue_counts.warn }} проверить</b>{% endif %}
-      {% if not live %}<b class="badge badge--success">сейчас спокойно</b>{% endif %}
+    <div class="stats-policy">
+      <i class="ph ph-warning-circle"></i>
+      8 000 ₽ за каждые полные 12 часов простоя
     </div>
-  </div>
-  {% if live %}
-    <div class="stats-issues__grid">
-      {% for i in live[:12] %}
-        <a class="stats-issue stats-issue--{{ i.sev }}" href="{{ i.href or '#' }}">
-          <span class="stats-issue__icon">{{ i.icon }}</span>
-          <span class="stats-issue__body">
-            <span class="stats-issue__title">{{ i.title }}</span>
-            <span class="stats-issue__sub">{{ i.sub }}</span>
-          </span>
-          <span class="stats-issue__pill">{{ i.pill }}</span>
-        </a>
-      {% endfor %}
+  </section>
+
+  <form method="get" action="/stats" class="stats-filter-card">
+    <div class="stats-filter-grid">
+      <label>С даты
+        <input type="date" name="period_from" value="{{ period_from }}">
+      </label>
+      <label>По дату
+        <input type="date" name="period_to" value="{{ period_to }}">
+      </label>
+      <button type="submit">Показать</button>
     </div>
-    {% if live | length > 12 %}
-      <p class="sub">Показаны первые 12 проблем из {{ live | length }}. Срочные всегда выше.</p>
+    <div class="stats-filter-note">
+      Простой не добавляется в доход автоматически. Система только считает сумму к выставлению, чтобы владелец сам проверил и решил.
+    </div>
+  </form>
+
+  <section class="stats-kpis">
+    <div class="stats-kpi"><small>Приездов на РЦ</small><strong>{{ kpi.visits }}</strong></div>
+    <div class="stats-kpi"><small>Суммарный простой</small><strong>{{ kpi.total_wait }}</strong></div>
+    <div class="stats-kpi stats-kpi--dark"><small>Средний простой</small><strong>{{ kpi.avg_wait }}</strong></div>
+    <div class="stats-kpi stats-kpi--danger"><small>Потенциально к выставлению</small><strong>{{ kpi.billable_label }}</strong></div>
+  </section>
+
+  <section class="stats-control-grid">
+    <div class="stats-card">
+      <div class="stats-card__head">
+        <strong>Операционный контроль сейчас</strong>
+        <span>{{ issue_counts.total }} активн.</span>
+      </div>
+      <section class="stats-issues">
+        <div class="stats-issues__head">
+          <div>
+            <strong>Что требует внимания</strong>
+            <span>{% if issue_counts.danger %}{{ issue_counts.danger }} срочно{% elif issue_counts.warn %}{{ issue_counts.warn }} проверить{% else %}спокойно{% endif %}</span>
+          </div>
+          <div class="stats-issues__counts">
+            {% if issue_counts.danger %}<b class="badge badge--danger">{{ issue_counts.danger }} срочно</b>{% endif %}
+            {% if issue_counts.warn %}<b class="badge badge--warning">{{ issue_counts.warn }} проверить</b>{% endif %}
+            {% if not live %}<b class="badge badge--success">нет проблем</b>{% endif %}
+          </div>
+        </div>
+        {% if live %}
+          <div class="stats-issues__grid">
+            {% for i in live[:8] %}
+              <a class="stats-issue stats-issue--{{ i.sev }}" href="{{ i.href or '#' }}">
+                <span class="stats-issue__icon">{{ i.icon }}</span>
+                <span class="stats-issue__body">
+                  <span class="stats-issue__title">{{ i.title }}</span>
+                  <span class="stats-issue__sub">{{ i.sub }}</span>
+                </span>
+                <span class="stats-issue__pill">{{ i.pill }}</span>
+              </a>
+            {% endfor %}
+          </div>
+          {% if live | length > 8 %}
+            <p class="stats-empty">Показаны первые 8 проблем из {{ live | length }}. Срочные всегда выше.</p>
+          {% endif %}
+        {% else %}
+          <p class="stats-empty">Сейчас нет активных проблем по сменам, GPS, рейсам и простоям на РЦ.</p>
+        {% endif %}
+      </section>
+    </div>
+
+    <div class="stats-card billable-board">
+      <div class="stats-card__head">
+        <strong>К выставлению за простой</strong>
+        <span>не доход, только проверка</span>
+      </div>
+      {% if bills %}
+        <div class="billable-list">
+          {% for r in bills %}
+            <div class="billable-item">
+              <div>
+                <b>{{ r.plate }} · {{ r.rc_name }}</b>
+                <small>
+                  стоял {{ r.waited_label }}
+                  {% if r.billable_blocks %}· {{ r.billable_blocks }} блок(а) по 12 часов{% endif %}
+                  {% if r.route %}<span class="route-muted">Маршрут: {{ r.route }}</span>{% endif %}
+                </small>
+              </div>
+              <span class="billable-amount">{{ r.billable_label }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="stats-empty">За выбранный период нет простоев, которые перешли платный порог 12 часов.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <h3 class="stats-section-title">По складам (РЦ)</h3>
+  <div class="stats-card">
+    {% if rc_summary %}
+      <div class="stats-table-wrap">
+        <table>
+          <thead><tr><th>РЦ</th><th class="num">Приездов</th><th class="num">Простой всего</th><th class="num">В среднем</th><th class="num">К выставлению</th></tr></thead>
+          <tbody>
+            {% for r in rc_summary %}
+            <tr class="{% if r.billable %}stats-row--danger{% endif %}">
+              <td data-label="РЦ"><b>{{ r.name }}</b></td>
+              <td data-label="Приездов" class="num">{{ r.visits }}</td>
+              <td data-label="Всего" class="num"><b>{{ r.total_label }}</b></td>
+              <td data-label="В среднем" class="num">{{ r.avg_label }}</td>
+              <td data-label="К выставлению" class="num {% if r.billable %}amount-danger{% else %}amount-muted{% endif %}">{{ r.billable_label }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="stats-empty">За период приездов на РЦ не зафиксировано. Проверьте, что у РЦ проставлены координаты.</p>
     {% endif %}
-  {% else %}
-    <p class="stats-issues__empty">Сейчас нет активных проблем по сменам, GPS, рейсам и простоям на РЦ.</p>
-  {% endif %}
-</section>
+  </div>
 
-<h3 style="margin-top:1.5rem;">🏬 По складам (РЦ)</h3>
-{% if rc_summary %}
-<table>
-  <thead><tr><th>РЦ</th><th class="num">Приездов</th><th class="num">Простой всего</th><th class="num">В среднем</th><th class="num">К выставлению</th></tr></thead>
-  <tbody>
-    {% for r in rc_summary %}
-    <tr>
-      <td data-label="РЦ">{{ r.name }}</td>
-      <td data-label="Приездов" class="num">{{ r.visits }}</td>
-      <td data-label="Всего" class="num"><b>{{ r.total_label }}</b></td>
-      <td data-label="В среднем" class="num">{{ r.avg_label }}</td>
-      <td data-label="К выставлению" class="num">{{ r.billable_label }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p style="color:var(--text-muted);">За период приездов на РЦ не зафиксировано. Проверьте, что у РЦ проставлены координаты (Направления → справочник РЦ).</p>
-{% endif %}
+  <section class="stats-split">
+    <div>
+      <h3 class="stats-section-title">По водителям</h3>
+      <div class="stats-card">
+        {% if driver_summary %}
+          <div class="stats-table-wrap">
+            <table>
+              <thead><tr><th>Водитель</th><th class="num">Рейсов</th><th class="num">Пробег</th><th class="num">Простой РЦ</th><th class="num">К выставлению</th></tr></thead>
+              <tbody>
+                {% for d in driver_summary %}
+                <tr class="{% if d.billable %}stats-row--danger{% endif %}">
+                  <td data-label="Водитель"><b>{{ d.name }}</b></td>
+                  <td data-label="Рейсов" class="num">{{ d.trips }}</td>
+                  <td data-label="Пробег" class="num">{{ d.km }} км</td>
+                  <td data-label="Простой" class="num">{{ d.idle_label }}</td>
+                  <td data-label="К выставлению" class="num {% if d.billable %}amount-danger{% else %}amount-muted{% endif %}">{{ d.billable_label }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="stats-empty">За период нет завершённых рейсов и смен.</p>
+        {% endif %}
+      </div>
+    </div>
 
-<h3 style="margin-top:1.5rem;">👤 По водителям</h3>
-{% if driver_summary %}
-<table>
-  <thead><tr><th>Водитель</th><th class="num">Рейсов</th><th class="num">Пробег, км</th><th class="num">Простой на РЦ</th><th class="num">К выставлению</th></tr></thead>
-  <tbody>
-    {% for d in driver_summary %}
-    <tr>
-      <td data-label="Водитель">{{ d.name }}</td>
-      <td data-label="Рейсов" class="num">{{ d.trips }}</td>
-      <td data-label="Пробег" class="num">{{ d.km }}</td>
-      <td data-label="Простой" class="num">{{ d.idle_label }}</td>
-      <td data-label="К выставлению" class="num">{{ d.billable_label }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-<p class="sub">Пробег — по одометру завершённых смен. Простой — по геозонам РЦ (кто был в смене на машине в момент стоянки).</p>
-{% else %}
-<p style="color:var(--text-muted);">За период нет завершённых рейсов и смен.</p>
-{% endif %}
+    <div>
+      <h3 class="stats-section-title">Заказы по неделям</h3>
+      <div class="stats-card">
+        {% if week_summary %}
+          <div class="stats-table-wrap">
+            <table>
+              <thead><tr><th>Неделя</th><th class="num">Рейсов</th><th class="num">Выручка</th></tr></thead>
+              <tbody>
+                {% for w in week_summary %}
+                <tr>
+                  <td data-label="Неделя"><b>{{ w.week }}</b></td>
+                  <td data-label="Рейсов" class="num">{{ w.trips }}</td>
+                  <td data-label="Выручка" class="num">{{ "{:,.0f}".format(w.revenue).replace(',', ' ') }} ₽</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="stats-empty">Завершённых рейсов за период нет.</p>
+        {% endif %}
+      </div>
+    </div>
+  </section>
 
-<h3 style="margin-top:1.5rem;">📅 Заказы по неделям</h3>
-{% if week_summary %}
-<table>
-  <thead><tr><th>Неделя (с понедельника)</th><th class="num">Рейсов</th><th class="num">Выручка, ₽</th></tr></thead>
-  <tbody>
-    {% for w in week_summary %}
-    <tr>
-      <td data-label="Неделя">{{ w.week }}</td>
-      <td data-label="Рейсов" class="num">{{ w.trips }}</td>
-      <td data-label="Выручка" class="num">{{ "{:,.0f}".format(w.revenue).replace(',', ' ') }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p style="color:var(--text-muted);">Завершённых рейсов за период нет.</p>
-{% endif %}
-
-<h3 style="margin-top:1.5rem;">⏱ Журнал простоев на РЦ</h3>
-<p class="sub">Каждая стоянка в геозоне РЦ — чтобы видеть, где машину держат сверх нормы, и выставлять счета за простой. Показаны последние 500 за период.</p>
-{% if journal %}
-<table>
-  <thead><tr><th>Приехал</th><th>Уехал</th><th>Машина</th><th>Водитель</th><th>РЦ</th><th class="num">Стоял</th><th class="num">Мотор заглушен</th><th class="num">К выставлению</th></tr></thead>
-  <tbody>
-    {% for r in journal %}
-    <tr>
-      <td data-label="Приехал">{{ r.arrived_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
-      <td data-label="Уехал">{{ r.departed_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
-      <td data-label="Машина">{{ r.plate }}</td>
-      <td data-label="Водитель">{{ r.driver or '—' }}</td>
-      <td data-label="РЦ">{{ r.rc_name }}</td>
-      <td data-label="Стоял" class="num"><b>{{ r.waited_label }}</b></td>
-      <td data-label="Мотор заглушен" class="num">{{ r.engine_off_label }}</td>
-      <td data-label="К выставлению" class="num">{{ r.billable_label }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p style="color:var(--text-muted);">Записей за период нет.</p>
-{% endif %}
+  <h3 class="stats-section-title">Журнал простоев на РЦ</h3>
+  <div class="stats-card">
+    <div class="stats-card__head">
+      <strong>Каждая стоянка в геозоне</strong>
+      <span>последние 500 за период</span>
+    </div>
+    {% if journal %}
+      <div class="stats-table-wrap">
+        <table>
+          <thead><tr><th>Приехал</th><th>Уехал</th><th>Машина</th><th>Водитель</th><th>РЦ / маршрут</th><th class="num">Стоял</th><th class="num">Мотор заглушен</th><th class="num">К выставлению</th></tr></thead>
+          <tbody>
+            {% for r in journal %}
+            <tr class="{% if r.billable_downtime_rub %}stats-row--danger{% endif %}">
+              <td data-label="Приехал">{{ r.arrived_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+              <td data-label="Уехал">{{ r.departed_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+              <td data-label="Машина"><b>{{ r.plate }}</b></td>
+              <td data-label="Водитель">{{ r.driver or '—' }}</td>
+              <td data-label="РЦ / маршрут">
+                <b>{{ r.rc_name }}</b>
+                {% if r.route %}<span class="route-muted">{{ r.route }}</span>{% endif %}
+              </td>
+              <td data-label="Стоял" class="num"><b>{{ r.waited_label }}</b></td>
+              <td data-label="Мотор заглушен" class="num">{{ r.engine_off_label }}</td>
+              <td data-label="К выставлению" class="num {% if r.billable_downtime_rub %}amount-danger{% else %}amount-muted{% endif %}">
+                <b>{{ r.billable_label }}</b>
+                {% if r.billable_blocks %}<span class="route-muted">{{ r.billable_blocks }} блок(а) по 12 часов</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="stats-empty">Записей за период нет.</p>
+    {% endif %}
+  </div>
+</div>
 {% endblock %}

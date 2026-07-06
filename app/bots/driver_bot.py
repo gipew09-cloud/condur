@@ -330,6 +330,29 @@ async def btn_start_shift(
         await _refresh_ui(message, session, driver, msg.SHIFT_NO_FREE_VEHICLES)
         return
 
+    # Закреплённая машина: если у водителя есть «обычная машина» и она сейчас
+    # свободна — стартуем на ней БЕЗ выбора (удобно, водитель не мискликнет).
+    # Занята → мягко предупреждаем и показываем выбор свободных.
+    if driver.default_vehicle_id is not None:
+        default_veh = next(
+            (v for v in vehicles if v.id == driver.default_vehicle_id), None
+        )
+        if default_veh is not None:
+            await _begin_shift_on_default(
+                message, state, session, owner_bot, driver, default_veh
+            )
+            return
+        busy_default = await session.get(Vehicle, driver.default_vehicle_id)
+        if busy_default is not None and busy_default.is_active:
+            await message.answer(
+                msg.SHIFT_DEFAULT_BUSY.format(plate=busy_default.license_plate)
+            )
+            await state.set_state(StartShift.selecting_vehicle)
+            await message.answer(
+                msg.SHIFT_PICK_VEHICLE, reply_markup=kb.vehicle_pick_keyboard(vehicles)
+            )
+            return
+
     # Упрощённый старт: без одометра и, если машина одна — без выбора,
     # сразу открываем смену (FEATURE_ODOMETER_PHOTO выключен).
     if not settings.feature_odometer_photo and len(vehicles) == 1:
@@ -365,6 +388,30 @@ async def cb_shift_cancel(call: CallbackQuery, state: FSMContext, session: Async
         await call.message.delete()
         await _refresh_ui(call.message, session, driver, msg.CANCELLED)
     await call.answer()
+
+
+async def _begin_shift_on_default(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    owner_bot: Bot,
+    driver: Driver,
+    vehicle: Vehicle,
+) -> None:
+    """Старт смены на закреплённой машине без выбора. При фото-режиме одометра
+    даём кнопку «🔁 Другая машина» — вдруг сегодня водитель на другой."""
+    if not settings.feature_odometer_photo:
+        await _do_start_shift(
+            message, state, session, owner_bot, driver, vehicle,
+            odometer_start=None, photo_file_id=None,
+        )
+        return
+    # Машина привязана — никакого выбора/кнопок, только просьба фото одометра.
+    await state.update_data(vehicle_id=vehicle.id)
+    await state.set_state(StartShift.waiting_for_odometer_photo)
+    await message.answer(
+        msg.SHIFT_ODOMETER_ON_DEFAULT.format(plate=vehicle.license_plate)
+    )
 
 
 async def _unusual_vehicle_plate(

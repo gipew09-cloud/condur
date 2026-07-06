@@ -13,7 +13,7 @@ OID = 129772 (Stavtrack ID машины), TM — корректное время
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 # Отсчёт времени ЕГТС: секунды с 2010-01-01 00:00:00 UTC.
@@ -26,6 +26,7 @@ PT_APPDATA = 1
 # Типы подзаписей, которые разбираем.
 SR_RECORD_RESPONSE = 0
 SR_POS_DATA = 16
+SR_EXT_POS_DATA = 17  # расширение POS_DATA: точность/спутники, НЕ датчики
 SR_STATE_DATA = 20  # состояние терминала: режим + напряжения питания
 
 # Коды результата обработки.
@@ -69,15 +70,18 @@ class PositionData:
     is_valid: bool           # флаг VLD (достоверность координат)
     digital_inputs: int      # байт DIN; зажигание обычно бит 0
     source: int
+    ext_pos_data: bytes = b""  # EGTS_SR_EXT_POS_DATA, если пришла рядом
 
     @property
-    def ignition(self) -> bool:
+    def ignition(self) -> bool | None:
         # Бит 0 DIN у части конфигураций — зажигание. Но у Stavtrack датчик
         # зажигания может передаваться вне POS_DATA (DIN=0 и MV=0 даже в
-        # движении — видели на реальной машине при 54 км/ч). Поэтому считаем
-        # надёжно: любое из «входы», «флаг движения», «скорость > 0» =
-        # двигатель работает.
-        return bool(self.digital_inputs & 0x01) or self.is_moving or self.speed_kmh > 0
+        # движении — видели на реальной машине при 54 км/ч). Поэтому True
+        # ставим только по надёжным признакам, а False не выдумываем: если
+        # вход пустой и машина стоит, датчик просто не пришёл.
+        if bool(self.digital_inputs & 0x01) or self.is_moving or self.speed_kmh > 0:
+            return True
+        return None
 
 
 @dataclass(frozen=True)
@@ -204,6 +208,7 @@ def _parse_subrecords(rd: bytes) -> tuple[list[PositionData], TerminalState | No
     positions: list[PositionData] = []
     state: TerminalState | None = None
     unknown: list[int] = []
+    ext_pos_payload: bytes = b""
     offset = 0
     while offset + 3 <= len(rd):
         srt = rd[offset]
@@ -213,6 +218,10 @@ def _parse_subrecords(rd: bytes) -> tuple[list[PositionData], TerminalState | No
         offset += srl
         if srt == SR_POS_DATA and len(payload) >= 21:
             positions.append(_parse_pos_data(payload))
+        elif srt == SR_EXT_POS_DATA:
+            # В логах Stavtrack это выглядит как unknown_sr=[17]. По факту это
+            # расширение позиции (точность/спутники), а не состояние датчиков.
+            ext_pos_payload = payload
         elif srt == SR_STATE_DATA and len(payload) >= 5:
             state = TerminalState(
                 mode=payload[0],
@@ -223,6 +232,8 @@ def _parse_subrecords(rd: bytes) -> tuple[list[PositionData], TerminalState | No
             )
         elif srt != SR_RECORD_RESPONSE:
             unknown.append(srt)
+    if ext_pos_payload and positions:
+        positions = [replace(pos, ext_pos_data=ext_pos_payload) for pos in positions]
     return positions, state, unknown
 
 
