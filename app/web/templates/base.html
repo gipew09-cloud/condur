@@ -49,6 +49,7 @@
   </style>
 </head>
 <body>
+{% set nav_alert_count = nav_alert_count | default(0) %}
 <header class="container">
   <nav class="topbar">
     <ul>
@@ -60,7 +61,7 @@
         </span>
       </li>
     </ul>
-    <ul>
+    <ul class="topbar-main">
       <li><a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house"></i> Главная</a></li>
       <li><a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck"></i> Рейсы</a></li>
       <li><a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users"></i> Водители</a></li>
@@ -70,7 +71,26 @@
       <li><a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar"></i> Статистика</a></li>
       <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet"></i> Финансы</a></li>
       <li><a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card"></i> Реквизиты</a></li>
-      <li><a href="/logout"><i class="ph ph-sign-out"></i> Выйти</a></li>
+    </ul>
+    <ul class="topbar-actions" aria-label="Быстрые действия">
+      <li>
+        <a class="nav-icon-button" href="/stats" title="Операционный контроль">
+          <i class="ph ph-bell"></i>
+          {% if nav_alert_count %}<span class="nav-alert-dot" aria-hidden="true"></span>{% endif %}
+          <span class="sr-only">Операционный контроль</span>
+        </a>
+      </li>
+      <li>
+        <span class="nav-avatar" title="{{ owner.company_name if owner else 'Профиль' }}">
+          {{ owner.company_name[:2]|upper if owner and owner.company_name else 'ИП' }}
+        </span>
+      </li>
+      <li>
+        <a class="nav-icon-button" href="/logout" title="Выйти">
+          <i class="ph ph-sign-out"></i>
+          <span class="sr-only">Выйти</span>
+        </a>
+      </li>
     </ul>
   </nav>
 </header>

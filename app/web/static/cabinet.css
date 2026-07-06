@@ -100,7 +100,7 @@ nav.topbar {
   margin-bottom: 1.25rem;
   box-shadow: var(--shadow-sm);
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: .65rem;
   align-items: center;
 }
@@ -148,7 +148,7 @@ nav.topbar ul:first-child strong {
   white-space: nowrap;
   max-width: 190px;
 }
-nav.topbar ul:last-child {
+.topbar-main {
   display: flex;
   justify-content: flex-start;
   overflow-x: auto;
@@ -157,7 +157,7 @@ nav.topbar ul:last-child {
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
 }
-nav.topbar ul:last-child li { flex: 0 0 auto; }
+.topbar-main li { flex: 0 0 auto; }
 nav.topbar a {
   text-decoration: none;
   color: var(--text-muted);
@@ -176,6 +176,64 @@ nav.topbar a[aria-current="page"] {
   color: var(--accent);
   background: var(--accent-soft);
   font-weight: 600;
+}
+.topbar-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: .35rem;
+  padding-left: .7rem;
+  border-left: 1px solid #edf0f4;
+}
+.topbar-actions li { flex: 0 0 auto; }
+nav.topbar .nav-icon-button {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  padding: 0;
+  border-radius: 10px;
+  background: #f4f7fb;
+  color: #475569;
+  justify-content: center;
+  position: relative;
+}
+nav.topbar .nav-icon-button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.nav-alert-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ef4444;
+  border: 2px solid #fff;
+}
+.nav-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #0f172a;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .82rem;
+  font-weight: 800;
+  letter-spacing: .02em;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ============ заголовки страниц ============ */
@@ -219,6 +277,12 @@ main.container h3 {
   color: var(--text);
   letter-spacing: -.02em;
 }
+.kpi.kpi--billable {
+  border-color: #f9d18b;
+  background: #fff8eb;
+}
+.kpi.kpi--billable small { color: #b85f0b; }
+.kpi.kpi--billable strong { color: #b85f0b; }
 
 /* ============ финансовая матрица 3×3 ============ */
 .finance-matrix {
@@ -370,6 +434,52 @@ button[type="submit"]:hover {
   box-shadow: var(--shadow-sm);
   padding: 16px 18px;
 }
+article {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.filter-panel {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.filter-panel label {
+  margin: 0;
+  min-width: 170px;
+  font-size: .8rem;
+}
+.filter-panel input,
+.filter-panel select {
+  margin: .25rem 0 0;
+}
+.filter-panel button,
+.filter-panel [role="button"] {
+  margin: 0;
+}
+.filter-note {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  max-width: 520px;
+  padding: .62rem .8rem;
+  border: 1px solid #f9d18b;
+  border-radius: var(--radius-md);
+  background: #fff8eb;
+  color: #9a5b00;
+  font-size: .85rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.filter-note i { font-size: 1rem; }
 .section { margin-top: 1.5rem; }
 .section > h3 { margin: 0 0 .75rem; font-size: 1rem; }
 
@@ -596,15 +706,15 @@ a:hover { color: var(--accent-hover); }
    Вынесен из dashboard.html, чтобы карточки/графики/рейтинги
    выглядели одинаково на Финансах, Машинах, Водителях и т.д.
    ============================================================ */
-.sp { display: grid; gap: 20px; }
-.sp-card { background: #fff; border: 1px solid #eceef2; border-radius: 16px; }
+.sp { display: grid; gap: 18px; }
+.sp-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-sm); }
 .sp-section-title { font-weight: 800; font-size: 16px; margin: 6px 0 -4px; }
 
 /* KPI-карточки */
 .sp-kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 @media (max-width: 900px) { .sp-kpi { grid-template-columns: repeat(2, 1fr); } }
-.sp-kpi .c { background: #fff; border: 1px solid #eceef2; border-radius: 15px; padding: 16px 18px; }
-.sp-kpi .lbl { font-size: 12px; font-weight: 700; color: #8a93a3; }
+.sp-kpi .c { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow-sm); }
+.sp-kpi .lbl { font-size: 11.5px; font-weight: 800; color: #93a0b2; text-transform: uppercase; letter-spacing: .045em; }
 .sp-kpi .val { font-size: 32px; font-weight: 800; line-height: 1.15; margin-top: 2px; }
 .sp-kpi .val .rub { font-size: 19px; color: #aab2bf; font-weight: 700; }
 .sp-kpi .delta { font-size: 12.5px; font-weight: 600; color: #22a565; }
@@ -629,16 +739,18 @@ a:hover { color: var(--accent-hover); }
 .sp-leg .line { width: 15px; height: 3px; border-radius: 2px; background: #1f9d57; }
 
 /* Сетка карточек сущностей (машины, водители) */
-.sp-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.sp-vcard { background: #fff; border: 1px solid #eceef2; border-radius: 15px; padding: 15px 17px; display: flex; flex-direction: column; gap: 13px; }
+.sp-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 16px; }
+@media (max-width: 420px) { .sp-cards { grid-template-columns: 1fr; } }
+.sp-vcard { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 15px 17px; display: flex; flex-direction: column; gap: 13px; box-shadow: var(--shadow-sm); overflow: hidden; }
 .sp-vcard__top { display: flex; align-items: center; gap: 11px; justify-content: space-between; }
 .sp-vcard__top .grow { flex: 1; min-width: 0; }
-.sp-vcard__title { font-weight: 800; font-size: 15px; }
+.sp-vcard__title { font-weight: 800; font-size: 15.5px; overflow-wrap: anywhere; }
 .sp-vcard__sub { font-size: 12.5px; color: #8a93a3; font-weight: 600; }
 .sp-plate { font-weight: 800; font-size: 12.5px; background: #f1f4f9; border: 1px solid #e4e8ef; border-radius: 6px; padding: 4px 7px; white-space: nowrap; }
 .sp-ava { width: 38px; height: 38px; border-radius: 50%; background: #0f172a; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex: none; }
-.sp-vcard__stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 11px 14px; }
-.sp-stat .k { font-size: 11.5px; color: #8a93a3; font-weight: 700; }
+.sp-vcard__stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: #eef1f5; margin: 0 -17px; }
+.sp-stat { background: #fff; padding: 10px 17px; min-width: 0; }
+.sp-stat .k { font-size: 11.5px; color: #93a0b2; font-weight: 800; }
 .sp-stat .v { font-size: 17px; font-weight: 800; margin-top: 1px; }
 .sp-stat .v .u { font-size: 12px; color: #aab2bf; font-weight: 700; }
 .sp-stat .v.pos { color: #147a3d; }

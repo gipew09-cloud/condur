@@ -22,9 +22,16 @@
     border-right: 0;
     padding-right: 0;
   }
+  nav.topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  nav.topbar .topbar-actions {
+    border-left: 0;
+    padding-left: 0;
+  }
 
   .brand-copy small {
-    max-width: 62vw;
+    max-width: 44vw;
   }
 
   table, thead, tbody, tr, th, td { display: block; }
@@ -61,7 +68,7 @@
   }
 
   /* верхняя навигация прячется, используем нижнюю */
-  header > nav.topbar > ul:last-child { display: none; }
+  header > nav.topbar > .topbar-main { display: none; }
   body { padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
 
   /* нижнее меню */

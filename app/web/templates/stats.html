@@ -8,21 +8,22 @@
   Простой считается от фактической остановки машины в зоне РЦ до выезда. После 12 часов система помечает возможные 8 000 ₽ к выставлению, но не добавляет их в финансы автоматически.</p>
 </div>
 
-<form method="get" action="/stats" style="display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin-bottom:1rem;">
-  <label style="margin:0;">С даты
-    <input type="date" name="period_from" value="{{ period_from }}" style="margin:.25rem 0 0;">
+<form method="get" action="/stats" class="filter-panel">
+  <label>С даты
+    <input type="date" name="period_from" value="{{ period_from }}">
   </label>
-  <label style="margin:0;">По дату
-    <input type="date" name="period_to" value="{{ period_to }}" style="margin:.25rem 0 0;">
+  <label>По дату
+    <input type="date" name="period_to" value="{{ period_to }}">
   </label>
-  <button type="submit" style="margin:0;">Показать</button>
+  <button type="submit">Показать</button>
+  <span class="filter-note"><i class="ph ph-warning-circle"></i> Простой не добавляется в доход автоматически — только помечается к выставлению.</span>
 </form>
 
 <section class="kpi-grid">
   <div class="kpi"><small>Приездов на РЦ</small><strong>{{ kpi.visits }}</strong></div>
   <div class="kpi"><small>Суммарный простой</small><strong>{{ kpi.total_wait }}</strong></div>
   <div class="kpi"><small>Средний простой</small><strong>{{ kpi.avg_wait }}</strong></div>
-  <div class="kpi"><small>Потенциально к выставлению</small><strong>{{ kpi.billable_label }}</strong></div>
+  <div class="kpi kpi--billable"><small>Потенциально к выставлению</small><strong>{{ kpi.billable_label }}</strong></div>
 </section>
 
 {% set live = live_issues | default([]) %}
