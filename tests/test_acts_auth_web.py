@@ -199,6 +199,26 @@ def test_render_login():
     assert "Свежий путь" not in _render("login.html", error=None)
 
 
+def test_mobile_navigation_has_requisites_logout_and_scroll():
+    html = _render("base.html", owner=OWNER, active_page="map")
+    assert '<nav class="bottom-nav">' in html
+    assert 'href="/stats"' in html
+    assert 'href="/requisites"' in html
+    assert 'href="/logout"' in html
+
+    mobile_css = open("app/web/static/mobile.css", encoding="utf-8").read()
+    cabinet_css = open("app/web/static/cabinet.css", encoding="utf-8").read()
+    assert "overflow-x: auto" in mobile_css
+    assert "flex: 0 0 76px" in mobile_css
+    assert "grid-template-columns: auto minmax(0, 1fr)" in cabinet_css
+
+
+def test_login_clears_legacy_auth_cookie_source():
+    source = open("app/web/router.py", encoding="utf-8").read()
+    assert "response.set_cookie(\n        auth_service.SESSION_COOKIE" in source
+    assert 'response.delete_cookie("auth")' in source
+
+
 def test_render_finances():
     html = _render(
         "finances.html", owner=OWNER, active_page="finances",

@@ -376,6 +376,9 @@ async def login_submit(
         auth_service.SESSION_COOKIE, raw_token, httponly=True, samesite="lax",
         max_age=auth_service.SESSION_COOKIE_MAX_AGE,
     )
+    # Старый 7-дневный JWT больше не нужен: после успешного входа оставляем
+    # только постоянную web_session, чтобы браузер не путался между схемами.
+    response.delete_cookie("auth")
     return response
 
 

@@ -38,7 +38,7 @@
       .edit-form input, .edit-form select { margin: 0; }
       .edit-form button { margin: 0; }
     }
-    nav.topbar ul { gap: 1rem; }
+    nav.topbar ul { gap: .5rem; }
     .insights li { margin-bottom: .5rem; }
     .actions { display: flex; gap: .5rem; }
 
@@ -77,7 +77,10 @@
   <a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck bn-icon"></i>Рейсы</a>
   <a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users bn-icon"></i>Люди</a>
   <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin bn-icon"></i>Карта</a>
+  <a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar bn-icon"></i>Статистика</a>
   <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet bn-icon"></i>Деньги</a>
+  <a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card bn-icon"></i>Реквизиты</a>
+  <a href="/logout"><i class="ph ph-sign-out bn-icon"></i>Выйти</a>
 </nav>
 
 {% block scripts %}{% endblock %}

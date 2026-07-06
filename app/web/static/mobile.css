@@ -44,27 +44,35 @@
 
   /* верхняя навигация прячется, используем нижнюю */
   header > nav.topbar > ul:last-child { display: none; }
-  body { padding-bottom: 72px; }
+  body { padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
 
   /* нижнее меню */
   .bottom-nav {
     position: fixed;
     bottom: 0; left: 0; right: 0;
     display: flex;
-    justify-content: space-around;
+    justify-content: flex-start;
+    gap: 0;
     background: var(--pico-card-background-color);
     border-top: 1px solid var(--pico-card-border-color);
-    padding: 0.4rem 0;
+    padding: 0.35rem 0 max(0.35rem, env(safe-area-inset-bottom, 0px));
     z-index: 100;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
+  .bottom-nav::-webkit-scrollbar { display: none; }
   .bottom-nav a {
-    flex: 1;
+    flex: 0 0 76px;
     text-align: center;
     text-decoration: none;
     color: var(--pico-muted-color);
-    font-size: 0.75rem;
-    padding: 0.5rem 0.25rem;
+    font-size: 0.68rem;
+    padding: 0.45rem 0.25rem;
     min-height: 56px;
+    white-space: nowrap;
   }
   .bottom-nav a[aria-current="page"] {
     color: var(--pico-primary);
