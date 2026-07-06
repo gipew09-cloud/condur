@@ -1,10 +1,14 @@
 """Геозоны РЦ: расстояние (гаверсинус), разбор ответа геокодера,
 стоянка/мотор, рендер страницы статистики."""
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace as NS
 
 from jinja2 import Environment, FileSystemLoader
+
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+os.environ.setdefault("JWT_SECRET", "test")
 
 from app.services.geocode_service import parse_nominatim_response
 from app.services.rc_service import haversine_m
@@ -41,12 +45,20 @@ def test_render_stats_page():
                          "idle_label": "4 ч 20 мин", "idle_minutes": 260,
                          "billable_label": "8 000 ₽", "billable": 8000}],
         week_summary=[{"week": "нед. 29.06", "trips": 7, "revenue": Decimal("106000")}],
+        live_issues=[{
+            "sev": "danger", "icon": "📡", "title": "GPS давно не обновлялся",
+            "pill": "5 ч", "sub": "Т772НХ178 · последний сигнал 03.07 21:10",
+            "href": "/map",
+        }],
+        live_issue_counts={"total": 1, "danger": 1, "warn": 0, "info": 0},
     )
     assert "Журнал простоев" in html
     assert "Т772НХ178" in html and "Дикси Шушары" in html
     assert "4 ч 20 мин" in html and "3 ч 50 мин" in html
     assert "Потенциально к выставлению" in html and "8 000 ₽" in html
     assert "106 000" in html
+    assert "Операционный контроль сейчас" in html
+    assert "GPS давно не обновлялся" in html and "1 срочно" in html
 
 
 def test_haversine_zero_distance():

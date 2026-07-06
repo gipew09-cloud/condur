@@ -25,6 +25,42 @@
   <div class="kpi"><small>Потенциально к выставлению</small><strong>{{ kpi.billable_label }}</strong></div>
 </section>
 
+{% set live = live_issues | default([]) %}
+{% set issue_counts = live_issue_counts | default({"total": 0, "danger": 0, "warn": 0, "info": 0}) %}
+<h3 style="margin-top:1.5rem;">Операционный контроль сейчас</h3>
+<section class="stats-issues">
+  <div class="stats-issues__head">
+    <div>
+      <strong>Что требует внимания</strong>
+      <span>{{ issue_counts.total }} активн.</span>
+    </div>
+    <div class="stats-issues__counts">
+      {% if issue_counts.danger %}<b class="badge badge--danger">{{ issue_counts.danger }} срочно</b>{% endif %}
+      {% if issue_counts.warn %}<b class="badge badge--warning">{{ issue_counts.warn }} проверить</b>{% endif %}
+      {% if not live %}<b class="badge badge--success">сейчас спокойно</b>{% endif %}
+    </div>
+  </div>
+  {% if live %}
+    <div class="stats-issues__grid">
+      {% for i in live[:12] %}
+        <a class="stats-issue stats-issue--{{ i.sev }}" href="{{ i.href or '#' }}">
+          <span class="stats-issue__icon">{{ i.icon }}</span>
+          <span class="stats-issue__body">
+            <span class="stats-issue__title">{{ i.title }}</span>
+            <span class="stats-issue__sub">{{ i.sub }}</span>
+          </span>
+          <span class="stats-issue__pill">{{ i.pill }}</span>
+        </a>
+      {% endfor %}
+    </div>
+    {% if live | length > 12 %}
+      <p class="sub">Показаны первые 12 проблем из {{ live | length }}. Срочные всегда выше.</p>
+    {% endif %}
+  {% else %}
+    <p class="stats-issues__empty">Сейчас нет активных проблем по сменам, GPS, рейсам и простоям на РЦ.</p>
+  {% endif %}
+</section>
+
 <h3 style="margin-top:1.5rem;">🏬 По складам (РЦ)</h3>
 {% if rc_summary %}
 <table>

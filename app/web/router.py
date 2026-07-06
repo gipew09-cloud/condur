@@ -2733,6 +2733,26 @@ def _payload_dt(value) -> datetime | None:
     return parsed
 
 
+def _minutes_between(start: datetime | None, end: datetime | None = None) -> int:
+    if start is None:
+        return 0
+    finish = end or datetime.now(timezone.utc)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if finish.tzinfo is None:
+        finish = finish.replace(tzinfo=timezone.utc)
+    return max(0, int((finish - start).total_seconds() // 60))
+
+
+def _issue_counts(issues: list[dict]) -> dict:
+    counts = {"total": len(issues), "danger": 0, "warn": 0, "info": 0}
+    for issue in issues:
+        sev = issue.get("sev")
+        if sev in counts:
+            counts[sev] += 1
+    return counts
+
+
 @app.get("/stats", response_class=HTMLResponse)
 async def stats_page(
     request: Request,
@@ -2983,6 +3003,273 @@ async def stats_page(
         for k, v in sorted(weeks.items())
     ]
 
+    # --- живой операционный контроль: что владельцу стоит проверить сейчас ---
+    now_utc = datetime.now(timezone.utc)
+    live_issues: list[dict] = []
+
+    def add_issue(
+        sev: str, icon: str, title: str, pill: str, sub: str, href: str | None = None
+    ) -> None:
+        live_issues.append({
+            "sev": sev,
+            "icon": icon,
+            "title": title,
+            "pill": pill,
+            "sub": sub,
+            "href": href,
+        })
+
+    active_shift_rows = (
+        await session.execute(
+            select(
+                Shift.id,
+                Shift.vehicle_id,
+                Shift.driver_id,
+                Shift.started_at,
+                Driver.full_name,
+                Vehicle.license_plate,
+            )
+            .join(Driver, Driver.id == Shift.driver_id)
+            .join(Vehicle, Vehicle.id == Shift.vehicle_id)
+            .where(Shift.owner_id == owner.id, Shift.status == "started")
+        )
+    ).all()
+    active_shift_by_vehicle: dict[int, dict] = {}
+    for shift_id, vehicle_id, driver_id, started_at, driver_name, plate in active_shift_rows:
+        active_shift_by_vehicle[vehicle_id] = {
+            "shift_id": shift_id,
+            "driver_id": driver_id,
+            "driver": driver_name,
+            "plate": plate,
+            "started_at": started_at,
+        }
+        minutes_open = _minutes_between(started_at, now_utc)
+        if minutes_open >= 24 * 60:
+            add_issue(
+                "danger",
+                "🕒",
+                "Смена открыта больше 24 часов",
+                _minutes_label(minutes_open),
+                f"{driver_name} · {plate} · {smart_since_label(started_at, owner.timezone)}",
+                "/drivers",
+            )
+        elif minutes_open >= 18 * 60:
+            add_issue(
+                "warn",
+                "🕒",
+                "Смена скоро станет длинной",
+                _minutes_label(minutes_open),
+                f"{driver_name} · {plate} · проверьте, не забыл ли водитель закрыть смену",
+                "/drivers",
+            )
+
+    active_trip_rows = (
+        await session.execute(
+            select(
+                Trip.id,
+                Trip.vehicle_id,
+                Trip.origin,
+                Trip.destination,
+                Trip.status,
+                Vehicle.license_plate,
+                Driver.full_name,
+            )
+            .join(Vehicle, Vehicle.id == Trip.vehicle_id)
+            .join(Driver, Driver.id == Trip.driver_id)
+            .where(
+                Trip.owner_id == owner.id,
+                Trip.status.in_(("created", "in_transit", "unloading")),
+            )
+        )
+    ).all()
+    active_trip_by_vehicle: dict[int, dict] = {}
+    for trip_id, vehicle_id, origin, destination, status, plate, driver_name in active_trip_rows:
+        active_trip_by_vehicle[vehicle_id] = {
+            "trip_id": trip_id,
+            "route": f"{origin or '—'} → {destination or '—'}",
+            "status": status,
+            "plate": plate,
+            "driver": driver_name,
+        }
+
+    pending_revenue_rows = (
+        await session.execute(
+            select(
+                Trip.id,
+                Trip.origin,
+                Trip.destination,
+                Trip.driver_revenue_pending_rub,
+                Driver.full_name,
+                Vehicle.license_plate,
+            )
+            .join(Driver, Driver.id == Trip.driver_id)
+            .join(Vehicle, Vehicle.id == Trip.vehicle_id)
+            .where(
+                Trip.owner_id == owner.id,
+                Trip.status == "completed",
+                Trip.revenue_rub.is_(None),
+                Trip.driver_revenue_pending_rub.is_not(None),
+            )
+            .order_by(desc(Trip.completed_at))
+            .limit(5)
+        )
+    ).all()
+    for trip_id, origin, destination, amount, driver_name, plate in pending_revenue_rows:
+        add_issue(
+            "warn",
+            "💰",
+            "Выручка ждёт подтверждения",
+            telemetry_service.rub_label(amount),
+            f"{driver_name} · {plate} · {origin or '—'} → {destination or '—'}",
+            f"/trips/{trip_id}",
+        )
+
+    stale_cutoff = now_utc - timedelta(minutes=30)
+    vehicle_state_rows = (
+        await session.execute(
+            select(Vehicle, VehicleState)
+            .outerjoin(VehicleState, VehicleState.vehicle_id == Vehicle.id)
+            .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+            .order_by(Vehicle.license_plate)
+        )
+    ).all()
+    for vehicle, state in vehicle_state_rows:
+        if state is None:
+            if vehicle.stavtrack_object_id:
+                add_issue(
+                    "warn",
+                    "📡",
+                    "По машине ещё нет GPS-точек",
+                    vehicle.stavtrack_object_id,
+                    f"{vehicle.license_plate} · Stavtrack ID привязан, но поток ещё не пришёл",
+                    "/map",
+                )
+            continue
+
+        gps_stale = state.last_seen_at is None or state.last_seen_at < stale_cutoff
+        gps_invalid = state.is_valid is False
+        motion_status = state.motion_status or telemetry_service.vehicle_motion_status(
+            state.speed_kmh, state.ignition
+        )
+        signal = telemetry_service.vehicle_control_signal(
+            motion_status=motion_status,
+            has_active_shift=vehicle.id in active_shift_by_vehicle,
+            has_active_trip=vehicle.id in active_trip_by_vehicle,
+            gps_stale=gps_stale,
+            gps_invalid=gps_invalid,
+        )
+        since_label = smart_since_label(state.motion_since_at, owner.timezone)
+        if signal == telemetry_service.SIGNAL_GPS_STALE:
+            add_issue(
+                "danger",
+                "📡",
+                "GPS давно не обновлялся",
+                telemetry_service.duration_label(state.last_seen_at, now_utc),
+                f"{vehicle.license_plate} · последний сигнал {fmt_dt(state.last_seen_at, owner.timezone, '%d.%m %H:%M')}",
+                "/map",
+            )
+        elif signal == telemetry_service.SIGNAL_GPS_INVALID:
+            add_issue(
+                "danger",
+                "📍",
+                "GPS прислал недостоверные координаты",
+                "проверить",
+                f"{vehicle.license_plate} · метка не должна прыгать на мусорные координаты",
+                "/map",
+            )
+        elif signal == telemetry_service.SIGNAL_MOVING_WITHOUT_SHIFT:
+            add_issue(
+                "danger",
+                "🚛",
+                "Машина едет без открытой смены",
+                f"{Decimal(state.speed_kmh or 0):.0f} км/ч",
+                f"{vehicle.license_plate} · {since_label}",
+                "/map",
+            )
+        elif signal == telemetry_service.SIGNAL_MOVING_WITHOUT_TRIP:
+            shift = active_shift_by_vehicle.get(vehicle.id, {})
+            add_issue(
+                "warn",
+                "🛣",
+                "Машина едет без активного рейса",
+                f"{Decimal(state.speed_kmh or 0):.0f} км/ч",
+                f"{vehicle.license_plate} · {shift.get('driver', 'водитель в смене')} · {since_label}",
+                "/map",
+            )
+        elif (
+            signal == telemetry_service.SIGNAL_IDLE_ENGINE
+            and telemetry_service.parked_long_enough(
+                motion_status, state.motion_since_at, now_utc, min_minutes=15
+            )
+        ):
+            add_issue(
+                "warn",
+                "⛽",
+                "Стоит с заведённым двигателем",
+                telemetry_service.duration_label(state.motion_since_at, now_utc),
+                f"{vehicle.license_plate} · {since_label}",
+                "/map",
+            )
+
+    rc_events = (
+        await session.execute(
+            select(Event.event_type, Event.created_at, Event.payload)
+            .where(
+                Event.owner_id == owner.id,
+                Event.event_type.in_(("rc_arrived", "rc_departed", "rc_downtime_alert")),
+                Event.created_at >= now_utc - timedelta(days=14),
+            )
+            .order_by(Event.created_at)
+        )
+    ).all()
+    active_rc: dict[tuple[int, int], dict] = {}
+    for event_type, created_at, payload in rc_events:
+        payload = payload or {}
+        vid = telemetry_service.int_or_none(payload.get("vehicle_id"))
+        rcid = telemetry_service.int_or_none(payload.get("rc_id"))
+        if vid is None or rcid is None:
+            continue
+        key = (vid, rcid)
+        if event_type == "rc_arrived":
+            active_rc[key] = {
+                "created_at": created_at,
+                "payload": payload,
+                "alerted": False,
+            }
+        elif event_type == "rc_departed":
+            active_rc.pop(key, None)
+        elif event_type == "rc_downtime_alert" and key in active_rc:
+            active_rc[key]["alerted"] = True
+
+    for (_vid, _rcid), state in active_rc.items():
+        payload = state["payload"]
+        parked_since = _payload_dt(payload.get("parked_since")) or state["created_at"]
+        waited_minutes = _minutes_between(parked_since, now_utc)
+        billable = telemetry_service.rc_billable_downtime_rub(waited_minutes)
+        if billable:
+            add_issue(
+                "danger",
+                "🏬",
+                "Машина стоит на РЦ больше 12 часов",
+                telemetry_service.rub_label(billable),
+                f"{payload.get('plate') or 'машина'} · {payload.get('rc_name') or 'РЦ'} · {_minutes_label(waited_minutes)}",
+                "/stats",
+            )
+        elif waited_minutes >= 6 * 60:
+            add_issue(
+                "warn",
+                "🏬",
+                "Долгая стоянка на РЦ",
+                _minutes_label(waited_minutes),
+                f"{payload.get('plate') or 'машина'} · {payload.get('rc_name') or 'РЦ'} · до платного порога ещё {_minutes_label(telemetry_service.RC_BILLABLE_WAIT_MINUTES - waited_minutes)}",
+                "/stats",
+            )
+
+    live_issues.sort(
+        key=lambda x: {"danger": 0, "warn": 1, "info": 2}.get(x.get("sev"), 3)
+    )
+    live_issue_counts = _issue_counts(live_issues)
+
     return templates.TemplateResponse(
         "stats.html",
         {
@@ -2990,6 +3277,7 @@ async def stats_page(
             "period_from": df.isoformat(), "period_to": dt_.isoformat(),
             "kpi": kpi, "journal": journal, "rc_summary": rc_summary,
             "driver_summary": driver_summary, "week_summary": week_summary,
+            "live_issues": live_issues, "live_issue_counts": live_issue_counts,
         },
     )
 

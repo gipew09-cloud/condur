@@ -87,6 +87,18 @@
   /* интерактив минимум 44px */
   button, input, select, a[role="button"] { min-height: 44px; }
   input, select { font-size: 16px; /* предотвращает zoom-in на iOS */ }
+
+  .stats-issues__head { align-items: flex-start; flex-direction: column; }
+  .stats-issues__grid { grid-template-columns: 1fr; }
+  .stats-issue {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: .65rem;
+  }
+  .stats-issue__pill {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+  }
 }
 
 /* десктоп — нижнее меню скрыто */
