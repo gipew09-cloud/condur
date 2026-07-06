@@ -13,11 +13,11 @@
   --accent-soft: #e8f0fe;
   --amber: #e0a32e;
   --amber-soft: #fdf0d3;
-  --bg: #f4f5f8;           /* мягкий холодно-серый фон страниц */
+  --bg: #eef1f5;           /* мягкий холодно-серый фон страниц */
   --surface: #ffffff;
-  --border: #e6e8ee;
+  --border: #e6e9ef;
   --text: #0f172a;
-  --text-muted: #5b6573;
+  --text-muted: #647083;
   --success-bg: #e7f6ec;
   --success-text: #147a3d;
   --danger-bg:  #fde8e6;
@@ -25,9 +25,9 @@
   --warn-bg: #fdf0d3;
   --warn-text: #9a5b00;
 
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  --radius-sm: 7px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
   --shadow-md: 0 1px 3px rgba(16, 24, 40, .06), 0 8px 24px -12px rgba(16, 24, 40, .18);
@@ -65,6 +65,19 @@
 body {
   background: var(--bg);
   font-family: 'Onest', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body > header.container,
+body > main.container {
+  max-width: 1600px;
+  width: min(100% - 44px, 1600px);
+  padding-left: 0;
+  padding-right: 0;
+}
+
+body > main.container {
+  padding-bottom: 3rem;
 }
 
 /* Цифры — табулярные везде где деньги/числа */
@@ -75,7 +88,7 @@ body {
 
 /* ============ топ-навигация ============ */
 header.container {
-  padding-top: 1rem;
+  padding-top: .85rem;
   padding-bottom: 0;
   margin-bottom: 0;
 }
@@ -83,16 +96,58 @@ nav.topbar {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: .6rem 1rem;
+  padding: .55rem .75rem;
   margin-bottom: 1.25rem;
   box-shadow: var(--shadow-sm);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: .75rem;
+  gap: .65rem;
   align-items: center;
 }
 nav.topbar ul { margin: 0; min-width: 0; }
-nav.topbar ul:first-child strong { font-size: 1.05rem; color: var(--text); }
+nav.topbar ul:first-child {
+  padding-right: .8rem;
+  border-right: 1px solid #edf0f4;
+}
+nav.topbar .brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: .65rem;
+  min-width: 0;
+}
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, .28);
+  flex: 0 0 auto;
+}
+.brand-mark i { font-size: 1.15rem; }
+.brand-copy {
+  display: grid;
+  line-height: 1.12;
+  min-width: 0;
+}
+nav.topbar ul:first-child strong {
+  font-size: 1.02rem;
+  color: var(--text);
+  font-weight: 800;
+  letter-spacing: -.02em;
+}
+.brand-copy small {
+  color: #8a93a3;
+  font-size: .72rem;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 190px;
+}
 nav.topbar ul:last-child {
   display: flex;
   justify-content: flex-start;
@@ -106,13 +161,14 @@ nav.topbar ul:last-child li { flex: 0 0 auto; }
 nav.topbar a {
   text-decoration: none;
   color: var(--text-muted);
-  padding: .35rem .55rem;
+  padding: .45rem .58rem;
   border-radius: var(--radius-sm);
   transition: color .12s, background .12s;
   display: inline-flex;
   align-items: center;
   gap: .35rem;
-  font-weight: 500;
+  font-weight: 650;
+  font-size: .92rem;
 }
 nav.topbar a:hover { color: var(--accent); }
 nav.topbar a i { font-size: 1.05em; }
@@ -124,7 +180,7 @@ nav.topbar a[aria-current="page"] {
 
 /* ============ заголовки страниц ============ */
 main.container h2 {
-  font-size: 1.5rem;
+  font-size: 1.45rem;
   margin: 0 0 1rem;
   font-weight: 700;
   letter-spacing: -.01em;
@@ -142,7 +198,7 @@ main.container h3 {
 /* ============ KPI карточки ============ */
 .kpi-grid { gap: .85rem; }
 .kpi {
-  padding: 1rem 1.1rem;
+  padding: .95rem 1rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -158,9 +214,10 @@ main.container h3 {
   font-weight: 600;
 }
 .kpi strong {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 1.55rem;
+  font-weight: 800;
   color: var(--text);
+  letter-spacing: -.02em;
 }
 
 /* ============ финансовая матрица 3×3 ============ */
@@ -202,16 +259,16 @@ main.container h3 {
 /* ============ обычные таблицы → карточка (стиль «Свежий путь») ============ */
 table {
   background: var(--surface);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   width: 100%;
   margin-bottom: 1rem;
 }
 table thead th {
-  background: #f6f7f9;
-  font-weight: 600;
+  background: #fafbfc;
+  font-weight: 750;
   font-size: .72rem;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -220,7 +277,7 @@ table thead th {
   border-bottom: 1px solid #eef1f5;
 }
 table tbody td, table tbody th {
-  padding: 13px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid #eef1f5;
   border-top: 0;
   vertical-align: middle;
@@ -228,6 +285,19 @@ table tbody td, table tbody th {
 table tbody tr:last-child td, table tbody tr:last-child th { border-bottom: 0; }
 table tbody tr { transition: background .12s; }
 table tbody tr:hover { background: #f6f7f9; }
+
+input, select, textarea {
+  border-radius: var(--radius-md) !important;
+}
+
+label {
+  font-weight: 650;
+  color: #475569;
+}
+
+form .grid {
+  gap: .75rem;
+}
 
 /* ============ кнопки ============ */
 button[type="submit"],
@@ -288,7 +358,7 @@ button[type="submit"]:hover {
 .page-head { margin: .25rem 0 1.25rem; }
 .page-head h1, .page-head h2 {
   font-size: 24px; font-weight: 800; color: var(--text);
-  margin: 0; line-height: 1.2; letter-spacing: -.01em;
+  margin: 0; line-height: 1.2; letter-spacing: -.02em;
 }
 .page-head .sub { color: var(--text-muted); font-size: .9rem; margin: .3rem 0 0; }
 
@@ -296,7 +366,7 @@ button[type="submit"]:hover {
 .card, .panel {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   padding: 16px 18px;
 }

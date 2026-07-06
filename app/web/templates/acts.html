@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Акт сверки{% endblock %}
+{% block title %}Акты выполненных работ{% endblock %}
 {% block head %}
 <style>
   .trip-list { margin-top: 1rem; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
@@ -16,8 +16,8 @@
 
 {% block content %}
 <div class="page-head">
-  <h1>Акт сверки</h1>
-  <p class="sub">Отметь галочками рейсы, заполни № и заказчика — и скачай акт в Excel (форма как в образце 101 РС).</p>
+  <h1>Акты выполненных работ</h1>
+  <p class="sub">Отметь галочками рейсы, заполни № и заказчика — и скачай акт выполненных работ в Excel (форма как в образце 101 РС).</p>
 </div>
 
 {% if not requisites_ready %}
@@ -73,7 +73,7 @@
     {% endfor %}
   </div>
   <div style="margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap;">
-    <button type="submit" formaction="/acts/export.xlsx" id="download-act">⬇ Скачать акт (.xlsx)</button>
+    <button type="submit" formaction="/acts/export.xlsx" id="download-act">⬇ Скачать акт выполненных работ (.xlsx)</button>
     <span id="empty-pick-note" style="display:none; color:var(--danger-text); align-self:center; font-size:.9rem;">Выберите хотя бы один рейс.</span>
   </div>
   <p style="color:var(--text-muted); font-size:.85rem; margin-top:.5rem;">В акт попадут только отмеченные рейсы, одним списком (1, 2, 3…).</p>

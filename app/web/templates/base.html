@@ -38,7 +38,7 @@
       .edit-form input, .edit-form select { margin: 0; }
       .edit-form button { margin: 0; }
     }
-    nav.topbar ul { gap: .5rem; }
+    nav.topbar ul { gap: .15rem; }
     .insights li { margin-bottom: .5rem; }
     .actions { display: flex; gap: .5rem; }
 
@@ -52,7 +52,13 @@
 <header class="container">
   <nav class="topbar">
     <ul>
-      <li><strong>{{ owner.company_name if owner else 'TMS' }}</strong></li>
+      <li class="brand-lockup">
+        <span class="brand-mark"><i class="ph ph-truck"></i></span>
+        <span class="brand-copy">
+          <strong>Condur</strong>
+          <small>{{ owner.company_name if owner else 'TMS' }}</small>
+        </span>
+      </li>
     </ul>
     <ul>
       <li><a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house"></i> Главная</a></li>

@@ -265,9 +265,9 @@ def test_render_acts_checklist():
     html = _render("acts.html", owner=OWNER, trips=trips, period_from="2026-06-01",
                    period_to="2026-06-25", customers=[NS(id=2, name='ООО "Рузисеть"')],
                    total_amount=Decimal("19000"), total_trips=1, act_date="2026-06-25",
-                   act_title="Акт сверки", act_number_val="102", sel_customer_id="2",
+                   act_title="Акт выполненных работ", act_number_val="102", sel_customer_id="2",
                    requisites_ready=True, active_page="finances")
-    assert "Акт сверки" in html and 'name="trip_ids"' in html and "Выбрать все" in html
+    assert "Акты выполненных работ" in html and 'name="trip_ids"' in html and "Выбрать все" in html
     assert 'name="selection_mode" value="checklist"' in html
 
 

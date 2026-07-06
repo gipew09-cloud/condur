@@ -1881,7 +1881,7 @@ async def acts_page(
             "customers": customers,
             "total_amount": total_amount, "total_trips": total_trips,
             "act_date": act_date or date.today().isoformat(),
-            "act_title": title or "Акт сверки",
+            "act_title": title or "Акт выполненных работ",
             "act_number_val": act_number or "",
             "sel_customer_id": customer_id or "",
             "requisites_ready": requisites_ready,
@@ -1899,7 +1899,7 @@ async def acts_export(
     customer_id: Annotated[str | None, Query()] = None,
     act_number: Annotated[str, Query()] = "",
     act_date: Annotated[str | None, Query()] = None,
-    title: Annotated[str, Query()] = "Акт сверки",
+    title: Annotated[str, Query()] = "Акт выполненных работ",
     trip_ids: Annotated[list[int], Query()] = [],
     selection_mode: Annotated[str, Query()] = "",
 ):

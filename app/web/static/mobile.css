@@ -9,6 +9,24 @@
 
 /* ====== Адаптивные таблицы ====== */
 @media (max-width: 768px) {
+  body > header.container,
+  body > main.container {
+    width: min(100% - 24px, 1600px);
+  }
+
+  nav.topbar {
+    padding: .5rem .65rem;
+  }
+
+  nav.topbar ul:first-child {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  .brand-copy small {
+    max-width: 62vw;
+  }
+
   table, thead, tbody, tr, th, td { display: block; }
   thead tr { position: absolute; top: -9999px; left: -9999px; }
   tr {
