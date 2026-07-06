@@ -29,6 +29,24 @@ def service_role() -> str:
     return "main"
 
 
+def service_role_debug() -> dict[str, str]:
+    service_name = os.environ.get("RAILWAY_SERVICE_NAME", "").strip()
+    explicit_role = os.environ.get("SERVICE_ROLE", "").strip()
+    resolved_role = service_role()
+    if explicit_role:
+        source = "SERVICE_ROLE"
+    elif "egts" in service_name.lower() or "gps" in service_name.lower():
+        source = "RAILWAY_SERVICE_NAME"
+    else:
+        source = "default"
+    return {
+        "service_name": service_name or "unknown",
+        "explicit_role": explicit_role or "not set",
+        "resolved_role": resolved_role,
+        "source": source,
+    }
+
+
 def run_migrations() -> None:
     if os.environ.get("RUN_MIGRATIONS", "true").strip().lower() in {"0", "false", "off", "no"}:
         logger.info("RUN_MIGRATIONS выключен, Alembic пропускаем.")
@@ -42,8 +60,12 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    role = service_role()
-    logger.info("Railway service role: %s", role)
+    debug = service_role_debug()
+    role = debug["resolved_role"]
+    logger.info(
+        "Railway service role: %s (source=%s, service=%s, SERVICE_ROLE=%s)",
+        role, debug["source"], debug["service_name"], debug["explicit_role"],
+    )
 
     if role in {"egts", "gps", "telemetry"}:
         from app.telemetry.egts_receiver import main as egts_main

@@ -1,4 +1,4 @@
-from app.run import service_role
+from app.run import service_role, service_role_debug
 
 
 def test_service_role_defaults_to_main(monkeypatch):
@@ -20,6 +20,18 @@ def test_service_role_detects_egts_service_name(monkeypatch):
     monkeypatch.setenv("RAILWAY_SERVICE_NAME", "egts-receiver")
 
     assert service_role() == "egts"
+
+
+def test_service_role_debug_explains_source(monkeypatch):
+    monkeypatch.setenv("SERVICE_ROLE", "egts")
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "condur")
+
+    assert service_role_debug() == {
+        "service_name": "condur",
+        "explicit_role": "egts",
+        "resolved_role": "egts",
+        "source": "SERVICE_ROLE",
+    }
 
 
 def test_database_url_validator_strips_accidental_cyrillic_k():
