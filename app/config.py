@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     feature_trip_cargo: bool = False            # вопрос «что везёте»
     feature_odometer_photo: bool = True         # фото одометра (число км вписывает владелец)
     feature_trip_status_steps: bool = False     # промежуточные статусы рейса (выгрузка)
-    feature_cargo_geolocation: bool = True      # геопозиция при сдаче груза (включена — наполняет карту)
+    # Геопозиция от водителя ЗАМОРОЖЕНА (2026-07-06): GPS Stavtrack даёт
+    # координаты машин, ручная геопозиция не нужна и лишний шаг для водителя.
+    feature_cargo_geolocation: bool = False     # геопозиция при выезде/сдаче груза
     feature_cash_handover: bool = False         # «сдал деньги»
     # показ зарплаты водителю УДАЛЁН насовсем (не флаг): решение владельца,
     # водитель не должен видеть заработок — см. driver_bot._do_end_shift

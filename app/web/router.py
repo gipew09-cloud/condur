@@ -3670,6 +3670,37 @@ async def get_trip_document(
     return Response(content=doc.data, media_type=doc.content_type)
 
 
+@app.post("/trip-doc/{doc_id}/delete")
+async def delete_trip_document(
+    doc_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Удалить документ рейса, загруженный владельцем."""
+    doc = await session.get(TripDocument, doc_id)
+    if doc is None or doc.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    trip_id = doc.trip_id
+    await session.delete(doc)
+    await session.commit()
+    return RedirectResponse(f"/trips/{trip_id}", status_code=303)
+
+
+@app.post("/trips/{trip_id}/waybill/delete")
+async def delete_trip_waybill(
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Удалить фото ТТН, присланное водителем (Telegram file_id обнуляем)."""
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    trip.waybill_photo_url = None
+    await session.commit()
+    return RedirectResponse(f"/trips/{trip_id}", status_code=303)
+
+
 async def _route_travel_estimate(
     session: AsyncSession, owner_id: int, origin: str | None, destination: str | None
 ) -> dict | None:
@@ -4496,6 +4527,24 @@ async def expense_edit_save(
             expense.receipt_web_type = file.content_type or "image/jpeg"
     await session.commit()
     return RedirectResponse("/expenses", status_code=303)
+
+
+@app.post("/expenses/{expense_id}/receipt/delete")
+async def delete_expense_receipt(
+    expense_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Удалить чек у расхода (и фото от водителя, и загруженный владельцем).
+    Сам расход остаётся — удаляется только прикреплённый чек."""
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    expense.receipt_photo_url = None
+    expense.receipt_web_data = None
+    expense.receipt_web_type = None
+    await session.commit()
+    return RedirectResponse(f"/expenses/{expense_id}", status_code=303)
 
 
 @app.get("/api/expense-receipt/{expense_id}")

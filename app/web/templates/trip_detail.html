@@ -449,7 +449,13 @@
   <section class="trip-card">
     <div class="trip-card__head">
       <h3>ТТН</h3>
-      {% if waybill_uploaded_at %}<small>загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>{% endif %}
+      <div style="display:flex; gap:10px; align-items:center;">
+        {% if waybill_uploaded_at %}<small>загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>{% endif %}
+        <form action="/trips/{{ trip.id }}/waybill/delete" method="post" style="margin:0;"
+              onsubmit="return confirm('Удалить фото ТТН?')">
+          <button type="submit" class="secondary outline" style="margin:0; padding:4px 10px; font-size:.8rem;">🗑 Удалить</button>
+        </form>
+      </div>
     </div>
     <div class="trip-card__body">
       <a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
@@ -472,6 +478,10 @@
         <div class="trip-doc">
           <a href="/api/trip-doc/{{ doc.id }}" target="_blank"><b>{{ doc.filename or 'документ' }}</b></a>
           <small>загружено {{ doc.uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>
+          <form action="/trip-doc/{{ doc.id }}/delete" method="post" style="margin:.3rem 0 0;"
+                onsubmit="return confirm('Удалить этот документ?')">
+            <button type="submit" class="secondary outline" style="margin:0; padding:3px 9px; font-size:.78rem;">🗑 Удалить</button>
+          </form>
         </div>
         {% endfor %}
       </div>

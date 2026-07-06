@@ -29,10 +29,16 @@
     {% if expense.description %}<p style="color:var(--text-muted);font-size:.9rem;">Описание: {{ expense.description }}</p>{% endif %}
 
     <p style="margin:1rem 0 .35rem; font-weight:600;">Фото чека</p>
-    {% if expense.receipt_web_data %}
+    {% if expense.receipt_web_data or expense.receipt_photo_url %}
+      {% if expense.receipt_web_data %}
       <a href="/api/expense-receipt/{{ expense.id }}" target="_blank"><img src="/api/expense-receipt/{{ expense.id }}" style="max-width:100%;max-height:340px;border-radius:8px;border:1px solid var(--border);"></a>
-    {% elif expense.receipt_photo_url %}
+      {% else %}
       <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank"><img src="/api/photo/{{ expense.receipt_photo_url }}" style="max-width:100%;max-height:340px;border-radius:8px;border:1px solid var(--border);"></a>
+      {% endif %}
+      <button type="submit" class="secondary outline"
+              formaction="/expenses/{{ expense.id }}/receipt/delete" formmethod="post" formnovalidate
+              onclick="return confirm('Удалить чек? Сам расход останется.')"
+              style="margin-top:.4rem; padding:5px 12px; font-size:.85rem;">🗑 Удалить чек</button>
     {% else %}
       <p style="color:var(--text-muted);font-size:.9rem;">Чек не приложен.</p>
     {% endif %}

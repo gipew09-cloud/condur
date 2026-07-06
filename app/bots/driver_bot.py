@@ -1276,7 +1276,10 @@ async def btn_upload_waybill(
         return
 
     await state.set_state(UploadWaybill.waiting_for_photo)
-    await message.answer("Сфотографируйте документ 📷")
+    await message.answer(
+        "Сфотографируйте документ 📷\n"
+        "Не нужен — просто нажмите любую кнопку внизу (шаг необязательный)."
+    )
 
 
 @driver_router.message(UploadWaybill.waiting_for_photo, F.photo)
@@ -1327,9 +1330,22 @@ async def upload_waybill_photo(
         )
 
 
-@driver_router.message(UploadWaybill.waiting_for_photo)
-async def upload_waybill_invalid(message: Message) -> None:
-    await message.answer(msg.WAYBILL_PHOTO_REQUIRED)
+@driver_router.message(
+    UploadWaybill.waiting_for_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS)
+)
+async def upload_waybill_invalid(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    """Не фото и не кнопка меню (случайный текст) — шаг необязательный, мягко
+    выходим, чтобы водитель не залипал на «Нужно фото». Нажатия кнопок меню
+    сюда НЕ попадают (исключены фильтром) — они уходят в свои обработчики,
+    очищая это состояние сами."""
+    await state.clear()
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is not None:
+        await _refresh_ui(message, session, driver, "Ок, без документа — продолжаем.")
+    else:
+        await message.answer("Ок, без документа.")
 
 
 # =========================================================================

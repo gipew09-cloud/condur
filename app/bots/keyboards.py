@@ -44,6 +44,16 @@ BTN_SEND_LOCATION = "📍 Отправить геопозицию"
 BTN_ADD_SHIFT = "➕ Добавить смену"
 BTN_ADD_TRIP = "➕ Добавить рейс"
 
+# Все reply-кнопки водителя — чтобы одноразовые шаги (например «Документ»,
+# ждущий фото) НЕ перехватывали нажатие другой кнопки, а выпускали его к
+# нужному обработчику. Нажал кнопку меню — вышел из ожидания фото.
+ALL_DRIVER_BUTTONS = frozenset({
+    BTN_START_SHIFT, BTN_END_SHIFT, BTN_NEW_TRIP, BTN_TRIP_DEPART,
+    BTN_TRIP_UNLOADING, BTN_END_TRIP, BTN_UPLOAD_WAYBILL, BTN_EXPENSE,
+    BTN_SOS, BTN_STATUS, BTN_DOWNTIME, BTN_HANDED_CASH, BTN_SKIP,
+    BTN_SEND_LOCATION, BTN_ADD_SHIFT, BTN_ADD_TRIP,
+})
+
 
 # =========================================================================
 # ВЛАДЕЛЕЦ — главное меню
@@ -173,8 +183,9 @@ def driver_no_shift_kb() -> ReplyKeyboardMarkup:
     rows: list[list[str]] = [[BTN_START_SHIFT]]
     # Расход доступен в любой момент, даже до открытия смены (Правка 3).
     rows.append([BTN_EXPENSE])
-    # Оффлайн-добавление задним числом (когда не было связи на складе).
-    rows.append([BTN_ADD_SHIFT, BTN_ADD_TRIP])
+    # Оффлайн-добавление задним числом: только «Добавить рейс» — он сам создаёт
+    # смену, поэтому отдельная «Добавить смену» не нужна (убрана 2026-07-06).
+    rows.append([BTN_ADD_TRIP])
     # «Простой» и «Сдал деньги» — по флагам (по умолчанию скрыты).
     extras: list[str] = []
     if settings.feature_downtime:
