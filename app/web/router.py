@@ -372,10 +372,9 @@ async def login_submit(
     await session.commit()
 
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        auth_service.SESSION_COOKIE, raw_token, httponly=True, samesite="lax",
-        max_age=auth_service.SESSION_COOKIE_MAX_AGE,
-    )
+    # Secure + явный Expires + Path=/ — иначе на iPhone/Safari cookie слетает
+    # и вход постоянно просит код заново (см. auth_service.set_session_cookie).
+    auth_service.set_session_cookie(response, raw_token)
     # Старый 7-дневный JWT больше не нужен: после успешного входа оставляем
     # только постоянную web_session, чтобы браузер не путался между схемами.
     response.delete_cookie("auth")
@@ -392,7 +391,7 @@ async def logout(
         ws.revoked_at = datetime.now(timezone.utc)
         await session.commit()
     response = RedirectResponse("/login", status_code=303)
-    response.delete_cookie(auth_service.SESSION_COOKIE)
+    auth_service.clear_session_cookie(response)
     response.delete_cookie("auth")
     return response
 
@@ -2240,7 +2239,7 @@ async def sessions_revoke(
     await session.commit()
     if is_own:
         response = RedirectResponse("/login", status_code=303)
-        response.delete_cookie(auth_service.SESSION_COOKIE)
+        auth_service.clear_session_cookie(response)
         response.delete_cookie("auth")
         return response
     return RedirectResponse("/requisites", status_code=303)

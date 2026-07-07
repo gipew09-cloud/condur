@@ -215,8 +215,20 @@ def test_mobile_navigation_has_requisites_logout_and_scroll():
 
 def test_login_clears_legacy_auth_cookie_source():
     source = open("app/web/router.py", encoding="utf-8").read()
-    assert "response.set_cookie(\n        auth_service.SESSION_COOKIE" in source
+    # вход ставит постоянную cookie сессии (через хелпер с Secure/Expires для iOS)
+    assert "auth_service.set_session_cookie(response, raw_token)" in source
+    # и чистит старый 7-дневный JWT
     assert 'response.delete_cookie("auth")' in source
+
+
+def test_session_cookie_is_secure_and_persistent():
+    """Cookie сессии должна быть Secure + с Expires + Path=/ — иначе Safari/iOS
+    сбрасывает её и вход постоянно просит код заново."""
+    source = open("app/services/auth_service.py", encoding="utf-8").read()
+    assert "secure=settings.cookie_secure" in source
+    assert "expires=expires" in source
+    assert 'path="/"' in source
+    assert 'samesite="lax"' in source
 
 
 def test_render_finances():

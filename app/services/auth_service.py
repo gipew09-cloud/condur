@@ -97,6 +97,37 @@ SESSION_COOKIE = "session"
 SESSION_COOKIE_MAX_AGE = 10 * 365 * 24 * 3600  # «навсегда» (10 лет)
 
 
+def set_session_cookie(response, raw_token: str) -> None:
+    """Поставить cookie сессии так, чтобы она НЕ слетала — важно для iPhone/Safari.
+
+    Ключевое для Safari на iOS: (1) Secure — Safari строг к cookie без него на
+    HTTPS и может их сбрасывать; (2) явный Expires рядом с Max-Age — часть версий
+    iOS смотрит на Expires, иначе считает cookie сессионной и удаляет при
+    сворачивании вкладки; (3) Path=/ и SameSite=Lax — вход по редиректу после
+    POST /login должен доносить cookie.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    expires = datetime.now(timezone.utc) + timedelta(seconds=SESSION_COOKIE_MAX_AGE)
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_token,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        expires=expires,
+        path="/",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+
+
+def clear_session_cookie(response) -> None:
+    """Удалить cookie сессии теми же атрибутами (иначе браузер её не сотрёт)."""
+    response.delete_cookie(
+        SESSION_COOKIE, path="/", secure=settings.cookie_secure, samesite="lax"
+    )
+
+
 def new_session_token() -> str:
     return secrets.token_urlsafe(48)
 

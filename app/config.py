@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # тарифов снова заработают. Код тарифов не удалён, просто выключен.
     billing_enabled: bool = False
 
+    # Cookie сессии кабинета. Secure обязателен на HTTPS (Railway) — без него
+    # Safari/iOS сбрасывает cookie и вход слетает. Для локального http-теста
+    # можно выставить COOKIE_SECURE=off.
+    cookie_secure: bool = True
+
     # OCR чека (Блок C). Без ключа функция дормант — водитель вводит сумму руками.
     # provider: anthropic | openai | disabled. Ключи — через ENV, в код не пишем.
     receipt_ocr_provider: str = "anthropic"
