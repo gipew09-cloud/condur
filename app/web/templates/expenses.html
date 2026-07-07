@@ -126,7 +126,13 @@
           <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank">📷 Открыть</a>
         {% else %}—{% endif %}
       </td>
-      <td><a href="/expenses/{{ expense.id }}">✏️ Изменить</a></td>
+      <td style="white-space:nowrap;">
+        <a href="/expenses/{{ expense.id }}">✏️ Изменить</a>
+        <form method="post" action="/expenses/{{ expense.id }}/delete" style="display:inline; margin:0 0 0 8px;"
+              onsubmit="return confirm('Удалить этот расход? Действие необратимо.')">
+          <button type="submit" class="secondary outline" style="margin:0; padding:2px 8px; font-size:.8rem;">🗑</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </tbody>

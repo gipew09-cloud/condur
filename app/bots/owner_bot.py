@@ -1227,6 +1227,14 @@ async def cb_route_delete(call: CallbackQuery, session: AsyncSession) -> None:
 # =========================================================================
 # Указать выручку рейса (callback из уведомления о завершении)
 # =========================================================================
+def _trip_label(trip) -> str:
+    """Короткое название рейса для запроса выручки — чтобы владелец при
+    нескольких рейсах точно знал, за какой вводит сумму."""
+    origin = (getattr(trip, "origin", None) or "—").strip()
+    destination = (getattr(trip, "destination", None) or "—").strip()
+    return f"{origin} → {destination}"
+
+
 @owner_router.callback_query(F.data.startswith("trip:revenue:"))
 async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     try:
@@ -1241,22 +1249,27 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session:
     except Exception:  # noqa: BLE001 — telegram капризен с edit, не валим callback
         pass
     trip = await session.get(Trip, trip_id)
+    if trip is None:
+        await call.answer("Рейс не найден", show_alert=True)
+        return
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
     # Владелец — главный: финальную выручку он может указать/переписать.
-    # Если водитель предложил сумму, показываем её как черновик.
-    if trip is not None and trip.revenue_rub is not None:
+    # В КАЖДОМ запросе называем рейс — при нескольких рейсах владелец не
+    # перепутает, за какой вводит сумму.
+    head = f"🧾 Рейс: <b>{_trip_label(trip)}</b>\n"
+    if trip.revenue_rub is not None:
         await call.message.answer(
-            f"Текущая выручка: {trip.revenue_rub:.0f} ₽. Введите новую сумму:"
+            head + f"Текущая выручка: {trip.revenue_rub:.0f} ₽. Введите новую сумму:"
         )
-    elif trip is not None and trip.driver_revenue_pending_rub is not None:
+    elif trip.driver_revenue_pending_rub is not None:
         await call.message.answer(
-            f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
+            head + f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
             "Введите финальную сумму:"
         )
     else:
-        await call.message.answer("Введите выручку по рейсу в рублях:")
+        await call.message.answer(head + "Введите выручку по рейсу в рублях:")
 
 
 @owner_router.callback_query(F.data.startswith("trev:ok:"))
@@ -1313,13 +1326,14 @@ async def cb_trip_revenue_edit(call: CallbackQuery, state: FSMContext, session: 
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
+    head = f"🧾 Рейс: <b>{_trip_label(trip)}</b>\n"
     if trip.driver_revenue_pending_rub is not None:
         await call.message.answer(
-            f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
+            head + f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
             "Введите правильную выручку по рейсу в рублях:"
         )
     else:
-        await call.message.answer("Введите правильную выручку по рейсу в рублях:")
+        await call.message.answer(head + "Введите правильную выручку по рейсу в рублях:")
 
 
 @owner_router.message(SetTripRevenue.waiting_for_amount)

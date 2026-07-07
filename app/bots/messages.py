@@ -192,7 +192,7 @@ WAYBILL_PHOTO_REQUIRED = "Нужно именно фото. Попробуйте
 TRIP_AMOUNT_INVALID = "Не похоже на число. Введите ещё раз."
 # Водитель указывает выручку рейса (по желанию)
 TRIP_DRIVER_REVENUE_ASK = "💰 Если знаете сумму за рейс — укажите выручку (или просто продолжайте работать):"
-TRIP_DRIVER_REVENUE_ENTER = "Введите выручку по рейсу в рублях:"
+TRIP_DRIVER_REVENUE_ENTER = "🧾 Рейс: <b>{origin} → {destination}</b>\nВведите выручку по рейсу в рублях:"
 TRIP_DRIVER_REVENUE_DONE = "✅ Выручка {amount} ₽ отправлена владельцу на подтверждение."
 NOTIFY_TRIP_REVENUE_FROM_DRIVER = (
     "💰 Водитель <b>{driver}</b> указал выручку рейса:\n"

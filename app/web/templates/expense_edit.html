@@ -46,7 +46,12 @@
       <input type="file" name="file" accept="image/*,application/pdf">
     </label>
 
-    <button type="submit" style="margin-top:.75rem;">Сохранить</button>
+    <div style="display:flex; gap:10px; align-items:center; margin-top:.75rem;">
+      <button type="submit" style="margin:0;">Сохранить</button>
+      <button type="submit" class="secondary outline" style="margin:0;"
+              formaction="/expenses/{{ expense.id }}/delete" formmethod="post" formnovalidate
+              onclick="return confirm('Удалить этот расход целиком? Действие необратимо.')">🗑 Удалить расход</button>
+    </div>
   </form>
 </div>
 {% endblock %}

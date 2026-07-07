@@ -4486,6 +4486,21 @@ async def expense_edit_page(
     )
 
 
+@app.post("/expenses/{expense_id}/delete")
+async def expense_delete(
+    expense_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Полностью удалить расход (штраф/топливо/прочее) с сайта."""
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    await session.delete(expense)
+    await session.commit()
+    return RedirectResponse("/expenses", status_code=303)
+
+
 @app.post("/expenses/{expense_id}")
 async def expense_edit_save(
     expense_id: int,

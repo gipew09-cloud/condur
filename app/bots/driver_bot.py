@@ -1498,7 +1498,11 @@ async def cb_driver_revenue(call: CallbackQuery, state: FSMContext, session: Asy
         pass
     await state.set_state(DriverTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
-    await call.message.answer(msg.TRIP_DRIVER_REVENUE_ENTER)
+    await call.message.answer(
+        msg.TRIP_DRIVER_REVENUE_ENTER.format(
+            origin=trip.origin or "—", destination=trip.destination or "—"
+        )
+    )
     await call.answer()
 
 
