@@ -2759,7 +2759,6 @@ def _issue_counts(issues: list[dict]) -> dict:
     return counts
 
 
-@app.get("/stats", response_class=HTMLResponse)
 @app.post("/stats/downtime/{event_id}/hide")
 async def stats_downtime_hide(
     event_id: int,
@@ -2831,6 +2830,7 @@ async def stats_downtime_unhide(
     return RedirectResponse(f"/stats?{request.url.query}", status_code=303)
 
 
+@app.get("/stats", response_class=HTMLResponse)
 async def stats_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],

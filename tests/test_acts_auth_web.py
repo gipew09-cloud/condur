@@ -625,3 +625,17 @@ def test_telemetry_cleanup_job_registered():
     assert "RAW_PACKETS_KEEP_DAYS = 7" in jobs_src
     main_src = open("app/main.py", encoding="utf-8").read()
     assert "telemetry_cleanup_job" in main_src
+
+
+def test_stats_routes_have_correct_decorators():
+    """Регресс-защита: GET /stats должен вести на страницу статистики, а не на
+    POST-обработчик скрытия стоянки (был баг — два декоратора на одной функции
+    → GET /stats требовал event_id и падал с 'Field required')."""
+    src = open("app/web/router.py", encoding="utf-8").read()
+    # страница статистики — со своим GET-декоратором
+    assert '@app.get("/stats", response_class=HTMLResponse)\nasync def stats_page(' in src
+    # GET /stats НЕ должен стоять прямо перед POST-обработчиком
+    assert '@app.get("/stats", response_class=HTMLResponse)\n@app.post(' not in src
+    # обработчики стоянки — отдельные POST-роуты с event_id в ПУТИ
+    for action in ("hide", "correct", "unhide"):
+        assert f'@app.post("/stats/downtime/{{event_id}}/{action}")' in src
