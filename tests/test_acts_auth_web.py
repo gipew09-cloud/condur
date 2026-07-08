@@ -639,3 +639,24 @@ def test_stats_routes_have_correct_decorators():
     # обработчики стоянки — отдельные POST-роуты с event_id в ПУТИ
     for action in ("hide", "correct", "unhide"):
         assert f'@app.post("/stats/downtime/{{event_id}}/{action}")' in src
+
+
+def test_no_route_decorator_on_helper_functions():
+    """Регресс-защита от краша деплоя: роут-декоратор @app.get/post/... НЕ должен
+    висеть на функции-хелпере (имя с '_'). Такое случается, когда новую функцию
+    вставили МЕЖДУ декоратором и его функцией — FastAPI падает на импорте
+    (session: AsyncSession трактуется как поле). Ловим статически через ast."""
+    import ast
+    src = open("app/web/router.py", encoding="utf-8").read()
+    tree = ast.parse(src)
+    http_methods = {"get", "post", "put", "delete", "patch"}
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                        and isinstance(dec.func.value, ast.Name)
+                        and dec.func.value.id == "app" and dec.func.attr in http_methods
+                        and node.name.startswith("_")):
+                    offenders.append(f"{dec.func.attr.upper()} → {node.name} (строка {node.lineno})")
+    assert not offenders, "роут-декоратор на функции-хелпере: " + "; ".join(offenders)

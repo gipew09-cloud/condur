@@ -4206,7 +4206,6 @@ async def _trip_timeline(
     return items
 
 
-@app.get("/trips/{trip_id}", response_class=HTMLResponse)
 async def _vehicle_now_info(session: AsyncSession, owner: Owner, vehicle: Vehicle | None):
     """Где машина СЕЙЧАС по GPS (для карточки рейса — отдельно от истории рейса).
     None, если у машины нет свежего GPS-состояния."""
@@ -4253,6 +4252,7 @@ async def _vehicle_now_info(session: AsyncSession, owner: Owner, vehicle: Vehicl
     }
 
 
+@app.get("/trips/{trip_id}", response_class=HTMLResponse)
 async def trip_detail(
     request: Request,
     trip_id: int,
