@@ -872,7 +872,7 @@ async def cb_route_template_pick(
     await state.update_data(
         origin=template.origin,
         destination=template.destination,
-        cargo=template.default_cargo or template.name,
+        cargo=template.default_cargo,  # груз = только реальный груз шаблона, НЕ его название
     )
     await call.message.edit_text(
         f"Маршрут: <b>{template.origin} → {template.destination}</b>",

@@ -2810,10 +2810,12 @@ async def stats_downtime_edit_page(
     cur_billable = telemetry_service.int_or_none(payload.get("corrected_billable_rub"))
     if cur_billable is None:
         cur_billable = telemetry_service.rc_billable_downtime_rub(cur_minutes)
-    cur_driver = (
-        telemetry_service.int_or_none(payload.get("corrected_driver_id"))
-        or telemetry_service.int_or_none(payload.get("driver_id"))
-    )
+    # 0 в corrected_driver_id = явно «нет водителя» → в форме «не указан»
+    if "corrected_driver_id" in payload:
+        cd = telemetry_service.int_or_none(payload.get("corrected_driver_id"))
+        cur_driver = cd if cd else None
+    else:
+        cur_driver = telemetry_service.int_or_none(payload.get("driver_id"))
     return templates.TemplateResponse(
         "downtime_edit.html",
         {
@@ -2860,10 +2862,12 @@ async def stats_downtime_correct(
             payload["corrected_billable_rub"] = max(0, int(bill_raw))
         except ValueError:
             raise HTTPException(status_code=400, detail="Сумма — целое число рублей")
-    # водитель: пусто → снять ручную привязку
+    # водитель: пусто = ЯВНО «без водителя» (прочерк), число = конкретный
+    # водитель. 0 — признак «явно нет водителя» (иначе система заново вычисляла
+    # его из смен и прочерк не ставился).
     drv_raw = str(driver_id).strip()
     if not drv_raw:
-        payload.pop("corrected_driver_id", None)
+        payload["corrected_driver_id"] = 0
     else:
         try:
             drv_id = int(drv_raw)
@@ -3046,10 +3050,12 @@ async def stats_page(
         # сумму «к выставлению» и водителя. Ручные значения имеют приоритет.
         corrected = telemetry_service.int_or_none(payload.get("corrected_waited_minutes"))
         corrected_billable = telemetry_service.int_or_none(payload.get("corrected_billable_rub"))
+        # водитель поправлен вручную, если ключ вообще присутствует (0 = явно «нет»)
+        driver_overridden = "corrected_driver_id" in payload
         corrected_driver = telemetry_service.int_or_none(payload.get("corrected_driver_id"))
-        is_corrected = any(
+        is_corrected = driver_overridden or any(
             payload.get(k) is not None
-            for k in ("corrected_waited_minutes", "corrected_billable_rub", "corrected_driver_id")
+            for k in ("corrected_waited_minutes", "corrected_billable_rub")
         )
         waited = max(0, corrected if corrected is not None
                      else (telemetry_service.int_or_none(payload.get("waited_minutes")) or 0))
@@ -3065,13 +3071,18 @@ async def stats_page(
         rcid = telemetry_service.int_or_none(payload.get("rc_id"))
         arrived_at = _payload_dt(payload.get("arrived_at")) or (created_at - timedelta(minutes=waited))
         departed_at = _payload_dt(payload.get("departed_at")) or created_at
-        driver_id = (
-            corrected_driver
-            or telemetry_service.int_or_none(payload.get("driver_id"))
-            or _driver_at(vid, departed_at)
-            or _driver_at(vid, arrived_at)
-        )
-        driver_name = driver_names.get(driver_id) or payload.get("driver_name")
+        if driver_overridden:
+            # ручная правка имеет приоритет; 0 = «водителя нет» → прочерк
+            driver_id = corrected_driver if corrected_driver else None
+        else:
+            driver_id = (
+                telemetry_service.int_or_none(payload.get("driver_id"))
+                or _driver_at(vid, departed_at)
+                or _driver_at(vid, arrived_at)
+            )
+        driver_name = driver_names.get(driver_id) if driver_id else None
+        if driver_name is None and not driver_overridden:
+            driver_name = payload.get("driver_name")
         route = (
             payload.get("route")
             or _route_at(vid, driver_id, departed_at)
