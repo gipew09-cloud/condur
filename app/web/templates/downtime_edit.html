@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Правка стоянки{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Правка стоянки на РЦ</h1>
+  <p class="sub">{{ plate }} · {{ rc_name }}. Поправьте, если GPS ошибся — время, сумму к выставлению и водителя. Итоги статистики пересчитаются.</p>
+</div>
+
+<div style="max-width:560px; background:#fff; border:1px solid var(--border); border-radius:12px; padding:20px;">
+  <form method="post" action="/stats/downtime/{{ event_id }}/correct">
+    <input type="hidden" name="back_query" value="{{ back_query }}">
+
+    <label>Сколько минут реально стоял на РЦ
+      <input type="number" name="waited_minutes" value="{{ cur_minutes }}" min="0" required>
+    </label>
+
+    <label style="margin-top:.75rem;">Сумма к выставлению, ₽
+      <input type="number" name="billable_rub" value="{{ cur_billable }}" min="0"
+             placeholder="оставьте пустым — посчитается от минут (8000 ₽ за 12 ч)">
+    </label>
+    <p class="sub" style="margin:.25rem 0 0;">Пусто = считать автоматически по минутам. Число = зафиксировать вручную.</p>
+
+    <label style="margin-top:.75rem;">Водитель за рулём
+      <select name="driver_id">
+        <option value="">— не указан —</option>
+        {% for d in drivers %}
+        <option value="{{ d.id }}" {% if d.id == cur_driver %}selected{% endif %}>{{ d.full_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div style="display:flex; gap:10px; margin-top:1rem;">
+      <button type="submit" style="margin:0;">Сохранить</button>
+      <a href="/stats?{{ back_query }}" role="button" class="secondary outline" style="margin:0;">Отмена</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

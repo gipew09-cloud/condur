@@ -502,12 +502,8 @@
                 {% if r.billable_blocks %}<span class="route-muted">{{ r.billable_blocks }} блок(а) по 12 часов</span>{% endif %}
               </td>
               <td data-label="" style="white-space:nowrap;">
-                <form method="post" action="/stats/downtime/{{ r.event_id }}/correct?{{ request.query_params if request is defined else '' }}" style="display:inline; margin:0;"
-                      onsubmit="var x=prompt('Сколько минут машина реально стояла на РЦ?\n(сумма к выставлению пересчитается)','{{ r.waited_minutes }}'); if(x===null||x.trim()===''){return false;} this.waited_minutes.value=x.trim(); return true;">
-                  <input type="hidden" name="waited_minutes" value="">
-                  <button type="submit" title="Поправить минуты стоянки"
-                          style="width:auto; display:inline; background:none; border:none; box-shadow:none; color:#2563eb; cursor:pointer; padding:0; margin:0 10px 0 0; font:inherit; font-size:.82rem;">✏️ Изменить</button>
-                </form>
+                <a href="/stats/downtime/{{ r.event_id }}/edit?{{ request.query_params if request is defined else '' }}"
+                   style="color:#2563eb; margin-right:10px; font-size:.82rem;">✏️ Изменить</a>
                 <form method="post" action="/stats/downtime/{{ r.event_id }}/hide?{{ request.query_params if request is defined else '' }}" style="display:inline; margin:0;"
                       onsubmit="var x=prompt('Скрыть ложную стоянку из статистики?\nМожно указать причину (необязательно):','машина стояла не на РЦ'); if(x===null){return false;} this.reason.value=x; return true;">
                   <input type="hidden" name="reason" value="">

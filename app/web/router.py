@@ -2784,6 +2784,50 @@ async def stats_downtime_hide(
     return RedirectResponse(f"/stats?{request.url.query}", status_code=303)
 
 
+@app.get("/stats/downtime/{event_id}/edit", response_class=HTMLResponse)
+async def stats_downtime_edit_page(
+    event_id: int,
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Страница правки одной стоянки: минуты, сумма к выставлению, водитель."""
+    ev = await session.get(Event, event_id)
+    if ev is None or ev.owner_id != owner.id or ev.event_type != "rc_departed":
+        raise HTTPException(status_code=404)
+    payload = ev.payload or {}
+    drivers = list(
+        (
+            await session.execute(
+                select(Driver).where(Driver.owner_id == owner.id, Driver.is_active.is_(True))
+                .order_by(Driver.full_name)
+            )
+        ).scalars().all()
+    )
+    cur_minutes = telemetry_service.int_or_none(payload.get("corrected_waited_minutes"))
+    if cur_minutes is None:
+        cur_minutes = telemetry_service.int_or_none(payload.get("waited_minutes")) or 0
+    cur_billable = telemetry_service.int_or_none(payload.get("corrected_billable_rub"))
+    if cur_billable is None:
+        cur_billable = telemetry_service.rc_billable_downtime_rub(cur_minutes)
+    cur_driver = (
+        telemetry_service.int_or_none(payload.get("corrected_driver_id"))
+        or telemetry_service.int_or_none(payload.get("driver_id"))
+    )
+    return templates.TemplateResponse(
+        "downtime_edit.html",
+        {
+            "request": request, "owner": owner, "active_page": "stats",
+            "event_id": event_id,
+            "rc_name": payload.get("rc_name") or "—",
+            "plate": payload.get("plate") or "—",
+            "cur_minutes": cur_minutes, "cur_billable": cur_billable,
+            "cur_driver": cur_driver, "drivers": drivers,
+            "back_query": request.url.query,
+        },
+    )
+
+
 @app.post("/stats/downtime/{event_id}/correct")
 async def stats_downtime_correct(
     event_id: int,
@@ -2791,9 +2835,12 @@ async def stats_downtime_correct(
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     waited_minutes: Annotated[str, Form()],
+    billable_rub: Annotated[str, Form()] = "",
+    driver_id: Annotated[str, Form()] = "",
+    back_query: Annotated[str, Form()] = "",
 ):
-    """Поправить время стоянки вручную (GPS ошибся). Сумма «к выставлению»
-    пересчитается от исправленных минут. Аудит: кто/когда правил."""
+    """Поправить стоянку вручную: минуты, сумму «к выставлению», водителя.
+    Аудит: кто/когда правил. Пустая сумма = считать от минут автоматически."""
     ev = await session.get(Event, event_id)
     if ev is None or ev.owner_id != owner.id or ev.event_type != "rc_departed":
         raise HTTPException(status_code=404)
@@ -2804,11 +2851,34 @@ async def stats_downtime_correct(
     viewer_tid = await _viewer_telegram_id(request, session)
     payload = dict(ev.payload or {})
     payload["corrected_waited_minutes"] = minutes
+    # сумма: пусто → авто-расчёт (убираем ручную), иначе фиксируем
+    bill_raw = str(billable_rub).strip()
+    if bill_raw == "":
+        payload.pop("corrected_billable_rub", None)
+    else:
+        try:
+            payload["corrected_billable_rub"] = max(0, int(bill_raw))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Сумма — целое число рублей")
+    # водитель: пусто → снять ручную привязку
+    drv_raw = str(driver_id).strip()
+    if not drv_raw:
+        payload.pop("corrected_driver_id", None)
+    else:
+        try:
+            drv_id = int(drv_raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Bad driver_id")
+        drv = await session.get(Driver, drv_id)
+        if drv is None or drv.owner_id != owner.id:
+            raise HTTPException(status_code=400, detail="Bad driver_id")
+        payload["corrected_driver_id"] = drv_id
     payload["corrected_by"] = viewer_tid
     payload["corrected_at"] = datetime.now(timezone.utc).isoformat()
     ev.payload = payload
     await session.commit()
-    return RedirectResponse(f"/stats?{request.url.query}", status_code=303)
+    q = (back_query or "").lstrip("?")
+    return RedirectResponse(f"/stats?{q}" if q else "/stats", status_code=303)
 
 
 @app.post("/stats/downtime/{event_id}/unhide")
@@ -2972,13 +3042,20 @@ async def stats_page(
                 "reason": payload.get("ignored_reason") or "",
             })
             continue
-        # Владелец мог поправить минуты стоянки вручную (GPS ошибся) — тогда
-        # берём исправленное значение и от него считаем сумму «к выставлению».
+        # Владелец мог поправить строку вручную (GPS ошибся): минуты стоянки,
+        # сумму «к выставлению» и водителя. Ручные значения имеют приоритет.
         corrected = telemetry_service.int_or_none(payload.get("corrected_waited_minutes"))
-        is_corrected = corrected is not None
-        waited = max(0, corrected if is_corrected
+        corrected_billable = telemetry_service.int_or_none(payload.get("corrected_billable_rub"))
+        corrected_driver = telemetry_service.int_or_none(payload.get("corrected_driver_id"))
+        is_corrected = any(
+            payload.get(k) is not None
+            for k in ("corrected_waited_minutes", "corrected_billable_rub", "corrected_driver_id")
+        )
+        waited = max(0, corrected if corrected is not None
                      else (telemetry_service.int_or_none(payload.get("waited_minutes")) or 0))
-        if is_corrected:
+        if corrected_billable is not None:
+            billable = max(0, corrected_billable)
+        elif corrected is not None:
             billable = telemetry_service.rc_billable_downtime_rub(waited)
         else:
             payload_billable = telemetry_service.int_or_none(payload.get("billable_downtime_rub"))
@@ -2989,11 +3066,12 @@ async def stats_page(
         arrived_at = _payload_dt(payload.get("arrived_at")) or (created_at - timedelta(minutes=waited))
         departed_at = _payload_dt(payload.get("departed_at")) or created_at
         driver_id = (
-            telemetry_service.int_or_none(payload.get("driver_id"))
+            corrected_driver
+            or telemetry_service.int_or_none(payload.get("driver_id"))
             or _driver_at(vid, departed_at)
             or _driver_at(vid, arrived_at)
         )
-        driver_name = payload.get("driver_name") or driver_names.get(driver_id)
+        driver_name = driver_names.get(driver_id) or payload.get("driver_name")
         route = (
             payload.get("route")
             or _route_at(vid, driver_id, departed_at)
@@ -3938,6 +4016,7 @@ async def _trip_timeline(
             .order_by(Event.created_at)
         )
     ).all()
+    saw_completed_event = False
     for event_type, created_at, payload in event_rows:
         payload = payload or {}
         if event_type == "trip_in_transit":
@@ -3956,6 +4035,7 @@ async def _trip_timeline(
                 subtitle="фото от водителя",
             ))
         elif event_type == "trip_completed":
+            saw_completed_event = True
             fuel = _event_payload_amount(payload, "fuel_cost")
             add(_timeline_item(
                 kind="success", order=80, at=created_at, title="Рейс завершён",
@@ -4007,8 +4087,16 @@ async def _trip_timeline(
                 ),
             ))
 
-    window_start = (trip.created_at or datetime.now(timezone.utc)) - timedelta(hours=8)
-    window_end = (trip.completed_at or datetime.now(timezone.utc)) + timedelta(hours=8)
+    # Окно GPS-событий = только время ЭТОГО рейса, иначе в карточку попадают
+    # визиты на РЦ из других поездок за день (владелец видел «уехал в 17:30»
+    # у рейса, начатого в 20:54). Небольшие поля: до старта на выезд, после
+    # завершения — на выгрузку/отъезд с РЦ.
+    _now = datetime.now(timezone.utc)
+    trip_start_ref = trip.created_at or (shift.started_at if shift else None) or _now
+    if shift is not None and shift.started_at is not None and shift.started_at < trip_start_ref:
+        trip_start_ref = shift.started_at
+    window_start = trip_start_ref - timedelta(minutes=30)
+    window_end = (trip.completed_at or _now) + timedelta(hours=2)
     if vehicle is not None:
         rc_rows = (
             await session.execute(
@@ -4084,12 +4172,14 @@ async def _trip_timeline(
             subtitle=doc.get("filename") or "документ",
         ))
 
-    if trip.completed_at:
+    if trip.completed_at and not saw_completed_event:
+        # синтетическую строку добавляем ТОЛЬКО если не было события
+        # trip_completed (иначе «Рейс завершён» дублировался)
         add(_timeline_item(
             kind="success", order=80, at=trip.completed_at,
             title="Рейс завершён", subtitle=route,
         ))
-    else:
+    elif not trip.completed_at:
         add(_timeline_item(
             kind="info", order=95, at=datetime.now(timezone.utc),
             title="Рейс ещё открыт",
