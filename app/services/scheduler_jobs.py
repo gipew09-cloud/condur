@@ -651,7 +651,6 @@ NO_SHOW_THRESHOLD_HOURS = 36
 async def no_show_detector_job(owner_bot: Bot) -> None:
     now = datetime.now(timezone.utc)
     threshold = now - timedelta(hours=NO_SHOW_THRESHOLD_HOURS)
-    dedup_since = now - timedelta(hours=24)
     async with async_session() as session:
         drivers_res = await session.execute(
             select(Driver).where(Driver.is_active.is_(True))
@@ -673,12 +672,15 @@ async def no_show_detector_job(owner_bot: Bot) -> None:
                 last_active = last_shift.scalar_one() or driver.created_at
                 if last_active is None or last_active > threshold:
                     continue
-                # уже алёртили за последние сутки?
+                # Одно уведомление на один простой: если уже алёртили ПОСЛЕ его
+                # последней смены — молчим (иначе про тестовых/уволившихся
+                # водителей сыпалось каждый день). Выйдет на смену — счётчик
+                # сам сдвинется, и новый простой снова сможет уведомить.
                 already = await session.execute(
                     select(Event.id).where(
                         Event.driver_id == driver.id,
                         Event.event_type == "no_show_alert",
-                        Event.created_at >= dedup_since,
+                        Event.created_at >= last_active,
                     )
                 )
                 if already.scalar_one_or_none() is not None:
@@ -966,6 +968,8 @@ def _rc_exit_radius_m(rc) -> int:
     return int(_rc_entry_radius_m(rc) * RC_GEOFENCE_EXIT_FACTOR)
 
 
+
+
 def _event_datetime(value, fallback: datetime) -> datetime:
     if fallback.tzinfo is None:
         fallback = fallback.replace(tzinfo=timezone.utc)
@@ -1241,6 +1245,53 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
             "driver_name": driver_name,
         }
         sent_any = True
+
+        # GPS-сверка ПЛАН ↔ ФАКТ: если у машины есть активный рейс, сверяем
+        # РЦ назначения рейса с фактическим РЦ, куда реально приехали.
+        active_trip = (
+            await session.execute(
+                select(Trip)
+                .where(
+                    Trip.vehicle_id == st.vehicle_id,
+                    Trip.owner_id == owner.id,
+                    Trip.status.in_(("created", "in_transit", "unloading")),
+                )
+                .order_by(Trip.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if active_trip is not None:
+            # сверяем один раз на рейс
+            already_checked = (
+                await session.execute(
+                    select(Event.id).where(
+                        Event.trip_id == active_trip.id,
+                        Event.event_type.in_(("trip_rc_confirmed", "trip_rc_mismatch")),
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+            if already_checked is None:
+                planned = rc_service.match_destination_to_center(active_trip.destination, rcs)
+                if planned is not None and planned.id == nearest.id:
+                    await log_event(
+                        session, owner_id=owner.id, driver_id=driver_id,
+                        trip_id=active_trip.id, event_type="trip_rc_confirmed",
+                        payload={"rc_id": nearest.id, "rc_name": nearest.name},
+                    )
+                elif planned is not None:
+                    await notify_owner(
+                        owner_bot, session, owner,
+                        f"⚠️ <b>{plate}</b>{who}: по рейсу план — РЦ <b>{planned.name}</b>, "
+                        f"а фактически приехал на <b>{nearest.name}</b>. Проверьте.",
+                    )
+                    await log_event(
+                        session, owner_id=owner.id, driver_id=driver_id,
+                        trip_id=active_trip.id, event_type="trip_rc_mismatch",
+                        payload={
+                            "planned_rc_id": planned.id, "planned_rc_name": planned.name,
+                            "actual_rc_id": nearest.id, "actual_rc_name": nearest.name,
+                        },
+                    )
     if sent_any:
         await session.commit()
 

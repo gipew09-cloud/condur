@@ -2760,12 +2760,84 @@ def _issue_counts(issues: list[dict]) -> dict:
 
 
 @app.get("/stats", response_class=HTMLResponse)
+@app.post("/stats/downtime/{event_id}/hide")
+async def stats_downtime_hide(
+    event_id: int,
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    reason: Annotated[str, Form()] = "",
+):
+    """Скрыть ложную стоянку из статистики (например, машина стояла дома, а
+    геозона приписала её РЦ). GPS-данные НЕ удаляем — только помечаем событие
+    rc_departed флагом ignored, с автором/временем/причиной для аудита."""
+    ev = await session.get(Event, event_id)
+    if ev is None or ev.owner_id != owner.id or ev.event_type != "rc_departed":
+        raise HTTPException(status_code=404)
+    viewer_tid = await _viewer_telegram_id(request, session)
+    payload = dict(ev.payload or {})
+    payload["ignored"] = True
+    payload["ignored_reason"] = (reason or "").strip()[:500]
+    payload["ignored_by"] = viewer_tid
+    payload["ignored_at"] = datetime.now(timezone.utc).isoformat()
+    ev.payload = payload  # переприсваиваем целиком — иначе SQLAlchemy не увидит правку JSONB
+    await session.commit()
+    return RedirectResponse(f"/stats?{request.url.query}", status_code=303)
+
+
+@app.post("/stats/downtime/{event_id}/correct")
+async def stats_downtime_correct(
+    event_id: int,
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    waited_minutes: Annotated[str, Form()],
+):
+    """Поправить время стоянки вручную (GPS ошибся). Сумма «к выставлению»
+    пересчитается от исправленных минут. Аудит: кто/когда правил."""
+    ev = await session.get(Event, event_id)
+    if ev is None or ev.owner_id != owner.id or ev.event_type != "rc_departed":
+        raise HTTPException(status_code=404)
+    try:
+        minutes = max(0, int(str(waited_minutes).strip()))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Минуты — целое число")
+    viewer_tid = await _viewer_telegram_id(request, session)
+    payload = dict(ev.payload or {})
+    payload["corrected_waited_minutes"] = minutes
+    payload["corrected_by"] = viewer_tid
+    payload["corrected_at"] = datetime.now(timezone.utc).isoformat()
+    ev.payload = payload
+    await session.commit()
+    return RedirectResponse(f"/stats?{request.url.query}", status_code=303)
+
+
+@app.post("/stats/downtime/{event_id}/unhide")
+async def stats_downtime_unhide(
+    event_id: int,
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Вернуть ошибочно скрытую стоянку обратно в статистику."""
+    ev = await session.get(Event, event_id)
+    if ev is None or ev.owner_id != owner.id or ev.event_type != "rc_departed":
+        raise HTTPException(status_code=404)
+    payload = dict(ev.payload or {})
+    for k in ("ignored", "ignored_reason", "ignored_by", "ignored_at"):
+        payload.pop(k, None)
+    ev.payload = payload
+    await session.commit()
+    return RedirectResponse(f"/stats?{request.url.query}", status_code=303)
+
+
 async def stats_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     period_from: Annotated[str | None, Query()] = None,
     period_to: Annotated[str | None, Query()] = None,
+    show_hidden: Annotated[str | None, Query()] = None,
 ):
     """Статистика: простои на РЦ (для счетов за простой), сводка по РЦ,
     по водителям, заказы по неделям. Источник простоев — события
@@ -2870,7 +2942,7 @@ async def stats_page(
     # в таблицу отдаём последние 500 строк, чтобы страница не тяжелела.
     ev_rows = (
         await session.execute(
-            select(Event.created_at, Event.payload)
+            select(Event.id, Event.created_at, Event.payload)
             .where(
                 Event.owner_id == owner.id,
                 Event.event_type == "rc_departed",
@@ -2881,12 +2953,37 @@ async def stats_page(
         )
     ).all()
     journal_all = []
-    for created_at, payload in ev_rows:
+    hidden_rows = []
+    for event_id, created_at, payload in ev_rows:
         payload = payload or {}
-        waited = max(0, telemetry_service.int_or_none(payload.get("waited_minutes")) or 0)
-        payload_billable = telemetry_service.int_or_none(payload.get("billable_downtime_rub"))
-        computed_billable = telemetry_service.rc_billable_downtime_rub(waited)
-        billable = max(computed_billable, payload_billable or 0)
+        # Ложную стоянку владелец скрывает — она исключается из всех итогов
+        # (KPI, сводки, «к выставлению», экспорт). Сама GPS-точка не удаляется.
+        if payload.get("ignored"):
+            hidden_rows.append({
+                "event_id": event_id,
+                "arrived_at": _payload_dt(payload.get("arrived_at")) or created_at,
+                "departed_at": _payload_dt(payload.get("departed_at")) or created_at,
+                "plate": payload.get("plate") or plates.get(
+                    telemetry_service.int_or_none(payload.get("vehicle_id")), "—"),
+                "rc_name": payload.get("rc_name") or rc_names.get(
+                    telemetry_service.int_or_none(payload.get("rc_id")), "—"),
+                "waited_label": _minutes_label(
+                    telemetry_service.int_or_none(payload.get("waited_minutes")) or 0),
+                "reason": payload.get("ignored_reason") or "",
+            })
+            continue
+        # Владелец мог поправить минуты стоянки вручную (GPS ошибся) — тогда
+        # берём исправленное значение и от него считаем сумму «к выставлению».
+        corrected = telemetry_service.int_or_none(payload.get("corrected_waited_minutes"))
+        is_corrected = corrected is not None
+        waited = max(0, corrected if is_corrected
+                     else (telemetry_service.int_or_none(payload.get("waited_minutes")) or 0))
+        if is_corrected:
+            billable = telemetry_service.rc_billable_downtime_rub(waited)
+        else:
+            payload_billable = telemetry_service.int_or_none(payload.get("billable_downtime_rub"))
+            computed_billable = telemetry_service.rc_billable_downtime_rub(waited)
+            billable = max(computed_billable, payload_billable or 0)
         vid = telemetry_service.int_or_none(payload.get("vehicle_id"))
         rcid = telemetry_service.int_or_none(payload.get("rc_id"))
         arrived_at = _payload_dt(payload.get("arrived_at")) or (created_at - timedelta(minutes=waited))
@@ -2903,6 +3000,8 @@ async def stats_page(
             or _route_at(vid, driver_id, arrived_at)
         )
         journal_all.append({
+            "event_id": event_id,
+            "corrected": is_corrected,
             "arrived_at": arrived_at,
             "departed_at": departed_at,
             "plate": payload.get("plate") or plates.get(vid, "—"),
@@ -3330,6 +3429,7 @@ async def stats_page(
             "driver_summary": driver_summary, "week_summary": week_summary,
             "billable_alerts": billable_alerts,
             "live_issues": live_issues, "live_issue_counts": live_issue_counts,
+            "hidden_rows": hidden_rows, "show_hidden": bool(show_hidden),
         },
     )
 
@@ -3890,6 +3990,21 @@ async def _trip_timeline(
                 kind="warn", order=74, at=created_at,
                 title=f"Расход отправлен{f': {amount}' if amount else ''}",
                 subtitle=payload.get("category") or "чек/расход от водителя",
+            ))
+        elif event_type == "trip_rc_confirmed":
+            add(_timeline_item(
+                kind="success", order=44, at=created_at,
+                title="✅ GPS подтвердил прибытие на РЦ",
+                subtitle=payload.get("rc_name") or trip.destination or "—",
+            ))
+        elif event_type == "trip_rc_mismatch":
+            add(_timeline_item(
+                kind="danger", order=44, at=created_at,
+                title="⚠️ Приехал не на тот РЦ",
+                subtitle=(
+                    f"план: {payload.get('planned_rc_name') or '—'} · "
+                    f"факт: {payload.get('actual_rc_name') or '—'}"
+                ),
             ))
 
     window_start = (trip.created_at or datetime.now(timezone.utc)) - timedelta(hours=8)

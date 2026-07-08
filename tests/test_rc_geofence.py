@@ -34,6 +34,7 @@ def test_render_stats_page():
         },
         journal=[
             {
+                "event_id": 11,
                 "arrived_at": when, "departed_at": when,
                 "plate": "У774ЕТ178", "driver": "Пётр", "rc_name": "РЦ 7 шагов",
                 "rc_id": 2, "route": "СПб → РЦ 7 шагов",
@@ -44,6 +45,7 @@ def test_render_stats_page():
                 "billable_blocks": 2,
             },
             {
+                "event_id": 12,
                 "arrived_at": when, "departed_at": when,
                 "plate": "Т772НХ178", "driver": "Иван", "rc_name": "Дикси Шушары",
                 "rc_id": 1, "route": None,
@@ -54,6 +56,7 @@ def test_render_stats_page():
                 "billable_blocks": 1,
             },
         ],
+        hidden_rows=[], show_hidden=False,
         billable_alerts=[
             {
                 "plate": "У774ЕТ178", "rc_name": "РЦ 7 шагов", "route": "СПб → РЦ 7 шагов",

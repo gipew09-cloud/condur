@@ -47,6 +47,31 @@ def canonical_rc_address(destination: str | None, lookup: dict[str, str]) -> str
     return None
 
 
+def match_destination_to_center(destination: str | None, centers: list):
+    """РЦ из справочника, соответствующий тексту назначения рейса (по
+    названию/адресу/алиасам). Нужно для сверки план↔факт. None — не распознали."""
+    key = route_key(destination)
+    if not key:
+        return None
+    by_key: dict[str, object] = {}
+    for center in centers:
+        terms = [
+            getattr(center, "name", None),
+            getattr(center, "address", None),
+            *split_aliases(getattr(center, "aliases", None)),
+        ]
+        for term in terms:
+            k = route_key(term)
+            if k:
+                by_key.setdefault(k, center)
+    if key in by_key:
+        return by_key[key]
+    for k, center in sorted(by_key.items(), key=lambda x: len(x[0]), reverse=True):
+        if len(k) >= 4 and (k in key or key in k):
+            return center
+    return None
+
+
 def decimal_or_none(value: str | int | float | Decimal | None) -> Decimal | None:
     if value is None:
         return None

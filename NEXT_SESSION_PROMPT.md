@@ -43,6 +43,8 @@ Railway (2 сервиса из одного репо: `condur` = боты+сай
 
 **Документы в репо:** `HANDOFF.md` — журнал всего сделанного (читать первым!);
 `DEV_TEST_GUIDE.md` — устройство проекта; `STAVTRACK_INTEGRATION.md` — GPS.
+`NEXT_DEVELOPER_BRIEF_2026-07-08.md` — свежий разбор владельца по статистике,
+ложным стоянкам, маршрутам из бота, PDF Stavtrack и следующему плану работ.
 Тесты: `pytest` (71 passed; локальный venv `.venv-tools` на Python 3.9 БЕЗ
 aiogram/aiohttp — поэтому веб-router и scheduler_jobs в тестах НЕ импортируются;
 чистую логику выносим в сервисы: timeutil, rc_service, egts, telemetry_service,
