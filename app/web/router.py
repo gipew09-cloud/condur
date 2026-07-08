@@ -4207,6 +4207,52 @@ async def _trip_timeline(
 
 
 @app.get("/trips/{trip_id}", response_class=HTMLResponse)
+async def _vehicle_now_info(session: AsyncSession, owner: Owner, vehicle: Vehicle | None):
+    """Где машина СЕЙЧАС по GPS (для карточки рейса — отдельно от истории рейса).
+    None, если у машины нет свежего GPS-состояния."""
+    if vehicle is None:
+        return None
+    st = (
+        await session.execute(
+            select(VehicleState).where(VehicleState.vehicle_id == vehicle.id)
+        )
+    ).scalar_one_or_none()
+    if st is None or st.last_seen_at is None:
+        return None
+    now = datetime.now(timezone.utc)
+    last_seen = st.last_seen_at
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    fresh = last_seen >= now - timedelta(minutes=30)
+    status_text = telemetry_service.motion_status_text(st.motion_status, st.speed_kmh)
+    # на каком РЦ машина сейчас (последний rc_arrived без более позднего rc_departed)
+    at_rc = None
+    ev_rows = (
+        await session.execute(
+            select(Event.event_type, Event.created_at, Event.payload)
+            .where(
+                Event.owner_id == owner.id,
+                Event.event_type.in_(("rc_arrived", "rc_departed")),
+                Event.created_at >= now - timedelta(days=2),
+            )
+            .order_by(desc(Event.created_at))
+        )
+    ).all()
+    for et, _cat, pl in ev_rows:
+        pl = pl or {}
+        if telemetry_service.int_or_none(pl.get("vehicle_id")) != vehicle.id:
+            continue
+        at_rc = pl.get("rc_name") if et == "rc_arrived" else None
+        break  # берём самое свежее событие по этой машине
+    return {
+        "status_text": status_text,
+        "since_label": smart_since_label(st.motion_since_at, owner.timezone),
+        "last_seen_label": fmt_dt(st.last_seen_at, owner.timezone, "%d.%m %H:%M"),
+        "fresh": fresh,
+        "at_rc": at_rc,
+    }
+
+
 async def trip_detail(
     request: Request,
     trip_id: int,
@@ -4247,6 +4293,7 @@ async def trip_detail(
     if travel:
         h, m = divmod(travel["minutes"], 60)
         travel_label = (f"{h} ч " if h else "") + f"{m} мин"
+    vehicle_now = await _vehicle_now_info(session, owner, vehicle)
     timeline = await _trip_timeline(
         session, owner, trip, shift, driver, vehicle, waybill_uploaded_at, documents
     )
@@ -4263,6 +4310,7 @@ async def trip_detail(
             "waybill_uploaded_at": waybill_uploaded_at,
             "documents": documents,
             "travel": travel, "travel_label": travel_label,
+            "vehicle_now": vehicle_now,
             "timeline": timeline,
             "trip_duration_label": trip_duration_label,
             "all_drivers": all_drivers, "all_vehicles": all_vehicles,

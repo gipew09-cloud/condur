@@ -385,6 +385,22 @@
         </div>
       </div>
 
+      {% if vehicle_now %}
+      <div class="trip-card">
+        <div class="trip-card__body">
+          <small>Где машина сейчас (GPS)</small>
+          <p style="margin:.5rem 0 0; color:#0f172a; font-weight:850;">
+            {% if vehicle_now.at_rc %}🏬 на РЦ {{ vehicle_now.at_rc }}{% else %}{{ vehicle_now.status_text }}{% endif %}
+          </p>
+          <p style="margin:.25rem 0 0; color:#64748b; font-size:.85rem;">
+            {% if vehicle_now.since_label and vehicle_now.since_label != '—' %}{{ vehicle_now.since_label }} · {% endif %}
+            сигнал {{ vehicle_now.last_seen_label }}{% if not vehicle_now.fresh %} · ⚠️ давно не обновлялся{% endif %}
+          </p>
+          <p style="margin:.25rem 0 0; color:#94a3b8; font-size:.78rem;">Это текущее место машины, не история этого рейса.</p>
+        </div>
+      </div>
+      {% endif %}
+
       {% if trip.revenue_rub is none and trip.driver_revenue_pending_rub %}
       <div class="trip-alert">
         Выручка на подтверждении {{ "{:,.0f}".format(trip.driver_revenue_pending_rub).replace(',', ' ') }} ₽. Проверьте документы и подтвердите сумму в таймлайне или измените ниже.
