@@ -398,12 +398,31 @@ def cash_decision_keyboard(entry_token: str) -> InlineKeyboardMarkup:
 
 
 # =========================================================================
-# ВОДИТЕЛЬ — выбор маршрута при создании рейса
+# ВОДИТЕЛЬ — выбор маршрута при создании рейса.
+# Двухуровнево, чтобы не листать десятки маршрутов: сначала СКЛАД (папка),
+# потом РЦ этого склада. Склад в callback передаём индексом (текст длинный).
 # =========================================================================
-def route_template_keyboard(templates) -> InlineKeyboardMarkup:
+def route_origins_keyboard(origins: list[str]) -> InlineKeyboardMarkup:
+    """Уровень 1: склады (папки). origins — детерминированный список (по алфавиту)."""
+    kb = InlineKeyboardBuilder()
+    for i, origin in enumerate(origins):
+        kb.button(text=f"🏭 {origin}", callback_data=f"rt:orig:{i}")
+    kb.button(text="✏️ Другой маршрут", callback_data="rt:manual")
+    kb.button(text="✖️ Отмена", callback_data="rt:cancel")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def route_template_keyboard(templates, with_back: bool = False) -> InlineKeyboardMarkup:
+    """Уровень 2: РЦ выбранного склада (или плоский список, если складов нет).
+    with_back — показать «Назад к складам»."""
     kb = InlineKeyboardBuilder()
     for t in templates:
-        kb.button(text=f"🗺 {t.name}", callback_data=f"rt:pick:{t.id}")
+        # склад уже выбран — на кнопке показываем РЦ (назначение)
+        label = t.destination or t.name
+        kb.button(text=f"🏬 {label}", callback_data=f"rt:pick:{t.id}")
+    if with_back:
+        kb.button(text="« Назад к складам", callback_data="rt:origins")
     kb.button(text="✏️ Другой маршрут", callback_data="rt:manual")
     kb.button(text="✖️ Отмена", callback_data="rt:cancel")
     kb.adjust(1)
@@ -424,20 +443,55 @@ def route_confirm_keyboard() -> InlineKeyboardMarkup:
 # =========================================================================
 # ВЛАДЕЛЕЦ — меню шаблонов маршрутов
 # =========================================================================
-def routes_list_keyboard(templates) -> InlineKeyboardMarkup:
+def routes_folders_keyboard(origins: list[str]) -> InlineKeyboardMarkup:
+    """Список маршрутов у владельца = папки-склады (как видит водитель)."""
+    kb = InlineKeyboardBuilder()
+    for i, origin in enumerate(origins):
+        kb.button(text=f"🏭 {origin}", callback_data=f"rfold:{i}")
+    kb.button(text="➕ Добавить маршрут", callback_data="route:add")
+    kb.button(text="« Назад", callback_data="owner:menu")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def routes_in_folder_keyboard(templates) -> InlineKeyboardMarkup:
+    """РЦ внутри выбранного склада (у владельца) — клик открывает карточку/удаление."""
     kb = InlineKeyboardBuilder()
     for t in templates:
-        kb.button(text=f"🗺 {t.name}", callback_data=f"route:view:{t.id}")
-    kb.button(text="➕ Добавить шаблон", callback_data="route:add")
-    kb.button(text="« Назад", callback_data="owner:menu")
+        kb.button(text=f"🏬 {t.destination or t.name}", callback_data=f"route:view:{t.id}")
+    kb.button(text="➕ Добавить маршрут", callback_data="route:add")
+    kb.button(text="« Назад к складам", callback_data="owner:routes")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def route_add_origin_keyboard(origins: list[str]) -> InlineKeyboardMarkup:
+    """Шаг 1 добавления: выбрать склад из имеющихся или завести новый."""
+    kb = InlineKeyboardBuilder()
+    for i, origin in enumerate(origins):
+        kb.button(text=f"🏭 {origin}", callback_data=f"radd:orig:{i}")
+    kb.button(text="➕ Новый склад", callback_data="radd:neworig")
+    kb.button(text="✖️ Отмена", callback_data="owner:routes")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def route_add_rc_keyboard(centers) -> InlineKeyboardMarkup:
+    """Шаг 2 добавления: выбрать РЦ из справочника или ввести вручную."""
+    kb = InlineKeyboardBuilder()
+    for c in centers:
+        kb.button(text=f"🏬 {c.name}", callback_data=f"radd:rc:{c.id}")
+    kb.button(text="✏️ Другой РЦ (вручную)", callback_data="radd:manualrc")
+    kb.button(text="« Назад к складам", callback_data="route:add")
+    kb.button(text="✖️ Отмена", callback_data="owner:routes")
     kb.adjust(1)
     return kb.as_markup()
 
 
 def route_view_keyboard(template_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🗑 Удалить шаблон", callback_data=f"route:del:{template_id}")
-    kb.button(text="« К списку", callback_data="owner:routes")
+    kb.button(text="🗑 Удалить маршрут", callback_data=f"route:del:{template_id}")
+    kb.button(text="« К складам", callback_data="owner:routes")
     kb.adjust(1)
     return kb.as_markup()
 

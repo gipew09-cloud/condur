@@ -42,6 +42,7 @@ from app.models import (
     Expense,
     ManualEntry,
     Owner,
+    RouteTemplate,
     Shift,
     Trip,
     TripDocument,
@@ -2550,6 +2551,18 @@ async def routes_page(
     # сортировка: от самых прибыльных к убыточным
     rows.sort(key=lambda r: r["avg_profit"], reverse=True)
     centers = await _active_distribution_centers(session, owner.id)
+    # Маршруты-шаблоны (склад → РЦ) для водителя, сгруппированы по складу —
+    # чтобы владелец быстро добавлял/видел, а водитель выбирал папками в боте.
+    tmpl_rows = (
+        await session.execute(
+            select(RouteTemplate)
+            .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
+            .order_by(RouteTemplate.origin, RouteTemplate.destination)
+        )
+    ).scalars().all()
+    templates_by_origin: dict[str, list] = {}
+    for t in tmpl_rows:
+        templates_by_origin.setdefault((t.origin or "—").strip(), []).append(t)
     return templates.TemplateResponse(
         "routes.html",
         {
@@ -2557,11 +2570,65 @@ async def routes_page(
             "owner": owner,
             "rows": rows,
             "centers": centers,
+            "templates_by_origin": templates_by_origin,
+            "origins_list": sorted(templates_by_origin.keys()),
             "rc_imported": rc_imported,
             "yandex_maps_api_key": settings.yandex_maps_api_key,
             "active_page": "routes",
         },
     )
+
+
+@app.post("/routes/template/add")
+async def routes_template_add(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    origin: Annotated[str, Form()],
+    destination: Annotated[str, Form()],
+    cargo: Annotated[str, Form()] = "",
+):
+    """Быстро добавить маршрут склад→РЦ (шаблон для бота водителя).
+    Название генерируем сами; РЦ выбирается из справочника (текст его имени)."""
+    origin = (origin or "").strip()
+    destination = (destination or "").strip()
+    if not origin or not destination:
+        raise HTTPException(status_code=400, detail="Укажите склад и РЦ")
+    # не плодим дубли: тот же склад+РЦ обновляем/оставляем
+    existing = (
+        await session.execute(
+            select(RouteTemplate).where(
+                RouteTemplate.owner_id == owner.id,
+                RouteTemplate.origin == origin,
+                RouteTemplate.destination == destination,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(RouteTemplate(
+            owner_id=owner.id,
+            name=f"{origin} → {destination}"[:100],
+            origin=origin, destination=destination,
+            default_cargo=_norm(cargo), is_active=True,
+        ))
+    else:
+        existing.is_active = True
+        existing.default_cargo = _norm(cargo) or existing.default_cargo
+    await session.commit()
+    return RedirectResponse("/routes", status_code=303)
+
+
+@app.post("/routes/template/{template_id}/delete")
+async def routes_template_delete(
+    template_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    tmpl = await session.get(RouteTemplate, template_id)
+    if tmpl is None or tmpl.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    tmpl.is_active = False
+    await session.commit()
+    return RedirectResponse("/routes", status_code=303)
 
 
 @app.post("/routes/rc/add")

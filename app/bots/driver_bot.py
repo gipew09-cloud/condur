@@ -832,24 +832,104 @@ async def btn_new_trip(message: Message, state: FSMContext, session: AsyncSessio
         await _refresh_ui(message, session, driver, msg.TRIP_ALREADY_OPEN)
         return
 
-    # есть ли у владельца шаблоны? Если да — предложим выбрать
-    templates_res = await session.execute(
-        select(RouteTemplate)
-        .where(RouteTemplate.owner_id == driver.owner_id, RouteTemplate.is_active.is_(True))
-        .order_by(RouteTemplate.name)
-    )
-    templates = list(templates_res.scalars().all())
-    if templates:
+    # Двухуровневый выбор: сначала СКЛАД (папка), потом РЦ. Если у владельца
+    # заданы маршруты — показываем список складов (origin), чтобы водитель не
+    # листал десятки направлений.
+    origins = await _route_origins(session, driver.owner_id)
+    if origins:
         await state.set_state(NewTrip.waiting_for_origin)  # помечаем стартом flow
         await state.update_data(picking_template=True)
         await message.answer(
-            "Выберите маршрут из шаблона или введите свой:",
-            reply_markup=kb.route_template_keyboard(templates),
+            "Откуда едете — выберите склад:",
+            reply_markup=kb.route_origins_keyboard(origins),
         )
         return
 
     await state.set_state(NewTrip.waiting_for_origin)
     await message.answer(msg.TRIP_ASK_ORIGIN)
+
+
+async def _route_origins(session: AsyncSession, owner_id: int) -> list[str]:
+    """Список складов (origin) владельца из активных маршрутов, по алфавиту.
+    Детерминированный порядок — чтобы индекс кнопки был стабилен."""
+    rows = await session.execute(
+        select(RouteTemplate.origin)
+        .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
+        .distinct()
+    )
+    origins = sorted({(o or "").strip() for o in rows.scalars().all() if (o or "").strip()})
+    return origins
+
+
+async def _templates_for_origin(session: AsyncSession, owner_id: int, origin: str):
+    res = await session.execute(
+        select(RouteTemplate)
+        .where(
+            RouteTemplate.owner_id == owner_id,
+            RouteTemplate.is_active.is_(True),
+            RouteTemplate.origin == origin,
+        )
+        .order_by(RouteTemplate.destination, RouteTemplate.name)
+    )
+    return list(res.scalars().all())
+
+
+@driver_router.callback_query(F.data == "rt:origins")
+async def cb_route_origins(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """« Назад к складам (уровень 1)."""
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if driver is None:
+        await call.answer(msg.DRIVER_LINK_EXPECTED, show_alert=True)
+        return
+    origins = await _route_origins(session, driver.owner_id)
+    if not origins:
+        await state.set_state(NewTrip.waiting_for_origin)
+        await state.update_data(picking_template=False)
+        await call.message.edit_text(msg.TRIP_ASK_ORIGIN)
+        await call.answer()
+        return
+    await state.set_state(NewTrip.waiting_for_origin)
+    await state.update_data(picking_template=True)
+    await call.message.edit_text(
+        "Откуда едете — выберите склад:",
+        reply_markup=kb.route_origins_keyboard(origins),
+    )
+    await call.answer()
+
+
+@driver_router.callback_query(F.data.startswith("rt:orig:"))
+async def cb_route_origin_pick(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    """Выбран склад → показать его РЦ (уровень 2)."""
+    driver = await _driver_by_telegram(session, call.from_user.id)
+    if driver is None:
+        await call.answer(msg.DRIVER_LINK_EXPECTED, show_alert=True)
+        return
+    try:
+        idx = int(call.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await call.answer()
+        return
+    origins = await _route_origins(session, driver.owner_id)
+    if not (0 <= idx < len(origins)):
+        # список изменился — показываем склады заново
+        await call.message.edit_text(
+            "Откуда едете — выберите склад:",
+            reply_markup=kb.route_origins_keyboard(origins),
+        )
+        await call.answer()
+        return
+    origin = origins[idx]
+    templates = await _templates_for_origin(session, driver.owner_id, origin)
+    if not templates:
+        await call.answer("Для этого склада маршрутов нет", show_alert=True)
+        return
+    await call.message.edit_text(
+        f"Склад: <b>{origin}</b>\nКуда едете — выберите РЦ:",
+        reply_markup=kb.route_template_keyboard(templates, with_back=True),
+    )
+    await call.answer()
 
 
 @driver_router.callback_query(F.data.startswith("rt:pick:"))
@@ -906,23 +986,18 @@ async def cb_route_confirm(
 async def cb_route_change(
     call: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
-    """Переснять выбор маршрута — снова показать шаблоны (баг E3)."""
+    """Переснять выбор маршрута — вернуться к выбору склада (баг E3)."""
     driver = await _driver_by_telegram(session, call.from_user.id)
     if driver is None:
         await call.answer(msg.DRIVER_LINK_EXPECTED, show_alert=True)
         return
-    templates_res = await session.execute(
-        select(RouteTemplate)
-        .where(RouteTemplate.owner_id == driver.owner_id, RouteTemplate.is_active.is_(True))
-        .order_by(RouteTemplate.name)
-    )
-    templates = list(templates_res.scalars().all())
+    origins = await _route_origins(session, driver.owner_id)
     await state.set_state(NewTrip.waiting_for_origin)
-    await state.update_data(picking_template=True)
-    if templates:
+    await state.update_data(picking_template=bool(origins))
+    if origins:
         await call.message.edit_text(
-            "Выберите маршрут из шаблона или введите свой:",
-            reply_markup=kb.route_template_keyboard(templates),
+            "Откуда едете — выберите склад:",
+            reply_markup=kb.route_origins_keyboard(origins),
         )
     else:
         await call.message.edit_text(msg.TRIP_ASK_ORIGIN)

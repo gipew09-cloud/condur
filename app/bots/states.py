@@ -51,10 +51,11 @@ class AddVehicle(StatesGroup):
 
 
 class AddRouteTemplate(StatesGroup):
-    """Владелец добавляет шаблон маршрута."""
-    waiting_for_name = State()
-    waiting_for_origin = State()
-    waiting_for_destination = State()
+    """Владелец добавляет маршрут склад→РЦ. Быстрый путь: выбрать склад кнопкой
+    (или ввести новый) → выбрать РЦ из справочника (или ввести вручную)."""
+    waiting_for_name = State()          # (устар.) — оставлено для совместимости
+    waiting_for_origin = State()        # ввод НОВОГО склада текстом
+    waiting_for_destination = State()   # ввод РЦ вручную текстом
     waiting_for_cargo = State()
 
 

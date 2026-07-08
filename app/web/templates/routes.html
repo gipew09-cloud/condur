@@ -190,6 +190,53 @@
   <p>Справочник РЦ пока пуст. Добавь вручную или импортируй таблицу с колонками «Название/РЦ» и «Адрес».</p>
   {% endif %}
 </section>
+
+<section class="section" style="margin-top:1.5rem;">
+  <h3>Маршруты для водителя (склад → РЦ)</h3>
+  <p class="sub">Из чего водитель выбирает рейс в боте. Сгруппированы по складу — в боте это «папки»: водитель жмёт склад, потом РЦ. Добавляй быстро: впиши склад и выбери РЦ из справочника.</p>
+
+  <details class="add-panel" open>
+    <summary class="add-toggle">+ Добавить маршрут</summary>
+    <form method="post" action="/routes/template/add" class="add-form">
+      <div class="add-grid">
+        <label>Склад (откуда)
+          <input name="origin" list="origins-datalist" placeholder="5.18 Склад" required>
+          <datalist id="origins-datalist">
+            {% for o in origins_list %}<option value="{{ o }}">{% endfor %}
+          </datalist>
+        </label>
+        <label>РЦ (куда)
+          <select name="destination" required>
+            <option value="">— выберите РЦ —</option>
+            {% for c in centers %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Груз (необязательно) <input name="cargo" placeholder="напр. овощи"></label>
+      </div>
+      <button type="submit"><i class="ph ph-plus"></i> Добавить маршрут</button>
+    </form>
+    <p class="sub" style="margin:.3rem 1rem 0;">Склад можно вписать новый или выбрать из уже введённых. РЦ берётся из справочника выше — сначала заведи РЦ там.</p>
+  </details>
+
+  {% if templates_by_origin %}
+  {% for origin, tmpls in templates_by_origin.items() %}
+  <div style="margin-top:.75rem;">
+    <div style="font-weight:800; margin-bottom:.3rem;">🏭 {{ origin }} <span style="color:var(--text-muted); font-weight:600;">({{ tmpls|length }})</span></div>
+    {% for t in tmpls %}
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--surface);">
+      <span>🏬 {{ t.destination }}{% if t.default_cargo %} <span style="color:var(--text-muted);">· {{ t.default_cargo }}</span>{% endif %}</span>
+      <form method="post" action="/routes/template/{{ t.id }}/delete" style="margin:0;"
+            onsubmit="return confirm('Удалить маршрут {{ origin }} → {{ t.destination }}?')">
+        <button type="submit" style="width:auto; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; font-size:.82rem;">🗑 Удалить</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:var(--text-muted);">Маршрутов пока нет. Добавь первый — склад и РЦ выше.</p>
+  {% endif %}
+</section>
 {% endblock %}
 
 {% block scripts %}

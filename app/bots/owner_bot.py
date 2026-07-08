@@ -37,7 +37,10 @@ from app.bots.keyboards import (
     driver_salary_type_keyboard,
     drivers_list_keyboard,
     owner_main_menu,
-    routes_list_keyboard,
+    route_add_origin_keyboard,
+    route_add_rc_keyboard,
+    routes_folders_keyboard,
+    routes_in_folder_keyboard,
     route_view_keyboard,
     vehicle_type_keyboard,
     vehicles_list_keyboard,
@@ -57,8 +60,8 @@ from app.bots.states import (
 )
 from app.config import settings
 from app.models import (
-    Admin, Driver, Expense, ManualEntry, Owner, RouteTemplate, Shift, Subscription, Trip, Vehicle,
-    VehicleState,
+    Admin, DistributionCenter, Driver, Expense, ManualEntry, Owner, RouteTemplate,
+    Shift, Subscription, Trip, Vehicle, VehicleState,
 )
 from app.services import (
     auth_service,
@@ -1071,111 +1074,223 @@ async def cb_add_vehicle_skip_tacho(
 # =========================================================================
 # Шаблоны маршрутов
 # =========================================================================
+async def _owner_route_origins(session: AsyncSession, owner_id: int) -> list[str]:
+    """Склады (origin) владельца из активных маршрутов, по алфавиту (детерминированно)."""
+    rows = await session.execute(
+        select(RouteTemplate.origin)
+        .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
+        .distinct()
+    )
+    return sorted({(o or "").strip() for o in rows.scalars().all() if (o or "").strip()})
+
+
 @owner_router.callback_query(F.data == "owner:routes")
-async def cb_routes(call: CallbackQuery, session: AsyncSession) -> None:
+async def cb_routes(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
     owner = await _get_owner(session, call.from_user.id)
     if owner is None:
         await call.answer("Сначала /start", show_alert=True)
         return
-    res = await session.execute(
-        select(RouteTemplate)
-        .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
-        .order_by(RouteTemplate.name)
-    )
-    templates = list(res.scalars().all())
-    header = msg.ROUTES_LIST_HEADER if templates else msg.ROUTES_EMPTY
-    if templates:
-        lines = [msg.ROUTES_LIST_HEADER, ""]
-        for t in templates:
-            lines.append(f"• <b>{t.name}</b> — {t.origin} → {t.destination}")
-        header = "\n".join(lines)
-    await call.message.edit_text(header, reply_markup=routes_list_keyboard(templates))
+    origins = await _owner_route_origins(session, owner.id)
+    if origins:
+        text = "🗺 <b>Маршруты (склад → РЦ)</b>\n\nВыберите склад или добавьте маршрут:"
+    else:
+        text = msg.ROUTES_EMPTY
+    await call.message.edit_text(text, reply_markup=routes_folders_keyboard(origins))
     await call.answer()
 
 
-@owner_router.callback_query(F.data == "route:add")
-async def cb_route_add(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AddRouteTemplate.waiting_for_name)
-    await call.message.edit_text(msg.ROUTE_ADD_NAME)
-    await call.answer()
-
-
-@owner_router.message(AddRouteTemplate.waiting_for_name)
-async def route_add_name(message: Message, state: FSMContext) -> None:
-    name = (message.text or "").strip()
-    if not name:
-        await message.answer(msg.ROUTE_ADD_NAME)
+@owner_router.callback_query(F.data.startswith("rfold:"))
+async def cb_routes_folder(call: CallbackQuery, session: AsyncSession) -> None:
+    """Открыть склад — показать его РЦ."""
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
         return
-    await state.update_data(name=name)
+    try:
+        idx = int(call.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await call.answer()
+        return
+    origins = await _owner_route_origins(session, owner.id)
+    if not (0 <= idx < len(origins)):
+        await call.message.edit_text(
+            "🗺 <b>Маршруты (склад → РЦ)</b>", reply_markup=routes_folders_keyboard(origins)
+        )
+        await call.answer()
+        return
+    origin = origins[idx]
+    templates = list(
+        (
+            await session.execute(
+                select(RouteTemplate).where(
+                    RouteTemplate.owner_id == owner.id,
+                    RouteTemplate.is_active.is_(True),
+                    RouteTemplate.origin == origin,
+                ).order_by(RouteTemplate.destination)
+            )
+        ).scalars().all()
+    )
+    await call.message.edit_text(
+        f"🏭 <b>{origin}</b>\nМаршруты (нажмите РЦ, чтобы удалить):",
+        reply_markup=routes_in_folder_keyboard(templates),
+    )
+    await call.answer()
+
+
+# --- Быстрое добавление маршрута: склад → РЦ из справочника ---
+@owner_router.callback_query(F.data == "route:add")
+async def cb_route_add(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await state.set_state(AddRouteTemplate.waiting_for_origin)
-    await message.answer(msg.ROUTE_ADD_ORIGIN)
+    owner = await _get_owner(session, call.from_user.id)
+    origins = await _owner_route_origins(session, owner.id) if owner else []
+    await state.update_data(origins_snapshot=origins)
+    await call.message.edit_text(
+        "Шаг 1: откуда (склад)?", reply_markup=route_add_origin_keyboard(origins)
+    )
+    await call.answer()
+
+
+async def _route_add_show_rc(call_or_msg, state, session, owner) -> None:
+    """Шаг 2: показать РЦ из справочника для выбора назначения."""
+    centers = list(
+        (
+            await session.execute(
+                select(DistributionCenter).where(
+                    DistributionCenter.owner_id == owner.id,
+                    DistributionCenter.is_active.is_(True),
+                ).order_by(DistributionCenter.name)
+            )
+        ).scalars().all()
+    )
+    data = await state.get_data()
+    origin = data.get("new_origin") or data.get("origin") or "—"
+    text = f"Склад: <b>{origin}</b>\nШаг 2: куда (РЦ)?"
+    if not centers:
+        text += "\n\n⚠️ В справочнике РЦ пусто — нажмите «Другой РЦ (вручную)» или заполните РЦ на сайте."
+    await call_or_msg.answer(text, reply_markup=route_add_rc_keyboard(centers))
+
+
+@owner_router.callback_query(AddRouteTemplate.waiting_for_origin, F.data.startswith("radd:orig:"))
+async def cb_route_add_origin_pick(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    try:
+        idx = int(call.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await call.answer()
+        return
+    origins = (await state.get_data()).get("origins_snapshot") or await _owner_route_origins(session, owner.id)
+    if not (0 <= idx < len(origins)):
+        await call.answer("Склад не найден, начните заново", show_alert=True)
+        return
+    await state.update_data(origin=origins[idx], new_origin=None)
+    await state.set_state(AddRouteTemplate.waiting_for_destination)
+    await call.message.delete()
+    await _route_add_show_rc(call.message, state, session, owner)
+    await call.answer()
+
+
+@owner_router.callback_query(AddRouteTemplate.waiting_for_origin, F.data == "radd:neworig")
+async def cb_route_add_neworig(call: CallbackQuery, state: FSMContext) -> None:
+    await call.message.edit_text("Введите название нового склада (например, «5.18 Склад»):")
+    await call.answer()
 
 
 @owner_router.message(AddRouteTemplate.waiting_for_origin)
-async def route_add_origin(message: Message, state: FSMContext) -> None:
+async def route_add_origin_typed(message: Message, state: FSMContext, session: AsyncSession) -> None:
     origin = (message.text or "").strip()
     if not origin:
-        await message.answer(msg.ROUTE_ADD_ORIGIN)
+        await message.answer("Введите название склада:")
         return
-    await state.update_data(origin=origin)
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    await state.update_data(origin=origin, new_origin=origin)
     await state.set_state(AddRouteTemplate.waiting_for_destination)
-    await message.answer(msg.ROUTE_ADD_DESTINATION)
+    await _route_add_show_rc(message, state, session, owner)
+
+
+@owner_router.callback_query(AddRouteTemplate.waiting_for_destination, F.data.startswith("radd:rc:"))
+async def cb_route_add_rc_pick(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    owner = await _get_owner(session, call.from_user.id)
+    if owner is None:
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    try:
+        rc_id = int(call.data.rsplit(":", 1)[-1])
+    except ValueError:
+        await call.answer()
+        return
+    center = await session.get(DistributionCenter, rc_id)
+    if center is None or center.owner_id != owner.id:
+        await call.answer("РЦ не найден", show_alert=True)
+        return
+    await call.message.delete()
+    await _finalize_route(call.message, state, session, owner, destination=center.name)
+    await call.answer()
+
+
+@owner_router.callback_query(AddRouteTemplate.waiting_for_destination, F.data == "radd:manualrc")
+async def cb_route_add_manualrc(call: CallbackQuery, state: FSMContext) -> None:
+    await call.message.edit_text("Введите название/адрес РЦ вручную:")
+    await call.answer()
 
 
 @owner_router.message(AddRouteTemplate.waiting_for_destination)
-async def route_add_destination(message: Message, state: FSMContext) -> None:
+async def route_add_destination_typed(message: Message, state: FSMContext, session: AsyncSession) -> None:
     destination = (message.text or "").strip()
     if not destination:
-        await message.answer(msg.ROUTE_ADD_DESTINATION)
+        await message.answer("Введите название РЦ:")
         return
-    await state.update_data(destination=destination)
-    await state.set_state(AddRouteTemplate.waiting_for_cargo)
-    await message.answer(
-        msg.ROUTE_ADD_CARGO, reply_markup=kb.skip_or_cancel_inline("route:skip_cargo")
-    )
+    owner = await _get_owner(session, message.from_user.id)
+    if owner is None:
+        await state.clear()
+        await message.answer(msg.SOMETHING_WRONG)
+        return
+    await _finalize_route(message, state, session, owner, destination=destination)
 
 
 async def _finalize_route(
-    reply_target: Message, state: FSMContext, session: AsyncSession, cargo: str | None
+    reply_target: Message, state: FSMContext, session: AsyncSession,
+    owner: Owner, destination: str,
 ) -> None:
-    owner = await _get_owner(session, reply_target.chat.id) if isinstance(reply_target, Message) else None
-    # reply_target.chat.id может относиться не к owner-у; используем from_user был выше — здесь
-    # надёжнее: возьмём owner из state.update_data (мы сохранили его id неявно — нет).
-    # Поэтому ищем через update.from_user — но это callback/message. Берём из data.
-    # На самом деле в state у нас нет owner_id. Возьмём через chat:
-    # для owner-бота private chat == owner.telegram_id, что мы и используем в _get_owner.
-    if owner is None:
-        await reply_target.answer(msg.SOMETHING_WRONG)
-        await state.clear()
-        return
     data = await state.get_data()
-    template = RouteTemplate(
-        owner_id=owner.id,
-        name=data["name"], origin=data["origin"], destination=data["destination"],
-        default_cargo=cargo,
-    )
-    session.add(template)
+    origin = (data.get("origin") or "").strip()
+    if not origin or not destination:
+        await state.clear()
+        await reply_target.answer(msg.SOMETHING_WRONG)
+        return
+    # не плодим дубли: тот же склад+РЦ переактивируем
+    existing = (
+        await session.execute(
+            select(RouteTemplate).where(
+                RouteTemplate.owner_id == owner.id,
+                RouteTemplate.origin == origin,
+                RouteTemplate.destination == destination,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(RouteTemplate(
+            owner_id=owner.id, name=f"{origin} → {destination}"[:100],
+            origin=origin, destination=destination, default_cargo=None,
+        ))
+    else:
+        existing.is_active = True
     await session.commit()
     await state.clear()
-    await reply_target.answer(msg.ROUTE_SAVED)
-    await _show_main_menu(reply_target, owner)
-
-
-@owner_router.message(AddRouteTemplate.waiting_for_cargo)
-async def route_add_cargo(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    cargo = (message.text or "").strip() or None
-    await _finalize_route(message, state, session, cargo)
-
-
-@owner_router.callback_query(
-    AddRouteTemplate.waiting_for_cargo, F.data == "route:skip_cargo"
-)
-async def cb_route_skip_cargo(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession
-) -> None:
-    await call.message.delete()
-    await _finalize_route(call.message, state, session, cargo=None)
-    await call.answer()
+    await reply_target.answer(f"✅ Маршрут добавлен: {origin} → {destination}")
+    # вернуть к списку складов
+    origins = await _owner_route_origins(session, owner.id)
+    await reply_target.answer(
+        "🗺 <b>Маршруты (склад → РЦ)</b>\n\nВыберите склад или добавьте ещё:",
+        reply_markup=routes_folders_keyboard(origins),
+    )
 
 
 @owner_router.callback_query(F.data.startswith("route:view:"))
@@ -1184,7 +1299,7 @@ async def cb_route_view(call: CallbackQuery, session: AsyncSession) -> None:
     template = await session.get(RouteTemplate, template_id)
     owner = await _get_owner(session, call.from_user.id)
     if template is None or owner is None or template.owner_id != owner.id:
-        await call.answer("Шаблон не найден", show_alert=True)
+        await call.answer("Маршрут не найден", show_alert=True)
         return
     await call.message.edit_text(
         msg.ROUTE_VIEW.format(
@@ -1198,30 +1313,20 @@ async def cb_route_view(call: CallbackQuery, session: AsyncSession) -> None:
 
 
 @owner_router.callback_query(F.data.startswith("route:del:"))
-async def cb_route_delete(call: CallbackQuery, session: AsyncSession) -> None:
+async def cb_route_delete(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     template_id = int(call.data.split(":")[2])
     template = await session.get(RouteTemplate, template_id)
     owner = await _get_owner(session, call.from_user.id)
     if template is None or owner is None or template.owner_id != owner.id:
-        await call.answer("Шаблон не найден", show_alert=True)
+        await call.answer("Маршрут не найден", show_alert=True)
         return
     template.is_active = False
     await session.commit()
     await call.answer(msg.ROUTE_DELETED)
-    # вернуться к списку
-    res = await session.execute(
-        select(RouteTemplate)
-        .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
-        .order_by(RouteTemplate.name)
+    origins = await _owner_route_origins(session, owner.id)
+    await call.message.edit_text(
+        "🗺 <b>Маршруты (склад → РЦ)</b>", reply_markup=routes_folders_keyboard(origins)
     )
-    templates = list(res.scalars().all())
-    header = msg.ROUTES_LIST_HEADER if templates else msg.ROUTES_EMPTY
-    if templates:
-        lines = [msg.ROUTES_LIST_HEADER, ""]
-        for t in templates:
-            lines.append(f"• <b>{t.name}</b> — {t.origin} → {t.destination}")
-        header = "\n".join(lines)
-    await call.message.edit_text(header, reply_markup=routes_list_keyboard(templates))
 
 
 # =========================================================================
