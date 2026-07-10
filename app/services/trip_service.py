@@ -22,14 +22,22 @@ def liters_from_rub(amount_rub: Decimal) -> Decimal:
 
 
 async def get_active_trip(session: AsyncSession, shift_id: int) -> Trip | None:
-    """Открытый рейс в смене (created / in_transit / unloading)."""
+    """Открытый рейс в смене (created / in_transit / unloading).
+
+    Открытый рейс должен быть один, но если в базе оказалось два (старые
+    дубликаты от двойного нажатия), берём самый свежий: падать на каждом
+    действии водителя — хуже, чем взять последний.
+    """
     result = await session.execute(
-        select(Trip).where(
+        select(Trip)
+        .where(
             Trip.shift_id == shift_id,
             Trip.status.in_(("created", "in_transit", "unloading")),
         )
+        .order_by(Trip.id.desc())
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def create_trip(

@@ -13,11 +13,19 @@ from app.models import Shift, Trip, Vehicle
 
 
 async def get_active_shift(session: AsyncSession, driver_id: int) -> Shift | None:
-    """Активная смена водителя (статус 'started'). None — если такой нет."""
+    """Активная смена водителя (статус 'started'). None — если такой нет.
+
+    Открытая смена должна быть одна, но если в базе оказались две (старые
+    дубликаты от двойного нажатия), берём самую свежую: падать на каждом
+    действии водителя — хуже, чем взять последнюю.
+    """
     result = await session.execute(
-        select(Shift).where(Shift.driver_id == driver_id, Shift.status == "started")
+        select(Shift)
+        .where(Shift.driver_id == driver_id, Shift.status == "started")
+        .order_by(Shift.id.desc())
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_free_vehicles(session: AsyncSession, owner_id: int) -> list[Vehicle]:

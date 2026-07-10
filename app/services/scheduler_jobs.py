@@ -652,40 +652,48 @@ async def no_show_detector_job(owner_bot: Bot) -> None:
     now = datetime.now(timezone.utc)
     threshold = now - timedelta(hours=NO_SHOW_THRESHOLD_HOURS)
     async with async_session() as session:
+        # Тянем поля водителей сразу значениями: rollback внутри цикла помечает
+        # ORM-объекты «протухшими», и следующее обращение к driver.id пыталось
+        # бы сходить в БД ленивой (синхронной) загрузкой — это роняло job.
         drivers_res = await session.execute(
-            select(Driver).where(Driver.is_active.is_(True))
+            select(Driver.id, Driver.owner_id, Driver.full_name, Driver.created_at)
+            .where(Driver.is_active.is_(True))
         )
-        for driver in drivers_res.scalars().all():
+        for driver_id, owner_id, full_name, created_at in drivers_res.all():
             try:
-                # есть активная смена? тогда это не невыход
+                # есть активная смена? тогда это не невыход.
+                # limit(1): у водителя может «висеть» несколько открытых смен.
                 active = await session.execute(
-                    select(Shift.id).where(
-                        Shift.driver_id == driver.id, Shift.status == "started"
-                    )
+                    select(Shift.id)
+                    .where(Shift.driver_id == driver_id, Shift.status == "started")
+                    .limit(1)
                 )
-                if active.scalar_one_or_none() is not None:
+                if active.scalars().first() is not None:
                     continue
                 # последняя активность по сменам (или дата подключения водителя)
                 last_shift = await session.execute(
-                    select(func.max(Shift.started_at)).where(Shift.driver_id == driver.id)
+                    select(func.max(Shift.started_at)).where(Shift.driver_id == driver_id)
                 )
-                last_active = last_shift.scalar_one() or driver.created_at
+                last_active = last_shift.scalar_one() or created_at
                 if last_active is None or last_active > threshold:
                     continue
                 # Одно уведомление на один простой: если уже алёртили ПОСЛЕ его
                 # последней смены — молчим (иначе про тестовых/уволившихся
                 # водителей сыпалось каждый день). Выйдет на смену — счётчик
                 # сам сдвинется, и новый простой снова сможет уведомить.
+                # limit(1): алёртов могло накопиться несколько.
                 already = await session.execute(
-                    select(Event.id).where(
-                        Event.driver_id == driver.id,
+                    select(Event.id)
+                    .where(
+                        Event.driver_id == driver_id,
                         Event.event_type == "no_show_alert",
                         Event.created_at >= last_active,
                     )
+                    .limit(1)
                 )
-                if already.scalar_one_or_none() is not None:
+                if already.scalars().first() is not None:
                     continue
-                owner = await session.get(Owner, driver.owner_id)
+                owner = await session.get(Owner, owner_id)
                 if owner is None:
                     continue
                 since_label = last_active.astimezone(
@@ -694,16 +702,16 @@ async def no_show_detector_job(owner_bot: Bot) -> None:
                 hours = int((now - last_active).total_seconds() // 3600)
                 await notify_owner(
                     owner_bot, session, owner,
-                    f"🚷 <b>{driver.full_name}</b> не выходил на смену с {since_label} "
+                    f"🚷 <b>{full_name}</b> не выходил на смену с {since_label} "
                     f"(~{hours} ч). Возможно, простаивает — есть кому дать работу?",
                 )
                 await log_event(
-                    session, owner_id=owner.id, driver_id=driver.id,
+                    session, owner_id=owner.id, driver_id=driver_id,
                     event_type="no_show_alert", payload={"hours": hours},
                 )
                 await session.commit()
             except Exception:
-                logger.exception("no_show_detector_job failed for driver %s", driver.id)
+                logger.exception("no_show_detector_job failed for driver %s", driver_id)
                 await session.rollback()
                 continue
 
