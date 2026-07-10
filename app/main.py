@@ -27,7 +27,11 @@ from aiogram.fsm.storage.redis import RedisStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.bots.driver_bot import driver_router
-from app.bots.middlewares import CrossBotMiddleware, DbSessionMiddleware
+from app.bots.middlewares import (
+    CrossBotMiddleware,
+    DbSessionMiddleware,
+    PerUserLockMiddleware,
+)
 from app.bots.owner_bot import owner_router
 from app.config import settings
 from app.database import async_session
@@ -99,6 +103,11 @@ async def main() -> None:
 
     db_mw = DbSessionMiddleware(async_session)
     for dp in (owner_dp, driver_dp):
+        # Замок ставим ПЕРЕД сессией БД: пока апдейт ждёт очередь своего
+        # пользователя, соединение с базой не занято.
+        lock_mw = PerUserLockMiddleware()
+        dp.message.middleware(lock_mw)
+        dp.callback_query.middleware(lock_mw)
         dp.message.middleware(db_mw)
         dp.callback_query.middleware(db_mw)
 

@@ -45,7 +45,11 @@ from app.bots.keyboards import (
     vehicle_type_keyboard,
     vehicles_list_keyboard,
 )
-from app.bots.notifications import drop_revenue_prompt_buttons, notify_driver
+from app.bots.notifications import (
+    drop_revenue_decision_buttons,
+    drop_revenue_prompt_buttons,
+    notify_driver,
+)
 from app.bots.states import (
     AddDriver,
     AddRouteTemplate,
@@ -1351,7 +1355,9 @@ def _trip_label(trip) -> str:
 
 
 @owner_router.callback_query(F.data.startswith("trip:revenue:"))
-async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+async def cb_trip_revenue_start(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession, bot: Bot
+) -> None:
     try:
         trip_id = int(call.data.split(":")[2])
     except (IndexError, ValueError):
@@ -1363,25 +1369,47 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001 — telegram капризен с edit, не валим callback
         pass
+    owner = await _get_owner(session, call.from_user.id)
     trip = await session.get(Trip, trip_id)
-    if trip is None:
+    if owner is None or trip is None or trip.owner_id != owner.id:
         await call.answer("Рейс не найден", show_alert=True)
         return
+    head = f"🧾 Рейс: <b>{_trip_label(trip)}</b>\n"
+
+    # Правило одной кнопки: если водитель уже прислал сумму — НЕ открываем
+    # параллельный ввод текстом (из-за него выручка задваивалась), а даём
+    # только «Одобрить / Изменить». Старое decision-сообщение гасим, чтобы
+    # живым остался ровно один набор кнопок.
+    if trip.revenue_rub is None and trip.driver_revenue_pending_rub is not None:
+        await drop_revenue_decision_buttons(session, trip.id, owner_bot=bot)
+        driver = await session.get(Driver, trip.driver_id)
+        sent = await call.message.answer(
+            msg.NOTIFY_TRIP_REVENUE_FROM_DRIVER.format(
+                driver=driver.full_name if driver else "—",
+                origin=trip.origin or "—", destination=trip.destination or "—",
+                amount=f"{trip.driver_revenue_pending_rub:.0f}",
+            ),
+            reply_markup=kb.trip_revenue_decision_keyboard(trip.id),
+        )
+        await log_event(
+            session, owner_id=owner.id, driver_id=trip.driver_id,
+            shift_id=trip.shift_id, trip_id=trip.id,
+            event_type="trip_revenue_decision_prompt",
+            payload={"owner_chat_id": call.message.chat.id, "owner_msg_id": sent.message_id},
+        )
+        await session.commit()
+        await call.answer("Водитель уже указал сумму — одобрите или измените её")
+        return
+
     await state.set_state(SetTripRevenue.waiting_for_amount)
     await state.update_data(trip_id=trip_id)
     await call.answer()
     # Владелец — главный: финальную выручку он может указать/переписать.
     # В КАЖДОМ запросе называем рейс — при нескольких рейсах владелец не
     # перепутает, за какой вводит сумму.
-    head = f"🧾 Рейс: <b>{_trip_label(trip)}</b>\n"
     if trip.revenue_rub is not None:
         await call.message.answer(
             head + f"Текущая выручка: {trip.revenue_rub:.0f} ₽. Введите новую сумму:"
-        )
-    elif trip.driver_revenue_pending_rub is not None:
-        await call.message.answer(
-            head + f"Водитель предложил: {trip.driver_revenue_pending_rub:.0f} ₽. "
-            "Введите финальную сумму:"
         )
     else:
         await call.message.answer(head + "Введите выручку по рейсу в рублях:")
@@ -1389,7 +1417,8 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session:
 
 @owner_router.callback_query(F.data.startswith("trev:ok:"))
 async def cb_trip_revenue_approve(
-    call: CallbackQuery, session: AsyncSession, driver_bot: Bot
+    call: CallbackQuery, state: FSMContext, session: AsyncSession,
+    driver_bot: Bot, bot: Bot,
 ) -> None:
     """Владелец одобряет выручку, указанную водителем."""
     try:
@@ -1402,6 +1431,12 @@ async def cb_trip_revenue_approve(
     if owner is None or trip is None or trip.owner_id != owner.id:
         await call.answer("Рейс не найден", show_alert=True)
         return
+    # Если владелец параллельно открыл ввод суммы по ЭТОМУ рейсу — гасим его,
+    # иначе следующее напечатанное число молча перезапишет одобренную выручку.
+    if await state.get_state() == SetTripRevenue.waiting_for_amount.state:
+        fsm_data = await state.get_data()
+        if fsm_data.get("trip_id") == trip.id:
+            await state.clear()
     approved = await trip_service.approve_trip_driver_revenue(session, trip=trip)
     if approved:
         await log_event(
@@ -1410,11 +1445,23 @@ async def cb_trip_revenue_approve(
             event_type="trip_revenue_approved", payload={"revenue": str(trip.revenue_rub)},
         )
         await session.commit()
-    elif trip.revenue_rub is None:
+    elif trip.revenue_rub is not None:
+        # Повторный клик «Одобрить» (или сумма уже закрыта) — без дублей.
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        await call.answer(
+            f"Выручка уже принята: {trip.revenue_rub:.0f} ₽", show_alert=True
+        )
+        return
+    else:
         await call.answer("Нет суммы на подтверждении", show_alert=True)
         return
-    # выручка закрыта — у водителя кнопка «Указать выручку» больше не нужна
+    # выручка закрыта — у водителя кнопка «Указать выручку» больше не нужна,
+    # как и другие копии «Одобрить/Изменить» у владельца
     await drop_revenue_prompt_buttons(session, trip.id, driver_bot=driver_bot, side="driver")
+    await drop_revenue_decision_buttons(session, trip.id, owner_bot=bot)
     try:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001
@@ -1461,6 +1508,7 @@ async def set_trip_revenue(
     state: FSMContext,
     session: AsyncSession,
     driver_bot: Bot,
+    bot: Bot,
 ) -> None:
     raw = (message.text or "").strip().replace(",", ".").replace(" ", "")
     try:
@@ -1512,8 +1560,11 @@ async def set_trip_revenue(
     await session.commit()
     await state.clear()
 
-    # Владелец закрыл выручку — у водителя кнопка «Указать выручку» больше не нужна.
+    # Владелец закрыл выручку — у водителя кнопка «Указать выручку» больше не
+    # нужна, а висящее «Одобрить/Изменить» (если водитель успел предложить
+    # сумму) гасим, чтобы им нельзя было перезаписать финальное число.
     await drop_revenue_prompt_buttons(session, trip.id, driver_bot=driver_bot, side="driver")
+    await drop_revenue_decision_buttons(session, trip.id, owner_bot=bot)
 
     await message.answer(
         msg.TRIP_PNL_CARD.format(

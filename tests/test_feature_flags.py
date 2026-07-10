@@ -30,7 +30,8 @@ def test_no_shift_hides_cash_downtime_status_by_default():
     settings.feature_downtime = False
     texts = _texts(kb.driver_no_shift_kb())
     assert kb.BTN_START_SHIFT in texts
-    assert kb.BTN_ADD_SHIFT in texts and kb.BTN_ADD_TRIP in texts
+    # «Добавить смену» убрана из меню 2026-07-06: «Добавить рейс» сам создаёт смену.
+    assert kb.BTN_ADD_SHIFT not in texts and kb.BTN_ADD_TRIP in texts
     assert kb.BTN_HANDED_CASH not in texts
     assert kb.BTN_DOWNTIME not in texts
     assert kb.BTN_STATUS not in texts

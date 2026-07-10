@@ -211,6 +211,7 @@ async def transfer_photo_to_owner(
 async def drop_revenue_prompt_buttons(
     session: AsyncSession, trip_id: int, *, owner_bot: Bot | None = None,
     driver_bot: Bot | None = None, side: str,
+    event_type: str = "trip_revenue_prompt",
 ) -> None:
     """Погасить устаревшую кнопку «Указать выручку» у второй стороны.
 
@@ -226,8 +227,8 @@ async def drop_revenue_prompt_buttons(
     row = (
         await session.execute(
             select(Event.payload)
-            .where(Event.trip_id == trip_id, Event.event_type == "trip_revenue_prompt")
-            .order_by(_desc(Event.created_at))
+            .where(Event.trip_id == trip_id, Event.event_type == event_type)
+            .order_by(_desc(Event.created_at), _desc(Event.id))
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -245,6 +246,17 @@ async def drop_revenue_prompt_buttons(
         )
     except Exception as exc:  # noqa: BLE001 — сообщение могли удалить/устареть
         logger.info("Не смог убрать кнопку выручки (%s, trip=%s): %s", side, trip_id, exc)
+
+
+async def drop_revenue_decision_buttons(
+    session: AsyncSession, trip_id: int, *, owner_bot: Bot
+) -> None:
+    """Погасить «Одобрить/Изменить» у владельца, когда выручка уже закрыта
+    (одобрена или вписана вручную) — чтобы не осталось второй живой кнопки."""
+    await drop_revenue_prompt_buttons(
+        session, trip_id, owner_bot=owner_bot, side="owner",
+        event_type="trip_revenue_decision_prompt",
+    )
 
 
 async def notify_driver(

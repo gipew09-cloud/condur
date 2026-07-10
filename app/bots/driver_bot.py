@@ -573,7 +573,7 @@ async def shift_start_odometer_photo(
     )
 
 
-@driver_router.message(StartShift.waiting_for_odometer_photo)
+@driver_router.message(StartShift.waiting_for_odometer_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def shift_start_odometer_photo_invalid(message: Message) -> None:
     await message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_START + " 📷")
 
@@ -630,7 +630,7 @@ async def shift_end_odometer_photo(
     )
 
 
-@driver_router.message(EndShift.waiting_for_odometer_photo)
+@driver_router.message(EndShift.waiting_for_odometer_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def shift_end_odometer_photo_invalid(message: Message) -> None:
     await message.answer(msg.SHIFT_ASK_ODOMETER_PHOTO_END + " 📷")
 
@@ -769,7 +769,7 @@ async def shift_end_skip_location(
         await _refresh_ui(message, session, driver, "Ок, без геопозиции.")
 
 
-@driver_router.message(EndShiftLocation.waiting_for_location)
+@driver_router.message(EndShiftLocation.waiting_for_location, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def shift_end_location_invalid(message: Message) -> None:
     await message.answer(msg.SHIFT_END_LOCATION_ASK)
 
@@ -1027,7 +1027,7 @@ async def cb_route_cancel(call: CallbackQuery, state: FSMContext, session: Async
     await call.answer()
 
 
-@driver_router.message(NewTrip.waiting_for_origin)
+@driver_router.message(NewTrip.waiting_for_origin, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def trip_origin(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     if data.get("picking_template"):
@@ -1042,7 +1042,7 @@ async def trip_origin(message: Message, state: FSMContext) -> None:
     await message.answer(msg.TRIP_ASK_DESTINATION)
 
 
-@driver_router.message(NewTrip.waiting_for_destination)
+@driver_router.message(NewTrip.waiting_for_destination, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def trip_destination(
     message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
@@ -1115,7 +1115,7 @@ async def _finalize_new_trip(
         )
 
 
-@driver_router.message(NewTrip.waiting_for_cargo)
+@driver_router.message(NewTrip.waiting_for_cargo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def trip_cargo(
     message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
@@ -1183,7 +1183,7 @@ async def depart_skip_location(
     await _do_depart(message, state, session, owner_bot, location=None)
 
 
-@driver_router.message(TripDepartLocation.waiting_for_location)
+@driver_router.message(TripDepartLocation.waiting_for_location, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def depart_location_invalid(message: Message) -> None:
     await message.answer(msg.LOCATION_ASK)
 
@@ -1284,7 +1284,7 @@ async def unloading_skip_location(
     await _do_unloading(message, state, session, owner_bot, location=None)
 
 
-@driver_router.message(UnloadingLocation.waiting_for_location)
+@driver_router.message(UnloadingLocation.waiting_for_location, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def unloading_location_invalid(message: Message) -> None:
     await message.answer(msg.LOCATION_ASK)
 
@@ -1471,7 +1471,7 @@ async def end_trip_skip_location(
     await _do_end_trip(message, state, session, owner_bot, location=None)
 
 
-@driver_router.message(EndTripLocation.waiting_for_location)
+@driver_router.message(EndTripLocation.waiting_for_location, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def end_trip_location_invalid(message: Message) -> None:
     await message.answer(msg.LOCATION_ASK)
 
@@ -1599,7 +1599,7 @@ async def cb_driver_revenue(call: CallbackQuery, state: FSMContext, session: Asy
     await call.answer()
 
 
-@driver_router.message(DriverTripRevenue.waiting_for_amount)
+@driver_router.message(DriverTripRevenue.waiting_for_amount, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def driver_revenue_amount(
     message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
@@ -1650,7 +1650,7 @@ async def driver_revenue_amount(
         await drop_revenue_prompt_buttons(
             session, trip.id, owner_bot=owner_bot, side="owner"
         )
-        await notify_owner(
+        decision_msg_id = await notify_owner(
             owner_bot, session, owner,
             msg.NOTIFY_TRIP_REVENUE_FROM_DRIVER.format(
                 driver=driver.full_name, origin=trip.origin or "—",
@@ -1658,6 +1658,15 @@ async def driver_revenue_amount(
             ),
             reply_markup=kb.trip_revenue_decision_keyboard(trip.id),
         )
+        # Запоминаем id «Одобрить/Изменить» — когда выручка закроется другим
+        # путём (владелец впишет сумму сам), эти кнопки тоже погаснут.
+        await log_event(
+            session, owner_id=driver.owner_id, driver_id=driver.id,
+            shift_id=trip.shift_id, trip_id=trip.id,
+            event_type="trip_revenue_decision_prompt",
+            payload={"owner_chat_id": owner.telegram_id, "owner_msg_id": decision_msg_id},
+        )
+        await session.commit()
 
 
 # =========================================================================
@@ -1700,7 +1709,7 @@ async def cb_expense_category(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-@driver_router.message(NewExpense.waiting_for_amount)
+@driver_router.message(NewExpense.waiting_for_amount, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def expense_amount(message: Message, state: FSMContext) -> None:
     amount = _parse_decimal(message.text)
     if amount is None or amount <= 0:
@@ -1721,7 +1730,7 @@ async def expense_amount(message: Message, state: FSMContext) -> None:
     )
 
 
-@driver_router.message(NewExpense.waiting_for_description)
+@driver_router.message(NewExpense.waiting_for_description, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def expense_description(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text:
@@ -1860,7 +1869,7 @@ async def cb_expense_skip_receipt(
     await call.answer()
 
 
-@driver_router.message(NewExpense.waiting_for_receipt)
+@driver_router.message(NewExpense.waiting_for_receipt, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def expense_receipt_invalid(message: Message) -> None:
     await message.answer(msg.EXPENSE_RECEIPT_PHOTO_REQUIRED)
 
@@ -1939,7 +1948,7 @@ async def btn_handed_cash(message: Message, state: FSMContext, session: AsyncSes
     await message.answer(msg.CASH_ASK_AMOUNT)
 
 
-@driver_router.message(HandedCash.waiting_for_amount)
+@driver_router.message(HandedCash.waiting_for_amount, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def cash_amount(message: Message, state: FSMContext) -> None:
     amount = _parse_decimal(message.text)
     if amount is None or amount <= 0:
@@ -2042,7 +2051,7 @@ async def cb_cash_skip(
     await call.answer()
 
 
-@driver_router.message(HandedCash.waiting_for_photo)
+@driver_router.message(HandedCash.waiting_for_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def cash_photo_invalid(message: Message) -> None:
     await message.answer(msg.CASH_ASK_PHOTO)
 
@@ -2212,7 +2221,7 @@ async def cb_mshift_vehicle(call: CallbackQuery, state: FSMContext, session: Asy
     await call.answer()
 
 
-@driver_router.message(AddManualShift.waiting_for_date)
+@driver_router.message(AddManualShift.waiting_for_date, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def manual_shift_date(
     message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:
@@ -2350,7 +2359,7 @@ async def cb_mtrip_manual(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
-@driver_router.message(AddManualTrip.waiting_for_origin)
+@driver_router.message(AddManualTrip.waiting_for_origin, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def manual_trip_origin(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     if data.get("picking_template"):
@@ -2364,7 +2373,7 @@ async def manual_trip_origin(message: Message, state: FSMContext) -> None:
     await message.answer(msg.TRIP_ASK_DESTINATION)
 
 
-@driver_router.message(AddManualTrip.waiting_for_destination)
+@driver_router.message(AddManualTrip.waiting_for_destination, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def manual_trip_destination(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text:
@@ -2375,7 +2384,7 @@ async def manual_trip_destination(message: Message, state: FSMContext) -> None:
     await message.answer(msg.MANUAL_ASK_DATE)
 
 
-@driver_router.message(AddManualTrip.waiting_for_date)
+@driver_router.message(AddManualTrip.waiting_for_date, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
 async def manual_trip_date(
     message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot
 ) -> None:

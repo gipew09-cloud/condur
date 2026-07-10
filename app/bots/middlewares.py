@@ -8,6 +8,7 @@ Middleware для inject'а сессии БД и "чужого" бота в ка
 переменной, нет утечек, состояние не пересекается между параллельными
 апдейтами.
 """
+import asyncio
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot
@@ -30,6 +31,35 @@ class DbSessionMiddleware(BaseMiddleware):
     ) -> Any:
         async with self.session_factory() as session:
             data["session"] = session
+            return await handler(event, data)
+
+
+class PerUserLockMiddleware(BaseMiddleware):
+    """
+    Сериализует обработку апдейтов ОДНОГО пользователя: второй апдейт ждёт,
+    пока первый дообработается и закоммитится.
+
+    Зачем: водители дважды жмут «Сдал груз» / «Начать смену» — без блокировки
+    оба апдейта проходят проверку статуса ДО коммита первого, и появляются
+    дубликаты рейсов/смен/уведомлений. Апдейты разных пользователей идут
+    параллельно, как раньше.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._locks: dict[int, asyncio.Lock] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user = getattr(event, "from_user", None)
+        if user is None:
+            return await handler(event, data)
+        lock = self._locks.setdefault(user.id, asyncio.Lock())
+        async with lock:
             return await handler(event, data)
 
 
