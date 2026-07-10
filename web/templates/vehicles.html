@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Машины{% endblock %}
+{% block head %}{% include "_sp_styles.html" %}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Машины</h1>
+  <p class="sub">P&L и пробег по каждой машине за текущий месяц. Кнопка 📊 — вся статистика по машине.</p>
+</div>
+
+{% if totals %}
+<div class="sp-kpi" style="margin-bottom:1.25rem;">
+  <div class="c"><div class="lbl">Всего машин</div><div class="val">{{ totals.count }}</div></div>
+  <div class="c"><div class="lbl">Сейчас в рейсе</div><div class="val">{{ totals.in_work }}</div></div>
+  <div class="c"><div class="lbl">Выручка за месяц</div><div class="val">{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} <span class="rub">₽</span></div></div>
+  <div class="c dark"><div class="lbl">Прибыль за месяц</div><div class="val">{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} <span class="rub">₽</span></div>{% if in_minus %}<div class="delta neg">машин в минусе: {{ in_minus }}</div>{% endif %}</div>
+</div>
+{% endif %}
+
+{% if notice %}
+  <div class="add-banner add-banner--warn">
+    {% if notice.kind == 'limit' %}
+      <strong>⚠️ Достигнут лимит тарифа — {{ notice.limit }} машин.</strong>
+      <p>Чтобы добавить больше, обновите тариф: команда <code>/tariffs</code> в боте владельца.</p>
+    {% elif notice.kind == 'dup' %}
+      <strong>⚠️ Машина с номером {{ notice.plate }} уже есть в автопарке.</strong>
+    {% elif notice.kind == 'gps_dup' %}
+      <strong>⚠️ Stavtrack ID {{ notice.stavtrack_object_id }} уже привязан к другой машине.</strong>
+    {% endif %}
+  </div>
+{% endif %}
+
+<details class="add-panel">
+  <summary class="add-toggle">➕ Добавить машину</summary>
+  <form action="/vehicles" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Гос. номер*
+        <input type="text" name="license_plate" required placeholder="А123ВС77">
+      </label>
+      <label>Марка
+        <input type="text" name="brand" placeholder="КамАЗ 5490">
+      </label>
+      <label>Тип
+        <select name="type">
+          <option value="truck">Грузовик</option>
+          <option value="gazelle">Газель / фургон</option>
+          <option value="refrigerator">Рефрижератор</option>
+        </select>
+      </label>
+      <label>Норма л/100км
+        <input type="text" name="fuel_norm_per_100km" placeholder="32" inputmode="decimal">
+      </label>
+      <label>Stavtrack ID
+        <input type="text" name="stavtrack_object_id" placeholder="129772">
+      </label>
+      <label>ОСАГО до
+        <input type="date" name="osago_expires">
+      </label>
+      <label>ТО до
+        <input type="date" name="inspection_expires">
+      </label>
+      <label>Тахограф до
+        <input type="date" name="tacho_expires">
+      </label>
+    </div>
+    <button type="submit">Добавить машину</button>
+  </form>
+</details>
+
+{% if not rows %}
+  <p>Машин пока нет. Добавьте первую кнопкой «➕ Добавить машину» выше или через бот владельца.</p>
+{% else %}
+  <div class="sp-cards" id="vehicles-tbody">
+    {% for row in rows %}
+      {% include "_vehicle_row.html" with context %}
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}

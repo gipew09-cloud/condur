@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}Главная{% endblock %}
+
+{% block head %}
+<style>
+  /* ===== Дашборд «Свежий путь» — вёрстка по макету ===== */
+  .sp { display: grid; gap: 20px; }
+  .sp * { box-sizing: border-box; }
+  .sp-card { background: #fff; border: 1px solid #eceef2; border-radius: 16px; }
+
+  /* Шапка */
+  .sp-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .sp-top h2 { font-size: 19px; font-weight: 800; margin: 0; }
+  .sp-top .when { font-size: 12.5px; color: #8a93a3; font-weight: 500; margin: 2px 0 0; }
+  .sp-top .right { display: flex; align-items: center; gap: 12px; }
+  .sp-btn { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 15px; border-radius: 9px; background: #2563eb; color: #fff !important; font-size: 13.5px; font-weight: 700; box-shadow: 0 3px 10px rgba(37,99,235,.28); text-decoration: none; border: 0; }
+  .sp-chip { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 13px; border-radius: 9px; background: #f1f4f9; font-size: 13.5px; font-weight: 600; color: #3a4453; }
+  .sp-dot { width: 8px; height: 8px; border-radius: 50%; background: #22a565; box-shadow: 0 0 0 3px #d6f0e1; }
+  .sp-ava { width: 36px; height: 36px; border-radius: 50%; background: #0f172a; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+
+  /* Требуют внимания */
+  .sp-attn__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; }
+  .sp-attn__head .t { display: flex; align-items: center; gap: 9px; }
+  .sp-attn__head .t b { font-weight: 800; font-size: 15px; }
+  .sp-attn__count { font-size: 12.5px; font-weight: 700; color: #dc2626; background: #fde8e6; border-radius: 6px; padding: 2px 7px; }
+  .sp-attn__more { font-size: 13px; color: #8a93a3; font-weight: 600; text-decoration: none; }
+  .sp-attn__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #f1f3f6; border-radius: 0 0 16px 16px; overflow: hidden; }
+  @media (max-width: 720px) { .sp-attn__grid { grid-template-columns: 1fr; } }
+  .sp-attn__item { background: #fff; padding: 13px 18px; display: flex; gap: 12px; align-items: flex-start; }
+  .sp-ic { width: 34px; height: 34px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-size: 16px; }
+  .sp-attn__item .ln { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .sp-attn__item .ln b { font-weight: 700; font-size: 14px; }
+  .sp-pill { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 1px 6px; }
+  .sp-attn__item .sub { font-size: 12.5px; color: #7b8494; margin-top: 2px; }
+  .sev-danger .sp-ic, .sev-danger.sp-pill { background: #fde8e6; color: #c5362b; }
+  .sev-warn .sp-ic, .sev-warn.sp-pill { background: #fdf0d3; color: #9a5b00; }
+  .sev-info .sp-ic, .sev-info.sp-pill { background: #e8f0fe; color: #1d4ed8; }
+  .sp-attn__empty { padding: 16px 18px; color: #7b8494; font-size: 13.5px; }
+
+  /* KPI */
+  .sp-kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  @media (max-width: 900px) { .sp-kpi { grid-template-columns: repeat(2, 1fr); } }
+  .sp-kpi .c { background: #fff; border: 1px solid #eceef2; border-radius: 15px; padding: 16px 18px; }
+  .sp-kpi .lbl { font-size: 12px; font-weight: 700; color: #8a93a3; }
+  .sp-kpi .val { font-size: 36px; font-weight: 800; line-height: 1.15; margin-top: 2px; }
+  .sp-kpi .val .rub { font-size: 21px; color: #aab2bf; font-weight: 700; }
+  .sp-kpi .delta { font-size: 12.5px; font-weight: 600; color: #22a565; }
+  .sp-kpi .c.dark { background: #0f172a; border-color: #0f172a; }
+  .sp-kpi .c.dark .lbl { color: #94a3b8; }
+  .sp-kpi .c.dark .val { color: #fff; }
+  .sp-kpi .c.dark .val .rub { color: #64748b; }
+  .sp-kpi .c.dark .delta { color: #5fd39b; }
+
+  /* Графики */
+  .sp-charts { display: grid; grid-template-columns: 1.9fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .sp-charts { grid-template-columns: 1fr; } }
+  .sp-panel__head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 14px 18px 6px; }
+  .sp-panel__head .l { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .sp-panel__head .ttl { font-weight: 800; font-size: 15px; }
+  .sp-leg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #5b6573; font-weight: 600; }
+  .sp-leg .sq { width: 10px; height: 10px; border-radius: 3px; background: #2f74f5; }
+  .sp-leg .line { width: 15px; height: 3px; border-radius: 2px; background: #1f9d57; }
+  .sp-periods { display: inline-flex; gap: 2px; background: #f1f4f9; border-radius: 9px; padding: 3px; }
+  .sp-periods .cp-btn { border: 0; cursor: pointer; font-size: 12px; font-weight: 600; color: #5b6573; background: transparent; border-radius: 7px; padding: 5px 11px; width: auto; margin: 0; }
+  .sp-periods .cp-btn.active { color: #fff; background: #2563eb; font-weight: 700; }
+
+  .sp-donut__body { display: flex; align-items: center; gap: 16px; padding: 4px 18px 16px; flex-wrap: wrap; }
+  .sp-donut__wrap { position: relative; width: 132px; height: 132px; flex: none; }
+  .sp-donut__center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+  .sp-donut__center b { font-size: 21px; font-weight: 800; }
+  .sp-donut__center small { font-size: 11px; color: #8a93a3; font-weight: 600; }
+  .sp-donut__legend { display: grid; gap: 8px; flex: 1; min-width: 130px; }
+  .sp-lg-row { display: flex; align-items: center; justify-content: space-between; }
+  .sp-lg-row .nm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #3a4453; }
+  .sp-lg-row .nm .sq { width: 9px; height: 9px; border-radius: 3px; }
+  .sp-lg-row .pc { font-size: 13px; font-weight: 800; }
+
+  /* Машины в работе + карта */
+  .sp-bottom { display: grid; grid-template-columns: 1.45fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .sp-bottom { grid-template-columns: 1fr; } }
+  .sp-work__head, .sp-map__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; }
+  .sp-work__head .ttl, .sp-map__head .ttl { font-weight: 800; font-size: 15px; }
+  .sp-work__head .sub { font-size: 12.5px; color: #8a93a3; font-weight: 600; }
+  .sp-map__head a { font-size: 12.5px; color: #2563eb; font-weight: 700; text-decoration: none; }
+  .sp-work__row { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-top: 1px solid #f1f3f6; }
+  .sp-plate { font-weight: 800; font-size: 12.5px; background: #f1f4f9; border: 1px solid #e4e8ef; border-radius: 6px; padding: 4px 7px; white-space: nowrap; }
+  .sp-work__mid { flex: 1; min-width: 0; }
+  .sp-work__mid .rt { font-size: 13.5px; font-weight: 700; }
+  .sp-work__mid .rt .drv { color: #aab2bf; font-weight: 500; }
+  .sp-track { height: 5px; border-radius: 3px; background: #eceef2; margin-top: 6px; overflow: hidden; }
+  .sp-track > i { display: block; height: 100%; background: #2563eb; border-radius: 3px; }
+  .sp-temp { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 7px; font-size: 12px; font-weight: 700; background: #f1f4f9; color: #8a93a3; white-space: nowrap; }
+  .sp-eta { font-size: 12.5px; color: #7b8494; font-weight: 600; width: 54px; text-align: right; }
+  .sp-map__body { position: relative; height: 230px; background: #eef2f6; border-radius: 0 0 16px 16px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .sp-map__hint { color: #9aa3b2; font-size: 13px; }
+  .sp-map__legend { position: absolute; left: 14px; bottom: 14px; display: flex; gap: 12px; flex-wrap: wrap; background: rgba(255,255,255,.94); border: 1px solid #e7eaef; border-radius: 10px; padding: 9px 12px; font-size: 11.5px; font-weight: 600; color: #3a4453; box-shadow: var(--shadow-sm); }
+  .sp-map__legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .sp-map__legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+  .sp-old-divider { margin: 2.25rem 0 1rem; border: 0; border-top: 1px solid var(--border); }
+</style>
+{% endblock %}
+
+{% block content %}
+{% macro money(value) -%}
+{{ "{:,.0f}".format(value).replace(',', ' ') }} ₽
+{%- endmacro %}
+
+<div class="sp">
+
+  <!-- Шапка -->
+  <div class="sp-top">
+    <div>
+      <h2>Главная</h2>
+      <p class="when">{{ overview.date_label }}</p>
+    </div>
+    <div class="right">
+      <a href="/trips#add-trip" class="sp-btn">+ Новый рейс</a>
+      <span class="sp-chip"><span class="sp-dot"></span>{{ overview.in_transit_count }} машин в рейсе</span>
+      <span class="sp-ava">{{ (owner.company_name or 'СП')[:2] | upper }}</span>
+    </div>
+  </div>
+
+  <!-- Требуют внимания -->
+  <div class="sp-card">
+    <div class="sp-attn__head">
+      <div class="t"><b>Требуют внимания</b>{% if overview.attention %}<span class="sp-attn__count">{{ overview.attention | length }}</span>{% endif %}</div>
+      {% if overview.attention %}<a href="/vehicles" class="sp-attn__more">Показать все →</a>{% endif %}
+    </div>
+    {% if overview.attention %}
+      <div class="sp-attn__grid">
+        {% for a in overview.attention[:6] %}
+          <div class="sp-attn__item sev-{{ a.sev }}">
+            <span class="sp-ic">{{ a.icon if a.icon else ('⚠️' if a.sev == 'danger' else 'ℹ️') }}</span>
+            <div>
+              <div class="ln"><b>{{ a.title }}</b>{% if a.pill %}<span class="sp-pill sev-{{ a.sev }}">{{ a.pill }}</span>{% endif %}</div>
+              {% if a.sub %}<div class="sub">{{ a.sub }}</div>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="sp-attn__empty">✅ Всё в порядке — срочных вопросов нет. Тревоги о топливе и температуре появятся с подключением телематики.</div>
+    {% endif %}
+  </div>
+
+  <!-- KPI -->
+  {% set rev_today = finance.today.income | float %}
+  {% set prof_today = finance.today.profit | float %}
+  {% set margin = (prof_today / rev_today * 100) if rev_today > 0 else 0 %}
+  {% set d_trips = kpi.trips_today - kpi.trips_yesterday %}
+  <div class="sp-kpi">
+    <div class="c">
+      <div class="lbl">Рейсов сегодня</div>
+      <div class="val">{{ kpi.trips_today }}</div>
+      {% if d_trips != 0 %}<div class="delta" style="{{ '' if d_trips > 0 else 'color:#c5362b;' }}">{{ '↑ +' ~ d_trips ~ ' ко вчера' if d_trips > 0 else '↓ ' ~ d_trips ~ ' ко вчера' }}</div>{% endif %}
+    </div>
+    <div class="c">
+      <div class="lbl">Километров сегодня</div>
+      <div class="val">{{ "{:,.0f}".format(kpi.km_today).replace(',', ' ') }}</div>
+    </div>
+    <div class="c">
+      <div class="lbl">Выручка сегодня</div>
+      <div class="val">{{ "{:,.0f}".format(rev_today).replace(',', ' ') }} <span class="rub">₽</span></div>
+    </div>
+    <div class="c dark">
+      <div class="lbl">Прибыль сегодня</div>
+      <div class="val">{{ "{:,.0f}".format(prof_today).replace(',', ' ') }} <span class="rub">₽</span></div>
+      <div class="delta">маржа {{ "%.0f"|format(margin) }}%</div>
+    </div>
+  </div>
+
+  <!-- Графики -->
+  <div class="sp-charts">
+    <div class="sp-card">
+      <div class="sp-panel__head">
+        <div class="l">
+          <span class="ttl">Выручка и прибыль</span>
+          <span class="sp-leg"><span class="sq"></span>Выручка</span>
+          <span class="sp-leg"><span class="line"></span>Прибыль</span>
+        </div>
+        <div class="sp-periods" role="group" aria-label="Период">
+          <button type="button" class="cp-btn active" data-period="7d">7 дней</button>
+          <button type="button" class="cp-btn" data-period="30d">30 дней</button>
+          <button type="button" class="cp-btn" data-period="12m">12 мес</button>
+        </div>
+      </div>
+      <div style="padding: 2px 16px 8px;">
+        <div style="position: relative; height: 180px;"><canvas id="financeChart"></canvas></div>
+        <div style="position: relative; height: 92px; margin-top: 6px;"><canvas id="profitChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="sp-card">
+      <div class="sp-panel__head">
+        <span class="ttl">Структура расходов</span>
+        <span style="font-size:12px; color:#8a93a3; font-weight:600;">{{ overview.expense_month }}</span>
+      </div>
+      {% if overview.breakdown %}
+        <div class="sp-donut__body">
+          <div class="sp-donut__wrap">
+            <canvas id="expenseChart"></canvas>
+            <div class="sp-donut__center"><b id="donutTotal">—</b><small>₽ / мес</small></div>
+          </div>
+          <div class="sp-donut__legend" id="donutLegend"></div>
+        </div>
+      {% else %}
+        <div style="padding: 0 18px 16px; color:#8a93a3; font-size:13px;">За месяц одобренных расходов пока нет.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Машины в работе + карта -->
+  <div class="sp-bottom">
+    <div class="sp-card">
+      <div class="sp-work__head">
+        <span class="ttl">Машины сейчас в работе</span>
+        <span class="sub">{{ overview.in_transit_count }} в рейсе</span>
+      </div>
+      {% if overview.active_vehicles %}
+        {% for w in overview.active_vehicles %}
+          <div class="sp-work__row">
+            <span class="sp-plate">{{ w.plate }}</span>
+            <div class="sp-work__mid">
+              <div class="rt">{{ w.route }} <span class="drv">· {{ w.driver }}</span></div>
+              <div class="sp-track"><i style="width: 0%;"></i></div>
+            </div>
+            <span class="sp-temp" title="Появится с телематикой">темп. —</span>
+            <span class="sp-eta">{% if w.status %}{{ w.status }}{% else %}—{% endif %}</span>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div style="padding: 0 18px 16px; color:#8a93a3;">Сейчас нет открытых смен.</div>
+      {% endif %}
+    </div>
+
+    <div class="sp-card">
+      <div class="sp-map__head">
+        <span class="ttl">Карта</span>
+        <a href="/map">Открыть →</a>
+      </div>
+      <div class="sp-map__body">
+        <span class="sp-map__hint">🗺 Открыть карту водителей</span>
+        <div class="sp-map__legend">
+          <span><i style="background:#22a565;"></i>В норме · {{ overview.map_normal }}</span>
+          <span><i style="background:#e0a32e;"></i>Внимание · {{ overview.map_attention }}</span>
+          <span><i style="background:#dc2626;"></i>Проблема · {{ overview.map_problem }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Прежние блоки (не удалены) ===== -->
+<hr class="sp-old-divider">
+
+<section>
+  <h3>Сводка по деньгам</h3>
+  <table class="finance-matrix">
+    <thead>
+      <tr><th></th><th>Сегодня</th><th>Этот месяц</th><th>Этот год</th></tr>
+    </thead>
+    <tbody>
+      <tr class="row-income"><th>💰 Доход</th><td>{{ money(finance.today.income) }}</td><td>{{ money(finance.month.income) }}</td><td>{{ money(finance.year.income) }}</td></tr>
+      <tr class="row-expense"><th>💳 Расход</th><td>{{ money(finance.today.expense) }}</td><td>{{ money(finance.month.expense) }}</td><td>{{ money(finance.year.expense) }}</td></tr>
+      <tr class="row-profit-total"><th>📈 Прибыль</th><td>{{ money(finance.today.profit) }}</td><td>{{ money(finance.month.profit) }}</td><td>{{ money(finance.year.profit) }}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+{% if insights %}
+<section style="margin-top: 1.5rem;">
+  <h3>Замечания</h3>
+  <ul class="insights">{% for it in insights %}<li>{{ it | safe }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<section style="margin-top: 1.5rem;">
+  <h3>Последние 10 рейсов</h3>
+  {% if last_trips %}
+    <table>
+      <thead><tr><th>Дата</th><th>Маршрут</th><th>Водитель</th><th>Машина</th><th>Статус</th><th class="num">Выручка</th></tr></thead>
+      <tbody>
+      {% for trip, driver_name, plate in last_trips %}
+        <tr>
+          <td>{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+          <td>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}{% if trip.is_manual %} <span class="badge badge--neutral">вручную</span>{% endif %}</td>
+          <td>{{ driver_name }}</td>
+          <td>{{ plate }}</td>
+          <td><span class="pill">{{ trip.status | tstatus }}</span></td>
+          <td class="num">{{ "{:,.0f}".format(trip.revenue_rub or 0).replace(',', ' ') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Рейсов пока нет.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+  const fmtShort = (v) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v);
+  const initial = {{ chart | tojson }};
+  const breakdown = {{ overview.breakdown | tojson }};
+
+  const baseOpts = {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { display: false },
+      tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } } },
+    scales: { x: { grid: { display: false } }, y: { ticks: { callback: fmtShort }, grid: { color: '#f1f3f6' } } },
+  };
+
+  const financeChart = new Chart(document.getElementById('financeChart'), {
+    type: 'bar',
+    data: { labels: initial.labels, datasets: [
+      { label: 'Доход', data: initial.revenue, backgroundColor: '#2f74f5', borderRadius: 4, maxBarThickness: 18 },
+      { label: 'Расход', data: initial.expenses, backgroundColor: 'rgba(197,54,43,.72)', borderRadius: 4, maxBarThickness: 18 },
+    ]},
+    options: baseOpts,
+  });
+  const profitChart = new Chart(document.getElementById('profitChart'), {
+    type: 'line',
+    data: { labels: initial.labels, datasets: [
+      { label: 'Прибыль', data: initial.profit, borderColor: '#1f9d57',
+        backgroundColor: 'rgba(31,157,87,.10)', borderWidth: 2, tension: .35, fill: true,
+        pointRadius: 0 } ]},
+    options: { ...baseOpts, scales: { x: { display: false }, y: { ticks: { callback: fmtShort }, grid: { color: '#f1f3f6' } } } },
+  });
+
+  // Пончик расходов
+  const DONUT_COLORS = { 'Топливо':'#2563eb', 'Зарплаты':'#22a565', 'Ремонт':'#e0a32e', 'Дороги':'#cbd2db', 'Парковка':'#22a565', 'Штрафы':'#c5362b', 'Прочее':'#5b6573' };
+  const expEl = document.getElementById('expenseChart');
+  if (expEl && breakdown.length) {
+    const total = breakdown.reduce((s, b) => s + b.amount, 0);
+    const colors = breakdown.map((b, i) => DONUT_COLORS[b.label] || ['#2563eb','#22a565','#e0a32e','#cbd2db','#c5362b','#5b6573'][i % 6]);
+    new Chart(expEl, {
+      type: 'doughnut',
+      data: { labels: breakdown.map(b => b.label), datasets: [{ data: breakdown.map(b => b.amount), backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '70%',
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtRub(c.parsed)}` } } } },
+    });
+    document.getElementById('donutTotal').textContent =
+      total >= 1000 ? Math.round(total / 1000) + 'к' : Math.round(total);
+    const legend = document.getElementById('donutLegend');
+    breakdown.forEach((b, i) => {
+      const pct = total > 0 ? Math.round(b.amount / total * 100) : 0;
+      const row = document.createElement('div');
+      row.className = 'sp-lg-row';
+      row.innerHTML = `<span class="nm"><span class="sq" style="background:${colors[i]}"></span>${b.label}</span><span class="pc">${pct}%</span>`;
+      legend.appendChild(row);
+    });
+  }
+
+  async function loadPeriod(period) {
+    try {
+      const r = await fetch('/api/dashboard-chart?period=' + period);
+      if (!r.ok) return;
+      const d = await r.json();
+      financeChart.data.labels = d.labels;
+      financeChart.data.datasets[0].data = d.revenue;
+      financeChart.data.datasets[1].data = d.expenses;
+      financeChart.update();
+      profitChart.data.labels = d.labels;
+      profitChart.data.datasets[0].data = d.profit;
+      profitChart.update();
+    } catch (e) { console.error(e); }
+  }
+  document.querySelectorAll('.cp-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.cp-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadPeriod(btn.dataset.period);
+    });
+  });
+</script>
+{% endblock %}

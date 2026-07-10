@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Реквизиты{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Реквизиты</h1>
+  <p class="sub">Данные Исполнителя и заказчиков для шапки акта выполненных работ 101 РС: наименование, ИНН/КПП, адрес, банк. Заполни один раз — подставятся во все акты.</p>
+</div>
+
+<article>
+  <header><strong>Исполнитель (вы)</strong></header>
+  <form method="POST" action="/requisites/executor">
+    <label>Полное наименование
+      <input name="executor_name" value="{{ owner.executor_name or '' }}"
+             placeholder="Индивидуальный предприниматель Иванов Иван Иванович">
+    </label>
+    <div class="grid">
+      <label>ИНН <input name="inn" value="{{ owner.inn or '' }}" placeholder="781699567368"></label>
+      <label>ОГРНИП <input name="ogrnip" value="{{ owner.ogrnip or '' }}" placeholder="319784700204223"></label>
+    </div>
+    <label>Юридический адрес
+      <textarea name="legal_address" rows="2" placeholder="РФ, 192283, г. Санкт-Петербург, ул. ...">{{ owner.legal_address or '' }}</textarea>
+    </label>
+    <label>Банк <input name="bank_name" value="{{ owner.bank_name or '' }}" placeholder='ФИЛИАЛ ПАО "БАНК УРАЛСИБ" ...'></label>
+    <div class="grid">
+      <label>Расчётный счёт (р/с) <input name="bank_account" value="{{ owner.bank_account or '' }}"></label>
+      <label>Корр. счёт (к/с) <input name="corr_account" value="{{ owner.corr_account or '' }}"></label>
+      <label>БИК <input name="bik" value="{{ owner.bik or '' }}" placeholder="044030706"></label>
+    </div>
+    <label>Подписант (кто подписывает акт)
+      <input name="signer_name" value="{{ owner.signer_name or '' }}" placeholder="Иванов И. И.">
+    </label>
+    <button type="submit">Сохранить реквизиты Исполнителя</button>
+  </form>
+</article>
+
+<article>
+  <header><strong>Заказчики</strong> <span style="color:var(--text-muted);">({{ customers|length }})</span></header>
+
+  {% for c in customers %}
+  <details>
+    <summary>{{ c.name }}{% if c.inn %} · ИНН {{ c.inn }}{% endif %}</summary>
+    <form method="POST" action="/customers/{{ c.id }}">
+      <label>Наименование <input name="name" value="{{ c.name }}" required></label>
+      <div class="grid">
+        <label>ИНН <input name="inn" value="{{ c.inn or '' }}"></label>
+        <label>КПП <input name="kpp" value="{{ c.kpp or '' }}"></label>
+      </div>
+      <label>Юридический адрес
+        <textarea name="legal_address" rows="2">{{ c.legal_address or '' }}</textarea>
+      </label>
+      <label>Банк <input name="bank_name" value="{{ c.bank_name or '' }}"></label>
+      <div class="grid">
+        <label>Расчётный счёт (р/с) <input name="bank_account" value="{{ c.bank_account or '' }}"></label>
+        <label>Корр. счёт (к/с) <input name="corr_account" value="{{ c.corr_account or '' }}"></label>
+        <label>БИК <input name="bik" value="{{ c.bik or '' }}"></label>
+      </div>
+      <div class="grid">
+        <label>Договор № <input name="contract_number" value="{{ c.contract_number or '' }}" placeholder="№521"></label>
+        <label>Дата договора <input type="date" name="contract_date" value="{{ c.contract_date.isoformat() if c.contract_date else '' }}"></label>
+        <label>Подписант <input name="signer_name" value="{{ c.signer_name or '' }}"></label>
+      </div>
+      <div class="actions">
+        <button type="submit">Сохранить</button>
+        <button type="submit" formaction="/customers/{{ c.id }}/delete" class="secondary outline"
+                onclick="return confirm('Удалить заказчика «{{ c.name }}»?')">Удалить</button>
+      </div>
+    </form>
+  </details>
+  {% else %}
+  <p style="color:var(--text-muted);">Пока нет ни одного заказчика. Добавьте первого ниже.</p>
+  {% endfor %}
+
+  <details>
+    <summary><strong>+ Добавить заказчика</strong></summary>
+    <form method="POST" action="/customers/add">
+      <label>Наименование <input name="name" placeholder='ООО "Рузисеть"' required></label>
+      <div class="grid">
+        <label>ИНН <input name="inn" placeholder="7802533479"></label>
+        <label>КПП <input name="kpp" placeholder="781701001"></label>
+      </div>
+      <label>Юридический адрес <textarea name="legal_address" rows="2"></textarea></label>
+      <label>Банк <input name="bank_name"></label>
+      <div class="grid">
+        <label>Расчётный счёт (р/с) <input name="bank_account"></label>
+        <label>Корр. счёт (к/с) <input name="corr_account"></label>
+        <label>БИК <input name="bik"></label>
+      </div>
+      <div class="grid">
+        <label>Договор № <input name="contract_number" placeholder="№521"></label>
+        <label>Дата договора <input type="date" name="contract_date"></label>
+        <label>Подписант <input name="signer_name"></label>
+      </div>
+      <button type="submit">Добавить заказчика</button>
+    </form>
+  </details>
+</article>
+
+<article>
+  <header>
+    <strong>Администраторы</strong>
+    <span style="color:var(--text-muted);">({{ admins|length }})</span>
+  </header>
+  <p class="sub" style="margin-top:-.3rem;">
+    Полный доступ к кабинету, как у вас. Админ открывает бот владельца, шлёт <code>/login</code>,
+    получает код и входит на странице входа. Свой Telegram ID он может узнать в боте
+    (он написан рядом с кодом) или у @userinfobot. Админу также приходят все
+    уведомления бота владельца (удобно для второго телефона) — это можно выключить кнопкой ниже.
+  </p>
+
+  {% for a in admins %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--border);">
+    <div>
+      <strong>{{ a.name or 'Админ' }}</strong>
+      <span style="color:var(--text-muted); font-size:.85rem;"> · Telegram ID {{ a.telegram_id }}</span>
+      {% if not a.notifications_enabled %}
+      <span style="color:var(--text-muted); font-size:.85rem;"> · 🔕 уведомления выключены</span>
+      {% endif %}
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <form method="POST" action="/admins/{{ a.id }}/notifications" style="margin:0;">
+        <button type="submit" class="secondary outline"
+                title="Дублировать этому админу уведомления бота владельца">
+          {{ '🔕 Выключить уведомления' if a.notifications_enabled else '🔔 Включить уведомления' }}
+        </button>
+      </form>
+      <form method="POST" action="/admins/{{ a.id }}/delete" style="margin:0;">
+        <button type="submit" class="secondary outline"
+                onclick="return confirm('Убрать доступ у «{{ a.name or a.telegram_id }}»?')">Убрать</button>
+      </form>
+    </div>
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted);">Пока нет ни одного администратора.</p>
+  {% endfor %}
+
+  <details style="margin-top:.75rem;">
+    <summary><strong>+ Добавить администратора</strong></summary>
+    <form method="POST" action="/admins/add">
+      <div class="grid">
+        <label>Имя (для себя) <input name="name" placeholder="Бухгалтер Анна"></label>
+        <label>Telegram ID <input name="telegram_id" inputmode="numeric" placeholder="123456789" required></label>
+      </div>
+      <button type="submit">Добавить администратора</button>
+    </form>
+  </details>
+</article>
+
+<article>
+  <header>
+    <strong>Устройства</strong>
+    <span style="color:var(--text-muted);">({{ sessions|length }})</span>
+  </header>
+  <p class="sub" style="margin-top:-.3rem;">
+    Где сейчас выполнен вход в кабинет. Вход не слетает сам — устройство работает,
+    пока его не завершить здесь или кнопкой «Выйти» на самом устройстве.
+  </p>
+
+  {% for s in sessions %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--border); flex-wrap:wrap;">
+    <div>
+      <b>{{ s.device }}</b>
+      {% if s.is_current %}<span class="pill pill--success">это устройство</span>{% endif %}
+      <div style="color:var(--text-muted); font-size:.85rem;">
+        {{ s.who }} · вход {{ s.created }} · был(а) {{ s.seen }} · IP {{ s.ip }}
+      </div>
+    </div>
+    {% if s.can_revoke %}
+    <form method="POST" action="/sessions/{{ s.id }}/revoke" style="margin:0;">
+      <button type="submit" class="secondary outline"
+              onclick="return confirm('Завершить вход на «{{ s.device }}»{{ ' (это устройство — вы выйдете сейчас)' if s.is_current else '' }}?')">
+        {{ 'Выйти здесь' if s.is_current else 'Завершить' }}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted);">Активных устройств нет (вход по старой 7-дневной сессии — после следующего входа устройства появятся здесь).</p>
+  {% endfor %}
+
+  {% if is_owner_viewer and sessions|length > 1 %}
+  <form method="POST" action="/sessions/revoke-others" style="margin-top:.75rem;">
+    <button type="submit" class="secondary outline"
+            onclick="return confirm('Завершить вход на всех устройствах, кроме этого?')">
+      Выйти на всех устройствах, кроме этого
+    </button>
+  </form>
+  {% endif %}
+</article>
+{% endblock %}

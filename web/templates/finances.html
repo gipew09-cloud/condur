@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Финансы{% endblock %}
+{% block head %}{% include "_sp_styles.html" %}{% endblock %}
+
+{% block content %}
+{% macro rub(value) -%}{{ "{:,.0f}".format(value|float).replace(',', ' ') }}{%- endmacro %}
+
+<div class="page-head">
+  <h1>Финансы</h1>
+  <p class="sub">Доходы, расходы и прибыль за выбранный период. График и прибыльность направлений строятся по датам «с… по…» — или жми быстрый период.</p>
+</div>
+
+<form method="GET" action="/finances" id="fin-period-form">
+  <div class="grid">
+    <label>С даты <input type="date" name="period_from" id="fin-from" value="{{ period_from }}"></label>
+    <label>По дату <input type="date" name="period_to" id="fin-to" value="{{ period_to }}"></label>
+    <label>&nbsp;<button type="submit">Показать</button></label>
+    <label>&nbsp;<a role="button" class="secondary outline" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}">⬇ Excel</a></label>
+    <label>&nbsp;<a role="button" class="secondary outline" href="/acts?period_from={{ period_from }}&period_to={{ period_to }}">📄 Акты выполненных работ</a></label>
+  </div>
+  <div style="display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; margin:-.25rem 0 .75rem;">
+    <span style="color:var(--text-muted); font-size:.85rem;">Быстрый период:</span>
+    <button type="button" class="secondary outline fin-preset" data-days="7" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">Неделя</button>
+    <button type="button" class="secondary outline fin-preset" data-days="30" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">Месяц</button>
+    <button type="button" class="secondary outline fin-preset" data-days="91" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">3 мес</button>
+    <button type="button" class="secondary outline fin-preset" data-days="182" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">6 мес</button>
+    <button type="button" class="secondary outline fin-preset" data-days="365" style="width:auto; margin:0; padding:.3rem .8rem; font-size:.85rem;">12 мес</button>
+  </div>
+</form>
+
+<div class="sp" style="margin-top: 1rem;">
+
+  <!-- KPI -->
+  <div class="sp-kpi">
+    <div class="c">
+      <div class="lbl">Доход за период</div>
+      <div class="val">{{ rub(summary.total_income) }} <span class="rub">₽</span></div>
+    </div>
+    <div class="c">
+      <div class="lbl">Расход за период</div>
+      <div class="val">{{ rub(summary.total_expense) }} <span class="rub">₽</span></div>
+    </div>
+    <div class="c dark">
+      <div class="lbl">Прибыль за период</div>
+      <div class="val">{{ rub(summary.profit) }} <span class="rub">₽</span></div>
+      <div class="delta {{ 'neg' if summary.profit < 0 else '' }}">маржа {{ "%.0f"|format(margin) }}%</div>
+    </div>
+    <div class="c">
+      <div class="lbl">В т.ч. топливо</div>
+      <div class="val">{{ rub(summary.fuel) }} <span class="rub">₽</span></div>
+    </div>
+  </div>
+
+  <!-- Графики -->
+  <div class="sp-charts">
+    <div class="sp-card">
+      <div class="sp-panel__head">
+        <div class="l">
+          <span class="ttl">Денежный поток</span>
+          <span class="meta">{{ period_from }} — {{ period_to }}</span>
+          <span class="sp-leg"><span class="sq"></span>Доход</span>
+          <span class="sp-leg"><span class="sq red"></span>Расход</span>
+          <span class="sp-leg"><span class="line"></span>Прибыль</span>
+        </div>
+      </div>
+      <div style="padding: 2px 16px 14px;">
+        <div style="position: relative; height: 240px;"><canvas id="cashflowChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="sp-card">
+      <div class="sp-panel__head"><span class="ttl">Прибыльность направлений</span></div>
+      {% if directions %}
+        <div class="sp-rank">
+          {% for d in directions %}
+          <div class="sp-rank__row">
+            <div class="sp-rank__top">
+              <span class="sp-rank__name" title="{{ d.route }}">{{ d.route }}</span>
+              <span class="sp-rank__val {{ 'neg' if d.profit < 0 else '' }}">{{ rub(d.profit) }} ₽</span>
+            </div>
+            <div class="sp-rank__bar"><i class="{{ 'neg' if d.profit < 0 else '' }}" style="width: {{ d.bar }}%;"></i></div>
+            <div class="sp-rank__meta">{{ d.trips }} рейс(ов) · выручка {{ rub(d.revenue) }} ₽</div>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="sp-empty">За период нет завершённых рейсов с выручкой.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ===== Ручные записи (функционал без изменений) ===== -->
+<h3 style="margin-top: 2rem;">Добавить запись вручную</h3>
+<form hx-post="/finances/add" hx-target="#entries-tbody" hx-swap="afterbegin" hx-on::after-request="this.reset()">
+  <div class="grid">
+    <label>Тип
+      <select name="type">
+        <option value="income">Доход</option>
+        <option value="expense">Расход</option>
+      </select>
+    </label>
+    <label>Категория <input type="text" name="category" placeholder="аренда / лизинг / прочее"></label>
+    <label>Сумма, ₽ <input type="text" name="amount_rub" required></label>
+    <label>Дата <input type="date" name="entry_date" value="{{ today }}" required></label>
+  </div>
+  <label>Описание <input type="text" name="description"></label>
+  <button type="submit">Добавить</button>
+</form>
+
+<h3 style="margin-top: 2rem;">Ручные записи за период</h3>
+{% if entries %}
+<table>
+  <thead><tr><th>Дата</th><th>Тип</th><th>Категория</th><th class="num">Сумма</th><th>Описание</th><th></th></tr></thead>
+  <tbody id="entries-tbody">
+    {% for entry in entries %}
+      {% include "_manual_entry_row.html" %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Записей нет.</p>
+<table style="display:none;"><tbody id="entries-tbody"></tbody></table>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+  const fmtShort = (v) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(v);
+  const cf = {{ cashflow | tojson }};
+  new Chart(document.getElementById('cashflowChart'), {
+    data: {
+      labels: cf.labels,
+      datasets: [
+        { type: 'bar', label: 'Доход', data: cf.revenue, backgroundColor: '#2f74f5', borderRadius: 4, maxBarThickness: 26, order: 2 },
+        { type: 'bar', label: 'Расход', data: cf.expenses, backgroundColor: 'rgba(197,54,43,.72)', borderRadius: 4, maxBarThickness: 26, order: 2 },
+        { type: 'line', label: 'Прибыль', data: cf.profit, borderColor: '#1f9d57', backgroundColor: 'rgba(31,157,87,.10)', borderWidth: 2, tension: .35, fill: false, pointRadius: 3, order: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtRub(c.parsed.y)}` } } },
+      scales: { x: { grid: { display: false } }, y: { ticks: { callback: fmtShort }, grid: { color: '#f1f3f6' } } },
+    },
+  });
+
+  // Быстрые периоды: Неделя/Месяц/3/6/12 мес — ставим даты и перезагружаем
+  // страницу, чтобы KPI, график и направления пересчитались согласованно.
+  document.querySelectorAll('.fin-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const days = parseInt(btn.dataset.days, 10);
+      const to = new Date();
+      const from = new Date();
+      from.setDate(to.getDate() - (days - 1));
+      const iso = (d) => d.toISOString().slice(0, 10);
+      document.getElementById('fin-from').value = iso(from);
+      document.getElementById('fin-to').value = iso(to);
+      document.getElementById('fin-period-form').submit();
+    });
+  });
+</script>
+{% endblock %}

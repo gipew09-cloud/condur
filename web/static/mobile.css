@@ -1,0 +1,135 @@
+/*
+  Мобильные правки для веб-кабинета. Подключается ПОСЛЕ pico.min.css.
+  Главное:
+    - <768px: таблицы превращаются в карточки через data-label
+    - <768px: верхняя навигация скрыта, видно фикс. нижнее меню
+    - все интерактивные элементы минимум 44px высотой
+    - графики не выходят за ширину экрана
+*/
+
+/* ====== Адаптивные таблицы ====== */
+@media (max-width: 768px) {
+  body > header.container,
+  body > main.container {
+    width: min(100% - 24px, 1600px);
+  }
+
+  nav.topbar {
+    padding: .5rem .65rem;
+  }
+
+  nav.topbar ul:first-child {
+    border-right: 0;
+    padding-right: 0;
+  }
+  nav.topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  nav.topbar .topbar-actions {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .brand-copy small {
+    max-width: 44vw;
+  }
+
+  table, thead, tbody, tr, th, td { display: block; }
+  thead tr { position: absolute; top: -9999px; left: -9999px; }
+  tr {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--pico-card-border-color);
+    border-radius: 8px;
+    background: var(--pico-card-background-color);
+  }
+  td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.45rem 0;
+    border: none;
+    border-bottom: 1px dashed var(--pico-muted-border-color);
+    text-align: right;
+  }
+  td:last-child { border-bottom: none; }
+  td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--pico-muted-color);
+    text-align: left;
+    margin-right: 1rem;
+    flex: 1;
+  }
+  /* кнопки в таблице — нормальный размер */
+  td a[role="button"], td button {
+    min-height: 44px;
+    padding: 0.4rem 0.8rem;
+  }
+
+  /* верхняя навигация прячется, используем нижнюю */
+  header > nav.topbar > .topbar-main { display: none; }
+  body { padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
+
+  /* нижнее меню */
+  .bottom-nav {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: flex-start;
+    gap: 0;
+    background: var(--pico-card-background-color);
+    border-top: 1px solid var(--pico-card-border-color);
+    padding: 0.35rem 0 max(0.35rem, env(safe-area-inset-bottom, 0px));
+    z-index: 100;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .bottom-nav::-webkit-scrollbar { display: none; }
+  .bottom-nav a {
+    flex: 0 0 76px;
+    text-align: center;
+    text-decoration: none;
+    color: var(--pico-muted-color);
+    font-size: 0.68rem;
+    padding: 0.45rem 0.25rem;
+    min-height: 56px;
+    white-space: nowrap;
+  }
+  .bottom-nav a[aria-current="page"] {
+    color: var(--pico-primary);
+    font-weight: 600;
+  }
+  .bottom-nav a .bn-icon {
+    display: block;
+    font-size: 1.4rem;
+    line-height: 1.4;
+  }
+
+  /* интерактив минимум 44px */
+  button, input, select, a[role="button"] { min-height: 44px; }
+  input, select { font-size: 16px; /* предотвращает zoom-in на iOS */ }
+
+  .stats-issues__head { align-items: flex-start; flex-direction: column; }
+  .stats-issues__grid { grid-template-columns: 1fr; }
+  .stats-issue {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: .65rem;
+  }
+  .stats-issue__pill {
+    grid-column: 2;
+    justify-self: start;
+    white-space: normal;
+  }
+}
+
+/* десктоп — нижнее меню скрыто */
+@media (min-width: 769px) {
+  .bottom-nav { display: none; }
+}
+
+/* графики — внутри scrollable-обёртки */
+canvas { max-width: 100%; height: auto !important; }

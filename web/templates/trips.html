@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Рейсы{% endblock %}
+{% block head %}{% include "_sp_styles.html" %}{% endblock %}
+{% set history_section = 'trips' %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<div class="page-head">
+  <h1>Рейсы</h1>
+  <p class="sub">Все рейсы автопарка. Фильтруйте по водителю и датам или добавьте рейс вручную.</p>
+</div>
+
+{% if request is defined and request.query_params.get('deleted') %}
+<p style="color:var(--pico-ins-color, green); font-weight:700;">Рейс удалён. Связанные расходы и события оставлены в истории.</p>
+{% endif %}
+
+<form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
+  <div class="grid">
+    <label>
+      Водитель
+      <select name="driver_id">
+        <option value="">— все —</option>
+        {% for d in drivers %}
+          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>С даты<input type="date" name="date_from" value="{{ filter_date_from }}"></label>
+    <label>По дату<input type="date" name="date_to" value="{{ filter_date_to }}"></label>
+  </div>
+  <button type="submit">Применить</button>
+</form>
+
+<details class="add-panel" id="add-trip" style="margin-top: 1rem;">
+  <summary class="add-toggle">➕ Добавить рейс вручную</summary>
+  <form action="/trips/add" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Водитель*
+        <select name="driver_id" required>
+          <option value="">—</option>
+          {% for d in drivers %}<option value="{{ d.id }}">{{ d.full_name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Машина*
+        <select name="vehicle_id" required>
+          <option value="">—</option>
+          {% for v in vehicles %}<option value="{{ v.id }}">{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Откуда*<input type="text" name="origin" required placeholder="Москва"></label>
+      <label>Куда*<input type="text" name="destination" required placeholder="Воронеж"></label>
+      <label>Выручка, ₽<input type="text" name="revenue_rub" inputmode="decimal" placeholder="необязательно"></label>
+      <label>Дата<input type="date" name="trip_date" value="{{ today }}"></label>
+    </div>
+    <button type="submit">Добавить рейс</button>
+    <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+      Рейс добавится как «вручную» (без GPS, км неизвестен).
+    </p>
+  </form>
+</details>
+
+<div id="trips-table" style="margin-top: 1rem;">
+  {% include "_trips_table.html" %}
+</div>
+{% endblock %}

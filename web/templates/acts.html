@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Акты выполненных работ{% endblock %}
+{% block head %}
+<style>
+  .trip-list { margin-top: 1rem; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .trip-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 14px; background: #f7f9fc; font-weight: 600; font-size: .9rem; }
+  .trip-pick { display: grid; grid-template-columns: auto 92px 1fr 1fr auto; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); cursor: pointer; font-size: .9rem; margin: 0; }
+  .trip-pick:hover { background: #f7f9fc; }
+  .trip-pick input { margin: 0; }
+  .trip-pick .r { font-weight: 600; }
+  .trip-pick .m { color: var(--text-muted); font-size: .82rem; }
+  .trip-pick .s { text-align: right; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  @media (max-width: 720px) { .trip-pick { grid-template-columns: auto 1fr auto; } .trip-pick .d, .trip-pick .m { display: none; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Акты выполненных работ</h1>
+  <p class="sub">Отметь галочками рейсы, заполни № и заказчика — и скачай акт выполненных работ в Excel (форма как в образце 101 РС).</p>
+</div>
+
+{% if not requisites_ready %}
+<article style="border-left:4px solid var(--danger); background:var(--danger-bg);">
+  Не заполнены реквизиты Исполнителя — в шапке акта будут пропуски.
+  <a href="/requisites">Заполнить реквизиты →</a>
+</article>
+{% endif %}
+{% if not customers %}
+<article style="border-left:4px solid var(--warn); background:var(--warn-bg);">
+  Нет ни одного заказчика. <a href="/requisites">Добавить заказчика →</a> — без него акт выйдет без реквизитов Заказчика.
+</article>
+{% endif %}
+
+<form method="GET" id="act-form">
+  <input type="hidden" name="selection_mode" value="checklist">
+  <div class="grid">
+    <label>С даты <input type="date" name="period_from" value="{{ period_from }}"></label>
+    <label>По дату <input type="date" name="period_to" value="{{ period_to }}"></label>
+    <label>Заказчик
+      <select name="customer_id">
+        {% for c in customers %}
+        <option value="{{ c.id }}" {% if sel_customer_id == (c.id | string) %}selected{% endif %}>{{ c.name }}</option>
+        {% else %}
+        <option value="">— нет заказчиков —</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <div class="grid">
+    <label>Название документа <input name="title" value="{{ act_title }}"></label>
+    <label>№ акта <input name="act_number" value="{{ act_number_val }}" placeholder="102"></label>
+    <label>Дата акта <input type="date" name="act_date" value="{{ act_date }}"></label>
+    <label>&nbsp;<button type="submit" formaction="/acts" class="secondary">Показать рейсы</button></label>
+  </div>
+
+  {% if trips %}
+  <div class="trip-list">
+    <div class="trip-head">
+      <label style="display:flex; gap:8px; align-items:center; margin:0; cursor:pointer;">
+        <input type="checkbox" id="pick-all" checked> Выбрать все
+      </label>
+      <span>Выбрано: <b id="pick-count">{{ total_trips }}</b> на <b id="pick-sum">{{ "{:,.0f}".format(total_amount).replace(',', ' ') }}</b> ₽</span>
+    </div>
+    {% for t in trips %}
+    <label class="trip-pick">
+      <input type="checkbox" name="trip_ids" value="{{ t.id }}" data-sum="{{ t.revenue }}" checked>
+      <span class="d">{{ t.date.strftime('%d.%m.%Y') if t.date else '—' }}</span>
+      <span class="r">{{ t.origin or '—' }} → {{ t.destination_address or t.destination or '—' }}</span>
+      <span class="m">{{ t.driver }} · {{ t.plate }}</span>
+      <span class="s">{{ "{:,.0f}".format(t.revenue).replace(',', ' ') }} ₽</span>
+    </label>
+    {% endfor %}
+  </div>
+  <div style="margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap;">
+    <button type="submit" formaction="/acts/export.xlsx" id="download-act">⬇ Скачать акт выполненных работ (.xlsx)</button>
+    <span id="empty-pick-note" style="display:none; color:var(--danger-text); align-self:center; font-size:.9rem;">Выберите хотя бы один рейс.</span>
+  </div>
+  <p style="color:var(--text-muted); font-size:.85rem; margin-top:.5rem;">В акт попадут только отмеченные рейсы, одним списком (1, 2, 3…).</p>
+  {% else %}
+  <p style="margin-top:1rem;">За период завершённых рейсов с выручкой нет. Выбери другой период и нажми «Показать рейсы».</p>
+  {% endif %}
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const form = document.getElementById('act-form');
+    if (!form) return;
+    const boxes = () => Array.from(form.querySelectorAll('input[name="trip_ids"]'));
+    const all = document.getElementById('pick-all');
+    const cnt = document.getElementById('pick-count');
+    const sum = document.getElementById('pick-sum');
+    function recalc() {
+      const checked = boxes().filter(b => b.checked);
+      const download = document.getElementById('download-act');
+      const emptyNote = document.getElementById('empty-pick-note');
+      if (cnt) cnt.textContent = checked.length;
+      if (sum) sum.textContent = new Intl.NumberFormat('ru-RU').format(
+        Math.round(checked.reduce((s, b) => s + parseFloat(b.dataset.sum || 0), 0)));
+      if (all) all.checked = checked.length === boxes().length && boxes().length > 0;
+      if (download) download.disabled = checked.length === 0;
+      if (emptyNote) emptyNote.style.display = checked.length === 0 ? 'inline-flex' : 'none';
+    }
+    if (all) all.addEventListener('change', () => {
+      boxes().forEach(b => { b.checked = all.checked; });
+      recalc();
+    });
+    boxes().forEach(b => b.addEventListener('change', recalc));
+    recalc();
+  })();
+</script>
+{% endblock %}

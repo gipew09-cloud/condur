@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Смена #{{ shift.id }}{% endblock %}
+{% set history_section = 'shifts' %}
+
+{% block content %}
+{% include "_history_nav.html" %}
+<p><a href="/shifts">← к списку смен</a></p>
+
+<div class="page-head">
+  <h1>Смена #{{ shift.id }}{% if shift.is_manual %} <span class="badge badge--neutral" style="font-size:.55em; vertical-align:middle;">вручную</span>{% endif %}</h1>
+  <p class="sub">{{ driver.full_name if driver else '—' }} · {{ vehicle.license_plate if vehicle else '—' }}</p>
+</div>
+<section class="kpi-grid">
+  <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
+  <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
+  <div class="kpi"><small>Начата</small><strong>{{ shift.started_at | localdt(owner.timezone) }}</strong></div>
+  <div class="kpi"><small>Завершена</small><strong>{{ shift.ended_at | localdt(owner.timezone) }}</strong></div>
+  <div class="kpi"><small>Одометр начало</small><strong>{{ shift.odometer_start or '—' }} км</strong></div>
+  <div class="kpi"><small>Одометр конец</small><strong>{{ shift.odometer_end or '—' }} км</strong></div>
+  <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km or '—' }} км</strong></div>
+  <div class="kpi"><small>Статус</small><strong><span class="pill {{ shift.status | pillclass }}">{% if shift.status == 'started' %}в смене{% elif shift.status == 'completed' %}завершена{% elif shift.status == 'cancelled' %}отменена{% else %}{{ shift.status }}{% endif %}</span></strong></div>
+</section>
+
+{% if request is defined and request.query_params.get('saved') %}
+<p style="color:var(--pico-ins-color, green);">✅ Сохранено: водитель/машина смены изменены, рейсы смены обновлены.</p>
+{% elif request is defined and request.query_params.get('err') == 'driver_busy' %}
+<p style="color:var(--pico-del-color, red);">⛔ Этот водитель сейчас в другой активной смене — сначала завершите её.</p>
+{% elif request is defined and request.query_params.get('err') == 'vehicle_busy' %}
+<p style="color:var(--pico-del-color, red);">⛔ Эта машина сейчас в другой активной смене — сначала завершите её.</p>
+{% endif %}
+
+<details class="add-panel" style="margin-top:1rem;">
+  <summary class="add-toggle">✏️ Исправить водителя / машину (миссклик)</summary>
+  <form action="/shifts/{{ shift.id }}/reassign" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Водитель
+        <select name="driver_id">
+          {% for d in all_drivers | default([]) %}
+          <option value="{{ d.id }}" {% if d.id == shift.driver_id %}selected{% endif %}>{{ d.full_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Машина
+        <select name="vehicle_id">
+          {% for v in all_vehicles | default([]) %}
+          <option value="{{ v.id }}" {% if v.id == shift.vehicle_id %}selected{% endif %}>{{ v.license_plate }}{% if v.brand %} — {{ v.brand }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <button type="submit">Сохранить</button>
+  </form>
+  <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+    Рейсы этой смены тоже переедут на нового водителя/машину. Зарплата пересчитается автоматически.
+  </p>
+</details>
+
+<h3 style="margin-top:1.5rem;">📸 Фото одометров</h3>
+<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
+  {% if shift.odometer_start_photo_url %}
+  <div>
+    <small>
+      Начало смены ({{ shift.odometer_start or '?' }} км)
+      {% if photo_start_at %} · загружено {{ photo_start_at | localdt(owner.timezone, '%d.%m в %H:%M') }}{% endif %}
+    </small>
+    <a href="/api/photo/{{ shift.odometer_start_photo_url }}" target="_blank">
+      <img src="/api/photo/{{ shift.odometer_start_photo_url }}"
+           style="width:100%; border-radius:8px; border:1px solid var(--border);">
+    </a>
+  </div>
+  {% endif %}
+  {% if shift.odometer_end_photo_url %}
+  <div>
+    <small>
+      Конец смены ({{ shift.odometer_end or '?' }} км)
+      {% if photo_end_at %} · загружено {{ photo_end_at | localdt(owner.timezone, '%d.%m в %H:%M') }}{% endif %}
+    </small>
+    <a href="/api/photo/{{ shift.odometer_end_photo_url }}" target="_blank">
+      <img src="/api/photo/{{ shift.odometer_end_photo_url }}"
+           style="width:100%; border-radius:8px; border:1px solid var(--border);">
+    </a>
+  </div>
+  {% endif %}
+  {% if not shift.odometer_start_photo_url and not shift.odometer_end_photo_url %}
+  <p>Фото не загружены.</p>
+  {% endif %}
+</div>
+
+{% if trips %}
+<h3 style="margin-top:1.5rem;">Рейсы смены</h3>
+<table>
+  <thead><tr><th>Маршрут</th><th>Статус</th><th class="num">Выручка</th><th class="num">Прибыль</th><th>ТТН</th></tr></thead>
+  <tbody>
+    {% for t in trips %}
+    <tr onclick="location.href='/trips/{{ t.id }}'" style="cursor:pointer;">
+      <td data-label="Маршрут">{{ t.origin or '—' }} → {{ t.destination or '—' }}</td>
+      <td data-label="Статус"><span class="pill {{ t.status | pillclass }}">{{ t.status | tstatus }}</span></td>
+      <td data-label="Выручка" class="num">
+        {{ "{:,.0f}".format(t.revenue_rub or 0).replace(',', ' ') }} ₽
+        {% if t.revenue_rub is none and t.driver_revenue_pending_rub %}
+          <br><span class="badge badge--warning">на подтверждении {{ "{:,.0f}".format(t.driver_revenue_pending_rub).replace(',', ' ') }} ₽</span>
+        {% endif %}
+      </td>
+      <td data-label="Прибыль" class="num">{{ "{:,.0f}".format(t.profit_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="ТТН">{% if t.waybill_photo_url %}📷{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if expenses %}
+<h3 style="margin-top:1.5rem;">Расходы смены</h3>
+<table>
+  <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
+  <tbody>
+    {% for e in expenses %}
+    <tr>
+      <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+      <td data-label="Категория">{{ e.category }}</td>
+      <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
+      <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
+      <td data-label="Чек">
+        {% if e.receipt_photo_url %}
+          <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">📷</a>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<section style="margin-top:1.5rem; padding:1rem; border:1px solid #fecaca; border-radius:12px; background:#fff7f7;">
+  <h3 style="margin-top:0; color:#991b1b;">Удаление смены</h3>
+  <p style="color:#991b1b; font-weight:700;">
+    Удаляйте только дубль или ошибочную тестовую смену. Рейсы этой смены будут удалены, расходы и события останутся в истории без привязки к смене.
+  </p>
+  <form action="/shifts/{{ shift.id }}/delete" method="post" onsubmit="return confirm('Удалить смену и её рейсы? Это действие нельзя отменить.');">
+    <button type="submit" style="width:auto; background:#dc2626; border-color:#dc2626;">Удалить смену</button>
+  </form>
+</section>
+{% endblock %}

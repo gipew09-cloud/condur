@@ -1,0 +1,405 @@
+{% extends "base.html" %}
+{% block title %}Карта{% endblock %}
+
+{% block head %}
+<style>
+  #map {
+    width: 100%;
+    height: calc(100vh - 200px);
+    min-height: 420px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .map-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 18px;
+    align-items: start;
+  }
+  .map-side {
+    display: grid;
+    gap: 14px;
+  }
+  .map-side-card,
+  .map-side-note {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .map-side-card__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 15px;
+    border-bottom: 1px solid #eef1f5;
+  }
+  .map-side-card__head strong {
+    font-size: .95rem;
+    font-weight: 800;
+  }
+  .map-legend,
+  .map-vehicle-list {
+    display: grid;
+    gap: 0;
+    padding: 6px 0;
+  }
+  .map-legend__row,
+  .map-vehicle-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 9px 15px;
+    border-bottom: 1px solid #f2f4f7;
+  }
+  .map-legend__row:last-child,
+  .map-vehicle-row:last-child { border-bottom: 0; }
+  .map-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-top: 5px;
+    background: #64748b;
+  }
+  .map-dot.moving { background: #16a34a; }
+  .map-dot.idle-engine { background: #d97706; }
+  .map-dot.off { background: #64748b; }
+  .map-dot.unknown { background: #94a3b8; }
+  .map-dot.stale { background: #ef4444; }
+  .map-dot.invalid {
+    background: transparent;
+    border: 2px dashed #d97706;
+  }
+  .map-legend__row span,
+  .map-vehicle-row span {
+    min-width: 0;
+  }
+  .map-vehicle-row b {
+    display: block;
+    font-size: .88rem;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .map-vehicle-row small {
+    color: var(--text-muted);
+    font-size: .78rem;
+    line-height: 1.3;
+  }
+  .map-side-note {
+    color: #9a5b00;
+    background: #fff8eb;
+    border-color: #f9d18b;
+    padding: 14px 15px;
+    font-size: .86rem;
+    line-height: 1.45;
+  }
+  @media (max-width: 768px) {
+    .map-layout { grid-template-columns: 1fr; }
+    #map { height: 62vh; border-radius: 12px; }
+  }
+
+  /* Водитель: цветной круг с инициалами */
+  .driver-marker {
+    width: 38px; height: 38px; border-radius: 50%;
+    border: 3px solid white;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, .25), 0 0 0 1px rgba(15, 23, 42, .08);
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: .82rem;
+    cursor: pointer; user-select: none;
+  }
+  .driver-marker.active { background: linear-gradient(135deg, #10b981, #047857); }
+  .driver-marker.idle { background: linear-gradient(135deg, #94a3b8, #475569); }
+
+  /* Машина: плашка с номером; цвет = статус движения */
+  .vehicle-marker {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 8px; border-radius: 8px; border: 2px solid white;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, .25);
+    color: #fff; font-weight: 800; font-size: .72rem;
+    white-space: nowrap; cursor: pointer; user-select: none;
+  }
+  .vehicle-marker.moving { background: linear-gradient(135deg, #16a34a, #15803d); }
+  .vehicle-marker.idle-engine { background: linear-gradient(135deg, #d97706, #b45309); }
+  .vehicle-marker.off { background: linear-gradient(135deg, #94a3b8, #475569); }
+  .vehicle-marker.unknown { background: linear-gradient(135deg, #94a3b8, #64748b); }
+  .vehicle-marker.stale { opacity: .6; }
+
+  /* Балуны */
+  .map-balloon h4 { margin: 0 0 6px; font-size: .95rem; }
+  .map-balloon .meta { color: #5b6573; font-size: .82rem; margin-top: 3px; }
+  .map-balloon .badge-active, .map-balloon .badge-idle {
+    display: inline-block; font-size: .74rem; font-weight: 700;
+    border-radius: 6px; padding: 2px 7px; margin-right: 6px;
+  }
+  .map-balloon .badge-active { background: #e7f6ec; color: #147a3d; }
+  .map-balloon .badge-idle { background: #f1f4f9; color: #5b6573; }
+  .map-balloon .badge-plate { font-weight: 800; font-size: .74rem; background: #f1f4f9; border: 1px solid #e4e8ef; border-radius: 6px; padding: 2px 6px; }
+
+  .map-nokey {
+    padding: 2rem; border: 1px dashed var(--border); border-radius: 12px;
+    color: var(--text-muted); background: #f8fafc;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Карта водителей и машин</h1>
+  <p class="sub">Машины — по GPS Stavtrack (обновление каждые 30 секунд, страницу перезагружать не нужно), водители — по отправленной геопозиции. Клик по метке — подробности.</p>
+</div>
+
+{% if yandex_maps_api_key %}
+<div class="map-layout">
+  <div id="map"></div>
+  <aside class="map-side" aria-label="Сводка по карте">
+    <section class="map-side-card">
+      <div class="map-side-card__head">
+        <strong>Легенда</strong>
+      </div>
+      <div class="map-legend">
+        <div class="map-legend__row"><i class="map-dot moving"></i><span>Едет по маршруту</span></div>
+        <div class="map-legend__row"><i class="map-dot idle-engine"></i><span>Стоит, двигатель работает</span></div>
+        <div class="map-legend__row"><i class="map-dot unknown"></i><span>Стоит, зажигание не передано</span></div>
+        <div class="map-legend__row"><i class="map-dot stale"></i><span>GPS давно не обновлялся</span></div>
+        <div class="map-legend__row"><i class="map-dot invalid"></i><span>GPS недостоверный</span></div>
+      </div>
+    </section>
+    <section class="map-side-card">
+      <div class="map-side-card__head">
+        <strong>Машины на карте</strong>
+        <span class="badge badge--neutral" id="map-vehicle-count">—</span>
+      </div>
+      <div class="map-vehicle-list" id="map-vehicle-list">
+        <div class="map-vehicle-row"><i class="map-dot off"></i><span><b>Загрузка</b><small>Получаю последние GPS-точки</small></span></div>
+      </div>
+    </section>
+    <section class="map-side-note">
+      <b>GPS может ошибаться.</b> Если сигнал глушится или давно не обновлялся, метку используем как подсказку, а не как окончательное доказательство.
+    </section>
+  </aside>
+</div>
+{% else %}
+<div class="map-nokey">
+  <b>Карта не настроена.</b> Задай переменную окружения <code>YANDEX_MAPS_API_KEY</code>
+  (Railway → сервис condur → Variables) и перезапусти сервис. Ключ берётся в
+  кабинете разработчика Яндекса: developer.tech.yandex.ru → JavaScript API.
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if yandex_maps_api_key %}
+<script src="https://api-maps.yandex.ru/2.1/?apikey={{ yandex_maps_api_key }}&lang=ru_RU"></script>
+<script>
+ymaps.ready(function () {
+  // Дефолт — Санкт-Петербург и Ленобласть, пока нет ни одной точки.
+  const map = new ymaps.Map('map', {
+    center: [59.93, 30.33],
+    zoom: 9,
+    controls: ['zoomControl', 'typeSelector', 'fullscreenControl'],
+  }, { suppressMapOpenBlock: true });
+
+  // HTML-плашки как раньше: у машины виден госномер прямо на карте.
+  const VehicleLayout = ymaps.templateLayoutFactory.createClass(
+    '<div class="vehicle-marker $[properties.markerCls]">🚚 $[properties.plate]</div>'
+  );
+  const DriverLayout = ymaps.templateLayoutFactory.createClass(
+    '<div class="driver-marker $[properties.markerCls]">$[properties.initials]</div>'
+  );
+
+  const vehicleMarkers = {};
+  const driverMarkers = {};
+  let didFitBounds = false;
+  let rcsAdded = false;
+
+  // РЦ — статичные точки, добавляем один раз (данные не меняются в течение дня).
+  function addRcs(rcs) {
+    if (rcsAdded || !rcs || !rcs.length) return;
+    rcsAdded = true;
+    for (const rc of rcs) {
+      const pm = new ymaps.Placemark([rc.lat, rc.lon], {
+        hintContent: 'РЦ ' + escapeHtml(rc.name),
+        balloonContentBody: `<div class="map-balloon"><h4>🏬 РЦ ${escapeHtml(rc.name)}</h4>` +
+          `<div class="meta">${escapeHtml(rc.address || '')}</div>` +
+          `<div class="meta">Геозона: приезд/отъезд машин фиксируются автоматически</div></div>`,
+      }, { preset: 'islands#blueCircleDotIcon', balloonPanelMaxMapArea: 0 });
+      map.geoObjects.add(pm);
+    }
+  }
+
+  function vehicleStatus(v) {
+    if (v.motion_status === 'moving') return { text: `🟢 ${v.motion_status_text}`, cls: 'moving' };
+    if (v.motion_status === 'idle_engine') return { text: `🟡 ${v.motion_status_text}`, cls: 'idle-engine' };
+    if (v.motion_status === 'stopped' && !v.ignition_known) return { text: '⚪️ стоит · зажигание не передано', cls: 'unknown' };
+    if (v.motion_status === 'stopped') return { text: '⚪️ стоит', cls: 'off' };
+    if (v.speed_kmh > 3) return { text: `🟢 едет · ${Math.round(v.speed_kmh)} км/ч`, cls: 'moving' };
+    if (v.ignition) return { text: '🟡 стоит, двигатель работает', cls: 'idle-engine' };
+    return { text: '⚪️ стоит · зажигание не передано', cls: 'unknown' };
+  }
+
+  function isFresh(v) {
+    return v.updated_at && (Date.now() - new Date(v.updated_at).getTime()) < 10 * 60 * 1000;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+  }
+
+  function updateVehiclePanel(vehicles) {
+    const count = document.getElementById('map-vehicle-count');
+    const list = document.getElementById('map-vehicle-list');
+    if (!count || !list) return;
+    count.textContent = `${vehicles.length}`;
+    if (!vehicles.length) {
+      list.innerHTML = '<div class="map-vehicle-row"><i class="map-dot off"></i><span><b>Нет точек</b><small>Проверьте ретрансляцию Stavtrack</small></span></div>';
+      return;
+    }
+    list.innerHTML = vehicles.map((v) => {
+      const st = vehicleStatus(v);
+      const fresh = isFresh(v);
+      const dot = !v.is_valid ? 'invalid' : (fresh ? st.cls : 'stale');
+      const detail = !v.is_valid
+        ? 'GPS недостоверный'
+        : (!fresh ? 'GPS устарел' : st.text.replace(/[🟢🟡⚪️]/g, '').trim());
+      const since = v.motion_duration_label && v.motion_duration_label !== '—'
+        ? ` · ${escapeHtml(v.motion_duration_label)}` : '';
+      return `<div class="map-vehicle-row">
+        <i class="map-dot ${dot}"></i>
+        <span><b>${escapeHtml(v.plate)}</b><small>${escapeHtml(detail)}${since}</small></span>
+      </div>`;
+    }).join('');
+  }
+
+  function vehicleBalloon(v) {
+    const st = vehicleStatus(v);
+    const since = (v.motion_since_label && v.motion_since_label !== '—')
+      ? `<div class="meta">⏱ ${escapeHtml(v.motion_since_label)} · уже ${escapeHtml(v.motion_duration_label || '—')}</div>` : '';
+    const shift = v.has_active_shift
+      ? '<span class="badge-active">🟢 В смене</span>'
+      : '<span class="badge-idle">⚪️ Без смены</span>';
+    const gps = v.is_valid ? '' :
+      '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
+    const stale = isFresh(v) ? '' : '<div class="meta">⚠️ Сигнал давно не обновлялся</div>';
+    return `<div class="map-balloon">
+      <h4>🚚 ${escapeHtml(v.plate)}</h4>
+      <div>${shift}</div>
+      <div class="meta">${escapeHtml(st.text)}</div>
+      ${since}${gps}${stale}
+      <div class="meta">🕒 ${escapeHtml(v.updated_label || '—')} (GPS Stavtrack)</div>
+    </div>`;
+  }
+
+  function driverBalloon(d) {
+    const ago = d.updated_at
+      ? new Date(d.updated_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : '—';
+    const phone = d.phone ? `<div class="meta">📞 <a href="tel:${escapeHtml(d.phone)}">${escapeHtml(d.phone)}</a></div>` : '';
+    const plate = d.plate ? `<span class="badge-plate">${escapeHtml(d.plate)}</span>` : '';
+    const status = d.active_shift
+      ? '<span class="badge-active">🟢 В смене</span>'
+      : '<span class="badge-idle">⚪️ Не в смене</span>';
+    return `<div class="map-balloon">
+      <h4>${escapeHtml(d.name || '—')}</h4>
+      <div>${status}${plate}</div>
+      ${phone}
+      <div class="meta">🕒 ${ago}</div>
+    </div>`;
+  }
+
+  function upsertPlacemark(store, key, coords, props, layout, shape) {
+    if (store[key]) {
+      store[key].geometry.setCoordinates(coords);
+      store[key].properties.set(props);
+      return store[key];
+    }
+    const pm = new ymaps.Placemark(coords, props, {
+      iconLayout: layout,
+      iconShape: shape,
+      balloonPanelMaxMapArea: 0,
+      hideIconOnBalloonOpen: false,
+    });
+    map.geoObjects.add(pm);
+    store[key] = pm;
+    return pm;
+  }
+
+  function removeMissing(store, seenKeys) {
+    for (const key of Object.keys(store)) {
+      if (!seenKeys.has(key)) {
+        map.geoObjects.remove(store[key]);
+        delete store[key];
+      }
+    }
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/drivers-locations');
+      if (!r.ok) return;
+      const data = await r.json();
+      addRcs(data.rcs);
+      updateVehiclePanel(data.vehicles || []);
+      const points = [];
+      const seenVehicles = new Set();
+      const seenDrivers = new Set();
+
+      for (const v of (data.vehicles || [])) {
+        const key = 'v' + v.vehicle_id;
+        seenVehicles.add(key);
+        const st = vehicleStatus(v);
+        const cls = st.cls + (isFresh(v) ? '' : ' stale');
+        upsertPlacemark(
+          vehicleMarkers, key, [v.lat, v.lon],
+          { plate: v.plate, markerCls: cls, balloonContentBody: vehicleBalloon(v) },
+          VehicleLayout,
+          { type: 'Rectangle', coordinates: [[-52, -16], [52, 16]] },
+        );
+        points.push([v.lat, v.lon]);
+      }
+
+      for (const d of (data.drivers || [])) {
+        const key = 'd' + d.driver_id;
+        seenDrivers.add(key);
+        upsertPlacemark(
+          driverMarkers, key, [d.lat, d.lon],
+          { initials: d.initials || '—', markerCls: d.active_shift ? 'active' : 'idle',
+            balloonContentBody: driverBalloon(d) },
+          DriverLayout,
+          { type: 'Circle', coordinates: [0, 0], radius: 20 },
+        );
+        points.push([d.lat, d.lon]);
+      }
+
+      removeMissing(vehicleMarkers, seenVehicles);
+      removeMissing(driverMarkers, seenDrivers);
+
+      // Камеру подгоняем ОДИН раз — дальше не дёргаем, чтобы карта не прыгала,
+      // пока владелец её рассматривает.
+      if (!didFitBounds && points.length > 0) {
+        didFitBounds = true;
+        if (points.length === 1) {
+          map.setCenter(points[0], 13);
+        } else {
+          map.setBounds(ymaps.util.bounds.fromPoints(points), { checkZoomRange: true, zoomMargin: 48 });
+        }
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  refresh();
+  setInterval(refresh, 30000);
+  // Вернулся на вкладку — обновляем сразу (фоновые вкладки браузер «усыпляет»).
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refresh();
+  });
+});
+</script>
+{% endif %}
+{% endblock %}

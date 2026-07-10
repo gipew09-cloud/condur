@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% block title %}Направления{% endblock %}
+{% block head %}
+<style>
+  .rc-tools { display: grid; gap: 14px; margin: 1.25rem 0; }
+  .rc-import { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .rc-import label { margin: 0; min-width: min(100%, 320px); }
+  .rc-list { display: grid; gap: 10px; margin-top: .75rem; }
+  .rc-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) minmax(220px, 2fr) minmax(140px, 1fr) 105px 105px 90px auto;
+    gap: 10px;
+    align-items: end;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .rc-row label { margin: 0; font-size: .78rem; color: var(--text-muted); font-weight: 600; }
+  .rc-row input, .rc-row textarea { margin: .25rem 0 0; }
+  .rc-row textarea { min-height: 44px; resize: vertical; }
+  .rc-row__actions { display: flex; gap: 8px; align-items: center; }
+  .rc-row__actions button { margin: 0; white-space: nowrap; }
+  @media (max-width: 980px) {
+    .rc-row { grid-template-columns: 1fr 1fr; }
+    .rc-row__actions { grid-column: 1 / -1; }
+  }
+  @media (max-width: 640px) {
+    .rc-row { grid-template-columns: 1fr; }
+    .rc-row__actions { flex-wrap: wrap; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Прибыль по направлениям</h1>
+  <p class="sub">Завершённые рейсы с выручкой, сгруппированные по маршруту. Ниже — справочник РЦ для канонических адресов в актах выполненных работ.</p>
+</div>
+
+{% if not rows %}
+  <p>Завершённых рейсов с указанной выручкой пока нет.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Направление</th>
+        <th class="num">Рейсов</th>
+        <th class="num">Ср. выручка</th>
+        <th class="num">Ср. прибыль</th>
+        <th class="num">Ср. маржа</th>
+        <th class="num">Итого прибыль</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {% set cls = 'row-loss' if row.avg_profit < 0 else 'row-profit' if row.avg_margin >= 20 else 'row-thin' %}
+      <tr class="{{ cls }}">
+        <td data-label="Направление"><b>{{ row.origin }} → {{ row.destination }}</b></td>
+        <td data-label="Рейсов" class="num">{{ row.trips_count }}</td>
+        <td data-label="Ср. выручка" class="num">{{ "{:,.0f}".format(row.avg_revenue).replace(',', ' ') }}</td>
+        <td data-label="Ср. прибыль" class="num">{{ "{:,.0f}".format(row.avg_profit).replace(',', ' ') }}</td>
+        <td data-label="Ср. маржа" class="num">{{ "{:.0f}".format(row.avg_margin) }}%</td>
+        <td data-label="Итого прибыль" class="num"><b>{{ "{:,.0f}".format(row.total_profit).replace(',', ' ') }}</b></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+
+<section class="section">
+  <h3>Справочник РЦ</h3>
+  <p class="sub">Название и алиасы помогают найти свободный текст из рейса, а адрес подставляется в акт выполненных работ.</p>
+
+  {% if rc_imported is not none %}
+  <article class="add-banner">
+    Импортировано или обновлено РЦ: <b>{{ rc_imported }}</b>.
+  </article>
+  {% endif %}
+
+  {% if request is defined and request.query_params.get('geo_none') %}
+  <article class="add-banner">
+    У всех РЦ координаты уже проставлены — автопоиску нечего делать.
+    Поправить точку можно мышкой в панели «🗺 Проверить и поправить точки на карте» ниже.
+  </article>
+  {% endif %}
+
+  {% if request is defined and request.query_params.get('geo_ok') is not none %}
+  <article class="add-banner">
+    📍 Координаты найдены: <b>{{ request.query_params.get('geo_ok') }}</b>
+    {%- if request.query_params.get('geo_fail') not in (none, '0') %} · не найдены: <b>{{ request.query_params.get('geo_fail') }}</b> (впишите широту/долготу вручную или уточните адрес){%- endif %}
+    {%- if request.query_params.get('geo_left') not in (none, '0') %} · осталось: <b>{{ request.query_params.get('geo_left') }}</b> — нажмите кнопку ещё раз{%- endif %}.
+    Теперь проверьте точки в панели «🗺 Проверить и поправить точки на карте» ниже —
+    автопоиск может промахнуться, метки двигаются мышкой.
+  </article>
+  {% endif %}
+
+  <div class="rc-tools">
+    <form method="post" action="/routes/rc/geocode" class="add-form" style="margin:0;">
+      <button type="submit">📍 Определить координаты по адресам</button>
+    </form>
+    <p class="sub" style="margin:.3rem 0 .8rem;">
+      Черновая расстановка: найдёт примерные точки для РЦ без координат (по адресу,
+      бесплатный сервис). Потом проверьте и поправьте метки мышкой на карте ниже —
+      финальное слово за вами. Координаты нужны для геозон: «приехал на РЦ / уехал,
+      стоял под выгрузкой N мин».
+    </p>
+
+    <details class="add-panel">
+      <summary class="add-toggle">Добавить РЦ вручную</summary>
+      <form method="post" action="/routes/rc/add" class="add-form">
+        <div class="add-grid">
+          <label>Название РЦ <input name="name" placeholder="РЦ Шушары" required></label>
+          <label>Адрес <input name="address" placeholder="Санкт-Петербург, ..." required></label>
+          <label>Алиасы <input name="aliases" placeholder="Шушары; РЦ СПб"></label>
+          <label>Широта <input name="latitude" inputmode="decimal" placeholder="59.8"></label>
+          <label>Долгота <input name="longitude" inputmode="decimal" placeholder="30.3"></label>
+          <label>Радиус зоны, м <input name="geofence_radius_m" inputmode="numeric" placeholder="400 (пусто = 400)"></label>
+        </div>
+        <button type="submit"><i class="ph ph-plus"></i> Добавить</button>
+      </form>
+    </details>
+
+    <details class="add-panel">
+      <summary class="add-toggle">Импортировать из Excel</summary>
+      <form method="post" action="/routes/rc/import" enctype="multipart/form-data" class="add-form rc-import">
+        <label>Файл .xlsx
+          <input type="file" name="file" accept=".xlsx" required>
+        </label>
+        <button type="submit"><i class="ph ph-upload-simple"></i> Импорт</button>
+      </form>
+    </details>
+  </div>
+
+  {% if centers and yandex_maps_api_key %}
+  <details class="add-panel" id="rc-map-panel">
+    <summary class="add-toggle">🗺 Проверить и поправить точки на карте</summary>
+    <p class="sub" style="margin:.4rem 0 .6rem;">
+      Красные метки можно <b>перетаскивать мышкой</b> — поставьте точку прямо на ворота склада.
+      Чтобы поставить точку РЦ, у которого её ещё нет: выберите его в списке и кликните по карте.
+      После перемещения не забудьте нажать «Сохранить» у этого РЦ в списке ниже (строка подсветится).
+    </p>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;">
+      <label style="margin:0;">Поставить точку для:
+        <select id="rc-pick" style="margin:.25rem 0 0;">
+          <option value="">— выберите РЦ —</option>
+          {% for c in centers %}
+          <option value="{{ c.id }}">{{ c.name }}{% if not c.latitude %} (без точки){% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div id="rcmap" style="width:100%; height:440px; border-radius:12px; border:1px solid var(--border); overflow:hidden;"></div>
+  </details>
+  {% endif %}
+
+  {% if centers %}
+  <div class="rc-list">
+    {% for c in centers %}
+    <form method="post" action="/routes/rc/{{ c.id }}" class="rc-row" id="rc-row-{{ c.id }}">
+      <label>Название
+        <input name="name" value="{{ c.name }}" required>
+      </label>
+      <label>Адрес
+        <textarea name="address" required>{{ c.address }}</textarea>
+      </label>
+      <label>Алиасы
+        <input name="aliases" value="{{ c.aliases or '' }}" placeholder="через ; или с новой строки">
+      </label>
+      <label>Широта
+        <input name="latitude" inputmode="decimal" value="{{ c.latitude or '' }}">
+      </label>
+      <label>Долгота
+        <input name="longitude" inputmode="decimal" value="{{ c.longitude or '' }}">
+      </label>
+      <label>Радиус, м
+        <input name="geofence_radius_m" inputmode="numeric" value="{{ c.geofence_radius_m or '' }}" placeholder="400" title="Зона «приехал»: расстояние от точки до машины. Большим складам ставьте больше (500–800).">
+      </label>
+      <div class="rc-row__actions">
+        <button type="submit"><i class="ph ph-check"></i> Сохранить</button>
+        <button type="submit" formaction="/routes/rc/{{ c.id }}/delete" class="secondary">
+          <i class="ph ph-eye-slash"></i> Скрыть
+        </button>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p>Справочник РЦ пока пуст. Добавь вручную или импортируй таблицу с колонками «Название/РЦ» и «Адрес».</p>
+  {% endif %}
+</section>
+
+<section class="section" style="margin-top:1.5rem;">
+  <h3>Маршруты для водителя (склад → РЦ)</h3>
+  <p class="sub">Из чего водитель выбирает рейс в боте. Сгруппированы по складу — в боте это «папки»: водитель жмёт склад, потом РЦ. Добавляй быстро: впиши склад и выбери РЦ из справочника.</p>
+
+  <details class="add-panel" open>
+    <summary class="add-toggle">+ Добавить маршрут</summary>
+    <form method="post" action="/routes/template/add" class="add-form">
+      <div class="add-grid">
+        <label>Склад (откуда)
+          <input name="origin" list="origins-datalist" placeholder="5.18 Склад" required>
+          <datalist id="origins-datalist">
+            {% for o in origins_list %}<option value="{{ o }}">{% endfor %}
+          </datalist>
+        </label>
+        <label>РЦ (куда)
+          <select name="destination" required>
+            <option value="">— выберите РЦ —</option>
+            {% for c in centers %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Груз (необязательно) <input name="cargo" placeholder="напр. овощи"></label>
+      </div>
+      <button type="submit"><i class="ph ph-plus"></i> Добавить маршрут</button>
+    </form>
+    <p class="sub" style="margin:.3rem 1rem 0;">Склад можно вписать новый или выбрать из уже введённых. РЦ берётся из справочника выше — сначала заведи РЦ там.</p>
+  </details>
+
+  {% if templates_by_origin %}
+  {% for origin, tmpls in templates_by_origin.items() %}
+  <div style="margin-top:.75rem;">
+    <div style="font-weight:800; margin-bottom:.3rem;">🏭 {{ origin }} <span style="color:var(--text-muted); font-weight:600;">({{ tmpls|length }})</span></div>
+    {% for t in tmpls %}
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--surface);">
+      <span>🏬 {{ t.destination }}{% if t.default_cargo %} <span style="color:var(--text-muted);">· {{ t.default_cargo }}</span>{% endif %}</span>
+      <form method="post" action="/routes/template/{{ t.id }}/delete" style="margin:0;"
+            onsubmit="return confirm('Удалить маршрут {{ origin }} → {{ t.destination }}?')">
+        <button type="submit" style="width:auto; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; font-size:.82rem;">🗑 Удалить</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:var(--text-muted);">Маршрутов пока нет. Добавь первый — склад и РЦ выше.</p>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if centers and yandex_maps_api_key %}
+<script src="https://api-maps.yandex.ru/2.1/?apikey={{ yandex_maps_api_key }}&lang=ru_RU"></script>
+<script>
+(function () {
+  const RCS = [
+    {% for c in centers %}
+    { id: {{ c.id }}, name: {{ c.name | tojson }},
+      lat: {{ c.latitude if c.latitude is not none else 'null' }},
+      lon: {{ c.longitude if c.longitude is not none else 'null' }} }{{ "," if not loop.last }}
+    {% endfor %}
+  ];
+  let map = null;
+  const placemarks = {};
+
+  // Пишем координаты в поля строки РЦ и подсвечиваем её — видно, что надо сохранить.
+  function setRowCoords(id, lat, lon) {
+    const row = document.getElementById('rc-row-' + id);
+    if (!row) return;
+    row.querySelector('input[name=latitude]').value = lat.toFixed(6);
+    row.querySelector('input[name=longitude]').value = lon.toFixed(6);
+    row.style.borderColor = '#2563eb';
+    row.style.boxShadow = '0 0 0 3px rgba(37, 99, 235, .18)';
+    const btn = row.querySelector('button[type=submit]');
+    if (btn && !btn.dataset.dirty) {
+      btn.dataset.dirty = '1';
+      btn.innerHTML = '💾 Сохранить точку';
+    }
+  }
+
+  function addOrMovePlacemark(rc, lat, lon) {
+    if (placemarks[rc.id]) {
+      placemarks[rc.id].geometry.setCoordinates([lat, lon]);
+      return placemarks[rc.id];
+    }
+    const pm = new ymaps.Placemark([lat, lon],
+      { iconCaption: rc.name, hintContent: 'РЦ ' + rc.name + ' — можно перетащить' },
+      { draggable: true, preset: 'islands#redDotIconWithCaption' });
+    pm.events.add('dragend', function () {
+      const c = pm.geometry.getCoordinates();
+      setRowCoords(rc.id, c[0], c[1]);
+    });
+    map.geoObjects.add(pm);
+    placemarks[rc.id] = pm;
+    return pm;
+  }
+
+  function initMap() {
+    if (map) return;
+    map = new ymaps.Map('rcmap', {
+      center: [59.93, 30.33], zoom: 9,
+      controls: ['zoomControl', 'typeSelector', 'searchControl', 'fullscreenControl'],
+    }, { suppressMapOpenBlock: true });
+
+    const points = [];
+    for (const rc of RCS) {
+      if (rc.lat !== null && rc.lon !== null) {
+        addOrMovePlacemark(rc, rc.lat, rc.lon);
+        points.push([rc.lat, rc.lon]);
+      }
+    }
+    if (points.length === 1) map.setCenter(points[0], 13);
+    else if (points.length > 1) {
+      map.setBounds(ymaps.util.bounds.fromPoints(points), { checkZoomRange: true, zoomMargin: 48 });
+    }
+
+    // Клик по карте — поставить/передвинуть точку выбранного в списке РЦ.
+    map.events.add('click', function (e) {
+      const sel = document.getElementById('rc-pick');
+      const id = parseInt(sel.value, 10);
+      if (!id) return;
+      const rc = RCS.find(r => r.id === id);
+      if (!rc) return;
+      const c = e.get('coords');
+      addOrMovePlacemark(rc, c[0], c[1]);
+      setRowCoords(rc.id, c[0], c[1]);
+    });
+  }
+
+  // Карта в свёрнутом <details> имеет нулевой размер — инициализируем при открытии.
+  document.getElementById('rc-map-panel').addEventListener('toggle', function () {
+    if (this.open) ymaps.ready(initMap);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d4ed8">
+  <title>{% block title %}TMS{% endblock %} — кабинет</title>
+
+  <!-- Шрифты: Onest для интерфейса (дизайн «Свежий путь»), JetBrains Mono для цифр -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+
+  <!-- Pico + наши слои стилей -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/static/cabinet.css">
+  <link rel="stylesheet" href="/static/mobile.css">
+
+  <!-- HTMX и Phosphor Icons -->
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+  {% block head %}{% endblock %}
+
+  <style>
+    /* === Локальные правила, специфичные для лейаута === */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+    .row-profit { background-color: var(--success-bg) !important; }
+    .row-thin   { background-color: var(--warn-bg) !important; }
+    .row-loss   { background-color: var(--danger-bg) !important; }
+
+    @media (min-width: 769px) {
+      table th { white-space: nowrap; }
+      table td { vertical-align: middle; }
+      table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      table td a[hx-get], table td a[hx-post] { white-space: nowrap; }
+      .edit-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin: 0; }
+      .edit-form label { display: flex; flex-direction: column; font-size: .75rem; color: var(--text-muted); margin: 0; min-width: 90px; }
+      .edit-form input, .edit-form select { margin: 0; }
+      .edit-form button { margin: 0; }
+    }
+    nav.topbar ul { gap: .15rem; }
+    .insights li { margin-bottom: .5rem; }
+    .actions { display: flex; gap: .5rem; }
+
+    /* HTMX-индикатор для точечных HTMX-запросов (формы редактирования и т.п.) */
+    .htmx-indicator { opacity: 0; transition: opacity .15s; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { opacity: 1; }
+  </style>
+</head>
+<body>
+{% set nav_alert_count = nav_alert_count | default(0) %}
+<header class="container">
+  <nav class="topbar">
+    <ul>
+      <li class="brand-lockup">
+        <span class="brand-mark"><i class="ph ph-truck"></i></span>
+        <span class="brand-copy">
+          <strong>Condur</strong>
+          <small>{{ owner.company_name if owner else 'TMS' }}</small>
+        </span>
+      </li>
+    </ul>
+    <ul class="topbar-main">
+      <li><a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house"></i> Главная</a></li>
+      <li><a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck"></i> Рейсы</a></li>
+      <li><a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users"></i> Водители</a></li>
+      <li><a href="/vehicles" {% if active_page == 'vehicles' %}aria-current="page"{% endif %}><i class="ph ph-van"></i> Машины</a></li>
+      <li><a href="/routes" {% if active_page == 'routes' %}aria-current="page"{% endif %}><i class="ph ph-arrows-left-right"></i> Направления</a></li>
+      <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin"></i> Карта</a></li>
+      <li><a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar"></i> Статистика</a></li>
+      <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet"></i> Финансы</a></li>
+      <li><a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card"></i> Реквизиты</a></li>
+    </ul>
+    <ul class="topbar-actions" aria-label="Быстрые действия">
+      <li>
+        <a class="nav-icon-button" href="/stats" title="Операционный контроль" aria-label="Операционный контроль">
+          <i class="ph ph-bell"></i>
+          {% if nav_alert_count %}<span class="nav-alert-dot" aria-hidden="true"></span>{% endif %}
+        </a>
+      </li>
+      <li>
+        <span class="nav-avatar" title="{{ owner.company_name if owner else 'Профиль' }}">
+          {{ owner.company_name[:2]|upper if owner and owner.company_name else 'ИП' }}
+        </span>
+      </li>
+      <li>
+        <a class="nav-icon-button" href="/logout" title="Выйти" aria-label="Выйти">
+          <i class="ph ph-sign-out"></i>
+        </a>
+      </li>
+    </ul>
+  </nav>
+</header>
+<main class="container">
+  {% block content %}{% endblock %}
+</main>
+
+<nav class="bottom-nav">
+  <a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house bn-icon"></i>Главная</a>
+  <a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck bn-icon"></i>Рейсы</a>
+  <a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users bn-icon"></i>Люди</a>
+  <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin bn-icon"></i>Карта</a>
+  <a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar bn-icon"></i>Статистика</a>
+  <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet bn-icon"></i>Деньги</a>
+  <a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card bn-icon"></i>Реквизиты</a>
+  <a href="/logout"><i class="ph ph-sign-out bn-icon"></i>Выйти</a>
+</nav>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>
