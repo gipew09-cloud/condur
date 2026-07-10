@@ -4122,11 +4122,21 @@ async def _trip_timeline(
             ))
         elif event_type == "trip_revenue_from_driver":
             amount = _event_payload_amount(payload, "revenue")
+            pending = trip.revenue_rub is None
             add(_timeline_item(
-                kind="warn", order=90, at=created_at,
-                title=f"Выручка {amount or '—'} — ждёт подтверждения",
-                subtitle="указал водитель · проверьте документы и подтвердите сумму",
-                action="confirm_revenue" if trip.revenue_rub is None else None,
+                # Пока владелец не решил — жёлтое «ждёт подтверждения». После
+                # решения это просто историческая отметка «водитель предложил».
+                kind="warn" if pending else "info",
+                order=90, at=created_at,
+                title=(
+                    f"Выручка {amount or '—'} — ждёт подтверждения" if pending
+                    else f"Водитель предложил выручку: {amount or '—'}"
+                ),
+                subtitle=(
+                    "указал водитель · проверьте документы и подтвердите сумму" if pending
+                    else "предложение водителя · владелец уже принял решение ниже"
+                ),
+                action="confirm_revenue" if pending else None,
             ))
         elif event_type == "trip_revenue_approved":
             amount = _event_payload_amount(payload, "revenue")

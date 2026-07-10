@@ -208,6 +208,45 @@ async def transfer_photo_to_owner(
     return message_id
 
 
+async def drop_revenue_prompt_buttons(
+    session: AsyncSession, trip_id: int, *, owner_bot: Bot | None = None,
+    driver_bot: Bot | None = None, side: str,
+) -> None:
+    """Погасить устаревшую кнопку «Указать выручку» у второй стороны.
+
+    Когда сумму первым указал водитель — у ВЛАДЕЛЬЦА кнопка «Указать выручку»
+    больше не нужна (ему придёт «Одобрить/Изменить»). И наоборот: указал
+    владелец — у водителя кнопка гаснет. Дешёво: один edit-запрос в Telegram.
+    side: 'owner' — гасим у владельца, 'driver' — у водителя.
+    """
+    from sqlalchemy import desc as _desc
+
+    from app.models import Event
+
+    row = (
+        await session.execute(
+            select(Event.payload)
+            .where(Event.trip_id == trip_id, Event.event_type == "trip_revenue_prompt")
+            .order_by(_desc(Event.created_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not row:
+        return
+    if side == "owner":
+        bot, chat_id, msg_id = owner_bot, row.get("owner_chat_id"), row.get("owner_msg_id")
+    else:
+        bot, chat_id, msg_id = driver_bot, row.get("driver_chat_id"), row.get("driver_msg_id")
+    if bot is None or not chat_id or not msg_id:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=msg_id, reply_markup=None
+        )
+    except Exception as exc:  # noqa: BLE001 — сообщение могли удалить/устареть
+        logger.info("Не смог убрать кнопку выручки (%s, trip=%s): %s", side, trip_id, exc)
+
+
 async def notify_driver(
     bot: Bot,
     session: AsyncSession,

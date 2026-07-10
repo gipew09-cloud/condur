@@ -23,7 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots import keyboards as kb
 from app.bots import messages as msg
-from app.bots.notifications import notify_owner, transfer_photo_to_owner
+from app.bots.notifications import (
+    drop_revenue_prompt_buttons,
+    notify_owner,
+    transfer_photo_to_owner,
+)
 from app.config import settings
 from app.bots.states import (
     AddManualShift,
@@ -1518,13 +1522,14 @@ async def _do_end_trip(
     # Водитель отдал груз — он лучше знает сумму. Даём ему по желанию указать
     # выручку; владельцу придёт «Одобрить/Изменить» (выручка — одно поле,
     # владелец всегда главный, двойного счёта нет).
-    await message.answer(
+    driver_prompt = await message.answer(
         msg.TRIP_DRIVER_REVENUE_ASK, reply_markup=kb.driver_revenue_keyboard(trip.id)
     )
 
     owner = await session.get(Owner, driver.owner_id)
+    owner_msg_id = None
     if owner is not None:
-        await notify_owner(
+        owner_msg_id = await notify_owner(
             owner_bot, session, owner,
             msg.NOTIFY_TRIP_COMPLETED.format(
                 driver=driver.full_name,
@@ -1533,6 +1538,19 @@ async def _do_end_trip(
             ),
             reply_markup=kb.trip_revenue_keyboard(trip.id),
         )
+    # Запоминаем id обоих сообщений с кнопками выручки: когда один укажет сумму,
+    # у другого кнопка гасится (иначе висят два «живых» запроса на один рейс).
+    await log_event(
+        session, owner_id=driver.owner_id, driver_id=driver.id,
+        shift_id=shift.id, trip_id=trip.id, event_type="trip_revenue_prompt",
+        payload={
+            "driver_chat_id": driver_prompt.chat.id,
+            "driver_msg_id": driver_prompt.message_id,
+            "owner_chat_id": owner.telegram_id if owner else None,
+            "owner_msg_id": owner_msg_id,
+        },
+    )
+    await session.commit()
 
 
 # =========================================================================
@@ -1627,6 +1645,11 @@ async def driver_revenue_amount(
     )
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
+        # Водитель указал первым → у владельца гасим «Указать выручку»,
+        # вместо неё он получит «Одобрить / Изменить» (одна живая кнопка).
+        await drop_revenue_prompt_buttons(
+            session, trip.id, owner_bot=owner_bot, side="owner"
+        )
         await notify_owner(
             owner_bot, session, owner,
             msg.NOTIFY_TRIP_REVENUE_FROM_DRIVER.format(
@@ -2427,6 +2450,22 @@ async def fallback_callback(call: CallbackQuery) -> None:
     await call.answer(
         "Эта кнопка устарела. Нажмите /status или /start.",
         show_alert=True,
+    )
+
+
+@driver_router.message(F.photo)
+async def stray_photo(message: Message, session: AsyncSession) -> None:
+    """Фото пришло, когда шаг уже закрыт: водитель сфоткал документ, а пока оно
+    грузилось — нажал другую кнопку, и состояние сбросилось. Раньше бот отвечал
+    «Не понял команду / start» — выглядело как ошибка. Теперь мягко объясняем."""
+    driver = await _driver_by_telegram(session, message.from_user.id)
+    if driver is None:
+        await message.answer(msg.DRIVER_LINK_EXPECTED)
+        return
+    await _refresh_ui(
+        message, session, driver,
+        "📷 Фото получено, но сейчас оно ни к чему не привязано.\n"
+        "Чтобы приложить документ к рейсу — нажмите «📄 Документ» и пришлите фото ещё раз.",
     )
 
 

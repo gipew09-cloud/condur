@@ -45,7 +45,7 @@ from app.bots.keyboards import (
     vehicle_type_keyboard,
     vehicles_list_keyboard,
 )
-from app.bots.notifications import notify_driver
+from app.bots.notifications import drop_revenue_prompt_buttons, notify_driver
 from app.bots.states import (
     AddDriver,
     AddRouteTemplate,
@@ -596,8 +596,12 @@ async def _finalize_driver(
     session: AsyncSession,
     driver_bot: Bot,
     shift_start_time: str | None,
+    owner_telegram_id: int,
 ) -> None:
-    owner = await _get_owner(session, message.from_user.id)
+    """owner_telegram_id передаём ЯВНО: при вызове из callback `message` — это
+    сообщение БОТА, и message.from_user указывал бы на бота (был баг «Пропустить»
+    → «Что-то пошло не так»)."""
+    owner = await _get_owner(session, owner_telegram_id)
     if owner is None:
         await message.answer(msg.SOMETHING_WRONG)
         await state.clear()
@@ -621,9 +625,7 @@ async def _finalize_driver(
     me = await driver_bot.get_me()
     link = f"https://t.me/{me.username}?start={invite_token}"
     await message.answer(msg.ADD_DRIVER_DONE.format(link=link))
-    owner_refreshed = await _get_owner(session, message.from_user.id)
-    if owner_refreshed is not None:
-        await _show_main_menu(message, owner_refreshed)
+    await _show_main_menu(message, owner)
 
 
 @owner_router.message(AddDriver.waiting_for_shift_start)
@@ -634,7 +636,10 @@ async def add_driver_shift_start(
     if not _SHIFT_TIME_RE.match(text):
         await message.answer(msg.ADD_DRIVER_SHIFT_TIME_INVALID)
         return
-    await _finalize_driver(message, state, session, driver_bot, shift_start_time=text)
+    await _finalize_driver(
+        message, state, session, driver_bot,
+        shift_start_time=text, owner_telegram_id=message.from_user.id,
+    )
 
 
 @owner_router.callback_query(
@@ -644,7 +649,12 @@ async def cb_add_driver_skip_shift_time(
     call: CallbackQuery, state: FSMContext, session: AsyncSession, driver_bot: Bot
 ) -> None:
     await call.message.delete()
-    await _finalize_driver(call.message, state, session, driver_bot, shift_start_time=None)
+    # ВАЖНО: telegram_id берём у нажавшего (call.from_user), а не из call.message
+    # (там автор — бот). Из-за этого «Пропустить» падало в SOMETHING_WRONG.
+    await _finalize_driver(
+        call.message, state, session, driver_bot,
+        shift_start_time=None, owner_telegram_id=call.from_user.id,
+    )
     await call.answer()
 
 
@@ -1378,7 +1388,9 @@ async def cb_trip_revenue_start(call: CallbackQuery, state: FSMContext, session:
 
 
 @owner_router.callback_query(F.data.startswith("trev:ok:"))
-async def cb_trip_revenue_approve(call: CallbackQuery, session: AsyncSession) -> None:
+async def cb_trip_revenue_approve(
+    call: CallbackQuery, session: AsyncSession, driver_bot: Bot
+) -> None:
     """Владелец одобряет выручку, указанную водителем."""
     try:
         trip_id = int(call.data.split(":")[2])
@@ -1401,6 +1413,8 @@ async def cb_trip_revenue_approve(call: CallbackQuery, session: AsyncSession) ->
     elif trip.revenue_rub is None:
         await call.answer("Нет суммы на подтверждении", show_alert=True)
         return
+    # выручка закрыта — у водителя кнопка «Указать выручку» больше не нужна
+    await drop_revenue_prompt_buttons(session, trip.id, driver_bot=driver_bot, side="driver")
     try:
         await call.message.edit_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001
@@ -1446,6 +1460,7 @@ async def set_trip_revenue(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
+    driver_bot: Bot,
 ) -> None:
     raw = (message.text or "").strip().replace(",", ".").replace(" ", "")
     try:
@@ -1496,6 +1511,9 @@ async def set_trip_revenue(
     margin_pct = (profit_estimate / revenue * Decimal(100)) if revenue > 0 else Decimal(0)
     await session.commit()
     await state.clear()
+
+    # Владелец закрыл выручку — у водителя кнопка «Указать выручку» больше не нужна.
+    await drop_revenue_prompt_buttons(session, trip.id, driver_bot=driver_bot, side="driver")
 
     await message.answer(
         msg.TRIP_PNL_CARD.format(
