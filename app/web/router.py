@@ -4531,39 +4531,61 @@ async def shift_detail(
     )
     times = {et: dt for et, dt in events_times.all()}
 
-    # Фактический выезд по GPS: первая точка со скоростью ≥5 км/ч после начала
-    # смены. Подтверждаем только тем, что реально видел трекер: если точек нет —
-    # блок не показываем вовсе, ничего не выдумываем.
+    # GPS-история смены: одна выборка точек → хронология «ехал/стоял/нет
+    # сигнала» и фактическое время выезда. Подтверждаем только тем, что реально
+    # видел трекер: нет точек — блоки не показываем вовсе, ничего не выдумываем.
     gps_seen = False
     gps_departure_at = None
     gps_departure_delay = None
+    gps_timeline: list[dict] = []
     if vehicle is not None and shift.started_at is not None:
         window_end = shift.ended_at or datetime.now(timezone.utc)
-        point_window = (
-            VehicleTelemetryPoint.vehicle_id == vehicle.id,
-            VehicleTelemetryPoint.is_valid.is_(True),
-            VehicleTelemetryPoint.observed_at >= shift.started_at,
-            VehicleTelemetryPoint.observed_at <= window_end,
-        )
-        gps_seen = (
+        pts = (
             await session.execute(
-                select(VehicleTelemetryPoint.id).where(*point_window).limit(1)
-            )
-        ).scalars().first() is not None
-        if gps_seen:
-            gps_departure_at = (
-                await session.execute(
-                    select(VehicleTelemetryPoint.observed_at)
-                    .where(*point_window, VehicleTelemetryPoint.speed_kmh >= 5)
-                    .order_by(VehicleTelemetryPoint.observed_at)
-                    .limit(1)
+                select(
+                    VehicleTelemetryPoint.observed_at,
+                    VehicleTelemetryPoint.speed_kmh,
                 )
-            ).scalars().first()
-        if gps_departure_at is not None:
+                .where(
+                    VehicleTelemetryPoint.vehicle_id == vehicle.id,
+                    VehicleTelemetryPoint.is_valid.is_(True),
+                    VehicleTelemetryPoint.observed_at.is_not(None),
+                    VehicleTelemetryPoint.observed_at >= shift.started_at,
+                    VehicleTelemetryPoint.observed_at <= window_end,
+                )
+                .order_by(VehicleTelemetryPoint.observed_at)
+                .limit(20000)
+            )
+        ).all()
+        gps_seen = bool(pts)
+        segments = telemetry_service.segment_movements(
+            [(t, s) for t, s in pts],
+            window_end=window_end,
+            tail_open=shift.status == "started",
+        )
+        first_move = next((s for s in segments if s["kind"] == "move"), None)
+        if first_move is not None:
+            gps_departure_at = first_move["start"]
             mins = int((gps_departure_at - shift.started_at).total_seconds() // 60)
             gps_departure_delay = (
                 f"через {mins} мин" if mins < 120 else f"через {mins // 60} ч {mins % 60} мин"
             )
+        seg_view = {
+            "move": ("🚚", "Ехал", "Едет"),
+            "stop": ("🅿️", "Стоял", "Стоит"),
+            "nosignal": ("📡", "Нет сигнала GPS", "Нет сигнала GPS"),
+        }
+        for seg in segments:
+            icon, past_label, now_label = seg_view[seg["kind"]]
+            gps_timeline.append({
+                "icon": icon,
+                "label": now_label if seg["ongoing"] else past_label,
+                "frm": fmt_dt(seg["start"], owner.timezone, "%H:%M"),
+                "to": "сейчас" if seg["ongoing"] else fmt_dt(seg["end"], owner.timezone, "%H:%M"),
+                "dur": telemetry_service.duration_label(seg["start"], seg["end"]),
+                "kind": seg["kind"],
+                "ongoing": seg["ongoing"],
+            })
 
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
     return templates.TemplateResponse(
@@ -4577,6 +4599,7 @@ async def shift_detail(
             "gps_seen": gps_seen,
             "gps_departure_at": gps_departure_at,
             "gps_departure_delay": gps_departure_delay,
+            "gps_timeline": gps_timeline,
             "all_drivers": all_drivers, "all_vehicles": all_vehicles,
             "active_page": "trips",
         },

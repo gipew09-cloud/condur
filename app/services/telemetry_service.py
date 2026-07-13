@@ -122,6 +122,92 @@ def duration_label(start: datetime | None, end: datetime | None = None) -> str:
     return f"{days} д {hours} ч" if hours else f"{days} д"
 
 
+# =========================================================================
+# Хронология смены: «ехал / стоял / нет сигнала» по точкам трекера.
+# Для карточки смены в кабинете — владелец видит всю историю дня.
+# =========================================================================
+SEGMENT_MOVE_KMH = Decimal("3")   # порог «едет» — как в vehicle_motion_status
+SEGMENT_MIN_SECONDS = 180         # короче — светофор/дрожание GPS, склеиваем
+SEGMENT_GAP_SECONDS = 15 * 60     # дыра между точками дольше — «нет сигнала»
+
+
+def _utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def segment_movements(
+    points: list[tuple[datetime, Decimal | float | int | None]],
+    *,
+    window_end: datetime,
+    tail_open: bool = False,
+) -> list[dict]:
+    """Разбить точки (observed_at, speed_kmh) на отрезки истории смены.
+
+    Возвращает [{"kind": "move"|"stop"|"nosignal", "start", "end", "ongoing"}].
+    Правила:
+      - скорость > SEGMENT_MOVE_KMH → «ехал», иначе «стоял»;
+      - разрыв между точками дольше SEGMENT_GAP_SECONDS → «нет сигнала»;
+      - отрезки короче SEGMENT_MIN_SECONDS приклеиваются к соседям
+        (остановка на светофоре не рвёт поездку, дрожание GPS не «едет»);
+      - последний отрезок тянется до window_end; tail_open=True помечает его
+        ongoing (смена ещё активна — «стоит/едет прямо сейчас»).
+    """
+    pts = sorted(
+        (( _utc(t), Decimal(str(s if s is not None else 0)) ) for t, s in points if t is not None),
+        key=lambda p: p[0],
+    )
+    if not pts:
+        return []
+    window_end = max(_utc(window_end), pts[-1][0])
+    gap = timedelta(seconds=SEGMENT_GAP_SECONDS)
+
+    raw: list[dict] = []
+
+    def push(kind: str, start: datetime, end: datetime) -> None:
+        if end <= start:
+            return
+        if raw and raw[-1]["kind"] == kind:
+            raw[-1]["end"] = end
+        else:
+            raw.append({"kind": kind, "start": start, "end": end})
+
+    for i, (t, speed) in enumerate(pts):
+        kind = "move" if speed > SEGMENT_MOVE_KMH else "stop"
+        next_t = pts[i + 1][0] if i + 1 < len(pts) else window_end
+        # состояние точки «живёт» максимум gap; дальше — честное «нет сигнала»
+        push(kind, t, min(next_t, t + gap))
+        if next_t > t + gap:
+            push("nosignal", t + gap, next_t)
+
+    # Склейка коротких всплесков с предыдущим отрезком.
+    smoothed: list[dict] = []
+    for seg in raw:
+        dur = (seg["end"] - seg["start"]).total_seconds()
+        if smoothed and seg["kind"] != "nosignal" and dur < SEGMENT_MIN_SECONDS:
+            smoothed[-1]["end"] = seg["end"]
+            continue
+        if smoothed and smoothed[-1]["kind"] == seg["kind"]:
+            smoothed[-1]["end"] = seg["end"]
+        else:
+            smoothed.append(dict(seg))
+    # Короткий первый отрезок вливаем во второй (иначе минутный «выезд»
+    # от дрожания GPS выглядел бы как настоящий).
+    if len(smoothed) >= 2:
+        first = smoothed[0]
+        if (
+            first["kind"] != "nosignal"
+            and (first["end"] - first["start"]).total_seconds() < SEGMENT_MIN_SECONDS
+        ):
+            smoothed[1]["start"] = first["start"]
+            smoothed.pop(0)
+
+    for seg in smoothed:
+        seg["ongoing"] = False
+    if tail_open and smoothed:
+        smoothed[-1]["ongoing"] = True
+    return smoothed
+
+
 def int_or_none(value) -> int | None:
     """Безопасно привести значение из JSON/env/form к int.
 

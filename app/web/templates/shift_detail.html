@@ -66,6 +66,29 @@
   </p>
 </details>
 
+{% if gps_timeline %}
+<h3 style="margin-top:1.5rem;">🛰 Хронология смены · по GPS</h3>
+<div style="border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--card-bg, #fff);">
+  {% for seg in gps_timeline %}
+  <div style="display:flex; align-items:center; gap:.7rem; padding:.55rem .9rem; flex-wrap:wrap;
+              {% if not loop.first %}border-top:1px solid var(--border);{% endif %}
+              {% if seg.ongoing %}background:rgba(37,99,235,.06);{% endif %}">
+    <span style="width:1.4rem; text-align:center;">{{ seg.icon }}</span>
+    <b style="min-width:8.5rem;">
+      {{ seg.label }}
+      {% if seg.ongoing %}<span class="pill pill--info" style="font-size:.68em; vertical-align:middle;">сейчас</span>{% endif %}
+    </b>
+    <span style="color:var(--text-muted);">{{ seg.frm }} → {{ seg.to }}</span>
+    <span style="margin-left:auto; font-weight:700;">{{ seg.dur }}</span>
+  </div>
+  {% endfor %}
+</div>
+<p class="sub" style="margin-top:.4rem;">
+  По точкам трекера: движение — скорость выше 3 км/ч; остановки короче 3 минут
+  (светофоры, шлагбаумы) не рвут поездку; «нет сигнала» — трекер молчал дольше 15 минут.
+</p>
+{% endif %}
+
 <h3 style="margin-top:1.5rem;">📸 Фото одометров</h3>
 <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:1rem;">
   {% if shift.odometer_start_photo_url %}
