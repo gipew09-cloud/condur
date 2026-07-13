@@ -156,3 +156,18 @@ def test_no_show_detector_survives_duplicate_shifts(loop_run):
         await engine.dispose()
 
     loop_run(scenario())
+
+
+def test_weekly_review_fires_after_daily_summary():
+    """Баг: недельная сводка приходила ДО дневной. Теперь: дневная в 21:00,
+    недельная в воскресенье 21:30 — строго после."""
+    import inspect
+
+    from app.services import scheduler_jobs as sj
+
+    daily_src = inspect.getsource(sj.daily_summary_job)
+    weekly_src = inspect.getsource(sj.weekly_review_job)
+    # дневная: окно 21:00..21:29
+    assert "local.hour != 21 or local.minute >= 30" in daily_src
+    # недельная: воскресенье, окно 21:30..21:59 (после дневной)
+    assert "local.weekday() != 6 or local.hour != 21 or local.minute < 30" in weekly_src

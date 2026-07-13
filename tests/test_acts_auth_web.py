@@ -308,14 +308,16 @@ def test_render_requisites_devices_owner_view():
     assert "/sessions/revoke-others" in html  # владелец видит «выйти на всех»
 
 
-def test_render_requisites_devices_admin_view_no_mass_logout():
-    # Админ: чужие сессии без кнопки, массового выхода нет.
+def test_render_requisites_devices_admin_view_full_access():
+    # Админ — «второй телефон» владельца: видит кнопки завершения у ВСЕХ
+    # устройств кабинета и массовый выход (политика изменена 2026-07-13,
+    # раньше чужие сессии были только у владельца — кнопки «Убрать» не хватало).
     html = _render("requisites.html", owner=OWNER, customers=[], admins=[],
-                   sessions=[_session_row(1, "Владелец", can_revoke=False),
+                   sessions=[_session_row(1, "Владелец"),
                              _session_row(2, "Бухгалтер Анна", current=True)],
                    is_owner_viewer=False, active_page="requisites")
-    assert "/sessions/revoke-others" not in html
-    assert "/sessions/1/revoke" not in html
+    assert "/sessions/revoke-others" in html
+    assert "/sessions/1/revoke" in html
     assert "/sessions/2/revoke" in html
 
 
