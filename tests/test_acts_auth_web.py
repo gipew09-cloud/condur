@@ -728,3 +728,78 @@ def test_render_vehicle_row_badge_reflects_real_state(state, badge):
     # «в рейсе» не должно показываться, когда машина просто в смене
     if state == "shift":
         assert "в рейсе" not in html
+
+
+# ------------------------------------------------- хронология смены по GPS
+from datetime import timedelta  # noqa: E402
+
+from app.services import telemetry_service as TS  # noqa: E402
+
+_BASE = datetime(2026, 7, 14, 8, 0, tzinfo=timezone.utc)
+
+
+def _points(*specs):
+    """specs: (минута_от_начала, скорость_кмч)."""
+    return [(_BASE + timedelta(minutes=m), Decimal(s)) for m, s in specs]
+
+
+def test_segments_stop_move_stop():
+    # стоял 30 мин → ехал час → стоял до конца окна
+    pts = _points(*[(m, 0) for m in range(0, 30, 5)],
+                  *[(m, 40) for m in range(30, 90, 5)],
+                  *[(m, 0) for m in range(90, 121, 5)])
+    segs = TS.segment_movements(pts, window_end=_BASE + timedelta(minutes=120))
+    assert [s["kind"] for s in segs] == ["stop", "move", "stop"]
+    assert segs[0]["start"] == _BASE
+    assert segs[1]["start"] == _BASE + timedelta(minutes=30)  # фактический выезд
+    assert segs[1]["end"] == _BASE + timedelta(minutes=90)
+    assert segs[-1]["end"] == _BASE + timedelta(minutes=120)
+
+
+def test_segments_traffic_light_does_not_split_trip():
+    # минутная остановка на светофоре посреди езды не рвёт поездку
+    pts = _points(*[(m, 40) for m in range(0, 20)],
+                  (20, 0),  # 1 минута стоянки
+                  *[(m, 40) for m in range(21, 40)])
+    segs = TS.segment_movements(pts, window_end=_BASE + timedelta(minutes=40))
+    assert [s["kind"] for s in segs] == ["move"]
+
+
+def test_segments_gap_marked_as_nosignal():
+    # точки шли до 10-й минуты, потом трекер молчал до 40-й
+    pts = _points(*[(m, 0) for m in range(0, 11, 5)],
+                  (40, 0))
+    segs = TS.segment_movements(pts, window_end=_BASE + timedelta(minutes=45))
+    kinds = [s["kind"] for s in segs]
+    assert kinds == ["stop", "nosignal", "stop"]
+    # «нет сигнала» начинается через 15 мин (grace) после последней точки
+    assert segs[1]["start"] == _BASE + timedelta(minutes=25)
+    assert segs[1]["end"] == _BASE + timedelta(minutes=40)
+
+
+def test_segments_tail_open_marks_ongoing():
+    pts = _points((0, 0), (5, 0))
+    segs = TS.segment_movements(
+        pts, window_end=_BASE + timedelta(minutes=10), tail_open=True
+    )
+    assert segs[-1]["ongoing"] is True
+
+
+def test_render_shift_detail_gps_timeline():
+    timeline = [
+        {"icon": "🅿️", "label": "Стоял", "frm": "08:00", "to": "08:30",
+         "dur": "30 мин", "kind": "stop", "ongoing": False},
+        {"icon": "🚚", "label": "Ехал", "frm": "08:30", "to": "09:30",
+         "dur": "1 ч", "kind": "move", "ongoing": False},
+        {"icon": "🅿️", "label": "Стоит", "frm": "09:30", "to": "сейчас",
+         "dur": "25 мин", "kind": "stop", "ongoing": True},
+    ]
+    html = _render_shift(gps_seen=True, gps_timeline=timeline)
+    assert "Хронология смены" in html
+    assert "08:30 → 09:30" in html
+    assert "Стоит" in html and "сейчас" in html
+
+
+def test_render_shift_detail_no_timeline_when_no_gps():
+    html = _render_shift(gps_seen=False, gps_timeline=[])
+    assert "Хронология смены" not in html
