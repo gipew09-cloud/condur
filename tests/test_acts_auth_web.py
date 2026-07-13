@@ -662,3 +662,69 @@ def test_no_route_decorator_on_helper_functions():
                         and node.name.startswith("_")):
                     offenders.append(f"{dec.func.attr.upper()} → {node.name} (строка {node.lineno})")
     assert not offenders, "роут-декоратор на функции-хелпере: " + "; ".join(offenders)
+
+
+# ------------------------------------------------- смена: фактический выезд по GPS
+OWNER_TZ = NS(**{**vars(OWNER), "timezone": "Europe/Moscow"})
+
+
+def _shift_ns(status="started"):
+    return NS(id=7, is_manual=False,
+              started_at=datetime(2026, 7, 14, 5, 0, tzinfo=timezone.utc),
+              ended_at=None, odometer_start=None, odometer_end=None,
+              distance_km=None, status=status, driver_id=1, vehicle_id=1,
+              odometer_start_photo_url=None, odometer_end_photo_url=None)
+
+
+def _render_shift(**over):
+    ctx = dict(owner=OWNER_TZ, shift=_shift_ns(), driver=NS(full_name="Саломов"),
+               vehicle=NS(license_plate="Т557ОС178"), trips=[], expenses=[],
+               photo_start_at=None, photo_end_at=None,
+               gps_seen=False, gps_departure_at=None, gps_departure_delay=None,
+               active_page="trips")
+    ctx.update(over)
+    return _render("shift_detail.html", **ctx)
+
+
+def test_render_shift_detail_gps_departure_shown():
+    html = _render_shift(
+        gps_seen=True,
+        gps_departure_at=datetime(2026, 7, 14, 5, 12, tzinfo=timezone.utc),
+        gps_departure_delay="через 12 мин",
+    )
+    assert "Выехал · по GPS" in html
+    assert "08:12" in html            # 05:12 UTC = 08:12 МСК
+    assert "через 12 мин" in html
+
+
+def test_render_shift_detail_gps_not_departed_yet():
+    html = _render_shift(gps_seen=True)  # смена активна, движения нет
+    assert "ещё не выехал" in html and "машина стоит" in html
+
+
+def test_render_shift_detail_no_gps_block_hidden():
+    html = _render_shift(gps_seen=False)
+    assert "по GPS" not in html  # нет телематики — ничего не выдумываем
+
+
+# ------------------------------------------------- машины: бейдж «в смене/в рейсе»
+def _vehicle_row(state):
+    v = NS(id=1, license_plate="Т557ОС178", brand="Рено", type="refrigerator",
+           stavtrack_object_id=None, fuel_norm_per_100km=None,
+           osago_expires=None, inspection_expires=None, tacho_expires=None)
+    return {"vehicle": v, "km": 0, "fuel": Decimal(0), "trips": 0,
+            "revenue": Decimal(0), "expense": Decimal(0), "profit": Decimal(0),
+            "margin": Decimal(0), "active": state != "free", "state": state}
+
+
+@pytest.mark.parametrize("state,badge", [
+    ("trip", "в рейсе"),
+    ("shift", "в смене"),
+    ("free", "свободна"),
+])
+def test_render_vehicle_row_badge_reflects_real_state(state, badge):
+    html = _render("_vehicle_row.html", row=_vehicle_row(state))
+    assert badge in html
+    # «в рейсе» не должно показываться, когда машина просто в смене
+    if state == "shift":
+        assert "в рейсе" not in html
