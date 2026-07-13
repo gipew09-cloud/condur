@@ -48,6 +48,7 @@ from app.models import (
     TripDocument,
     Vehicle,
     VehicleState,
+    VehicleTelemetryPoint,
     WebSession,
 )
 from app.config import settings
@@ -1292,7 +1293,8 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
     total_expense = approved
     profit = revenue - total_expense
     margin = (profit / revenue * Decimal(100)) if revenue > 0 else Decimal(0)
-    # машина сейчас в работе? (есть открытая смена) — для бейджа на карточке
+    # Статус для бейджа: «в рейсе» — только когда есть открытый рейс;
+    # открытая смена без рейса — «в смене» (раньше писали «в рейсе» — путало).
     active = (
         await session.execute(
             select(func.count(Shift.id)).where(
@@ -1300,6 +1302,18 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
             )
         )
     ).scalar_one() or 0
+    in_trip = False
+    if active:
+        in_trip = (
+            await session.execute(
+                select(Trip.id)
+                .where(
+                    Trip.vehicle_id == vehicle.id,
+                    Trip.status.in_(("created", "in_transit", "unloading")),
+                )
+                .limit(1)
+            )
+        ).scalars().first() is not None
     return {
         "vehicle": vehicle,
         "km": km, "fuel": fuel,
@@ -1309,6 +1323,7 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
         "profit": profit,
         "margin": margin,
         "active": bool(active),
+        "state": "trip" if in_trip else ("shift" if active else "free"),
     }
 
 
@@ -4515,6 +4530,41 @@ async def shift_detail(
         )
     )
     times = {et: dt for et, dt in events_times.all()}
+
+    # Фактический выезд по GPS: первая точка со скоростью ≥5 км/ч после начала
+    # смены. Подтверждаем только тем, что реально видел трекер: если точек нет —
+    # блок не показываем вовсе, ничего не выдумываем.
+    gps_seen = False
+    gps_departure_at = None
+    gps_departure_delay = None
+    if vehicle is not None and shift.started_at is not None:
+        window_end = shift.ended_at or datetime.now(timezone.utc)
+        point_window = (
+            VehicleTelemetryPoint.vehicle_id == vehicle.id,
+            VehicleTelemetryPoint.is_valid.is_(True),
+            VehicleTelemetryPoint.observed_at >= shift.started_at,
+            VehicleTelemetryPoint.observed_at <= window_end,
+        )
+        gps_seen = (
+            await session.execute(
+                select(VehicleTelemetryPoint.id).where(*point_window).limit(1)
+            )
+        ).scalars().first() is not None
+        if gps_seen:
+            gps_departure_at = (
+                await session.execute(
+                    select(VehicleTelemetryPoint.observed_at)
+                    .where(*point_window, VehicleTelemetryPoint.speed_kmh >= 5)
+                    .order_by(VehicleTelemetryPoint.observed_at)
+                    .limit(1)
+                )
+            ).scalars().first()
+        if gps_departure_at is not None:
+            mins = int((gps_departure_at - shift.started_at).total_seconds() // 60)
+            gps_departure_delay = (
+                f"через {mins} мин" if mins < 120 else f"через {mins // 60} ч {mins % 60} мин"
+            )
+
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
     return templates.TemplateResponse(
         "shift_detail.html",
@@ -4524,6 +4574,9 @@ async def shift_detail(
             "trips": trips, "expenses": expenses,
             "photo_start_at": times.get("shift_started"),
             "photo_end_at": times.get("shift_completed"),
+            "gps_seen": gps_seen,
+            "gps_departure_at": gps_departure_at,
+            "gps_departure_delay": gps_departure_delay,
             "all_drivers": all_drivers, "all_vehicles": all_vehicles,
             "active_page": "trips",
         },

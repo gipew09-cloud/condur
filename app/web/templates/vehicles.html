@@ -11,7 +11,7 @@
 {% if totals %}
 <div class="sp-kpi" style="margin-bottom:1.25rem;">
   <div class="c"><div class="lbl">Всего машин</div><div class="val">{{ totals.count }}</div></div>
-  <div class="c"><div class="lbl">Сейчас в рейсе</div><div class="val">{{ totals.in_work }}</div></div>
+  <div class="c"><div class="lbl">Сейчас в смене</div><div class="val">{{ totals.in_work }}</div></div>
   <div class="c"><div class="lbl">Выручка за месяц</div><div class="val">{{ "{:,.0f}".format(totals.revenue).replace(',', ' ') }} <span class="rub">₽</span></div></div>
   <div class="c dark"><div class="lbl">Прибыль за месяц</div><div class="val">{{ "{:,.0f}".format(totals.profit).replace(',', ' ') }} <span class="rub">₽</span></div>{% if in_minus %}<div class="delta neg">машин в минусе: {{ in_minus }}</div>{% endif %}</div>
 </div>

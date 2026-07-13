@@ -116,7 +116,7 @@
     </div>
     <div class="right">
       <a href="/trips#add-trip" class="sp-btn">+ Новый рейс</a>
-      <span class="sp-chip"><span class="sp-dot"></span>{{ overview.in_transit_count }} машин в рейсе</span>
+      <span class="sp-chip"><span class="sp-dot"></span>{{ overview.in_transit_count }} машин в смене</span>
       <span class="sp-ava">{{ (owner.company_name or 'СП')[:2] | upper }}</span>
     </div>
   </div>
@@ -215,7 +215,7 @@
     <div class="sp-card">
       <div class="sp-work__head">
         <span class="ttl">Машины сейчас в работе</span>
-        <span class="sub">{{ overview.in_transit_count }} в рейсе</span>
+        <span class="sub">{{ overview.in_transit_count }} в смене</span>
       </div>
       {% if overview.active_vehicles %}
         {% for w in overview.active_vehicles %}

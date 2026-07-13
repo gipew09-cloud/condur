@@ -19,6 +19,17 @@
   <div class="kpi"><small>Одометр конец</small><strong>{{ shift.odometer_end or '—' }} км</strong></div>
   <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km or '—' }} км</strong></div>
   <div class="kpi"><small>Статус</small><strong><span class="pill {{ shift.status | pillclass }}">{% if shift.status == 'started' %}в смене{% elif shift.status == 'completed' %}завершена{% elif shift.status == 'cancelled' %}отменена{% else %}{{ shift.status }}{% endif %}</span></strong></div>
+  {% if gps_seen %}
+  <div class="kpi"><small>Выехал · по GPS</small><strong>
+    {% if gps_departure_at %}
+      🚦 {{ gps_departure_at | localdt(owner.timezone, '%H:%M') }}{% if gps_departure_delay %} <span style="color:var(--text-muted); font-weight:400; font-size:.8em;">{{ gps_departure_delay }} после начала</span>{% endif %}
+    {% elif shift.status == 'started' %}
+      ⏳ ещё не выехал <span style="color:var(--text-muted); font-weight:400; font-size:.8em;">машина стоит</span>
+    {% else %}
+      — <span style="color:var(--text-muted); font-weight:400; font-size:.8em;">движение не зафиксировано</span>
+    {% endif %}
+  </strong></div>
+  {% endif %}
 </section>
 
 {% if request is defined and request.query_params.get('saved') %}

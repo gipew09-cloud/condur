@@ -27,7 +27,7 @@
 <div class="sp-vcard" id="vehicle-row-{{ v.id }}">
   <div class="sp-vcard__top">
     <span class="sp-plate">{{ v.license_plate }}</span>
-    {% if row.active %}<span class="pill pill--success">в рейсе</span>{% else %}<span class="pill pill--neutral">свободна</span>{% endif %}
+    {% if row.state == 'trip' %}<span class="pill pill--success">в рейсе</span>{% elif row.state == 'shift' %}<span class="pill pill--warn">в смене</span>{% else %}<span class="pill pill--neutral">свободна</span>{% endif %}
   </div>
   <div>
     <div class="sp-vcard__title">{{ v.brand or 'Машина' }}</div>
