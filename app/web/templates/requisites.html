@@ -178,7 +178,7 @@
   <p style="color:var(--text-muted);">Активных устройств нет (вход по старой 7-дневной сессии — после следующего входа устройства появятся здесь).</p>
   {% endfor %}
 
-  {% if is_owner_viewer and sessions|length > 1 %}
+  {% if sessions|length > 1 %}
   <form method="POST" action="/sessions/revoke-others" style="margin-top:.75rem;">
     <button type="submit" class="secondary outline"
             onclick="return confirm('Завершить вход на всех устройствах, кроме этого?')">

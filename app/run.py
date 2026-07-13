@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,12 @@ def run_migrations() -> None:
 
 
 def main() -> None:
+    # stream=sys.stdout: иначе INFO-строки уходят в stderr и Railway
+    # показывает их красным как ошибки.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
     )
 
     debug = service_role_debug()

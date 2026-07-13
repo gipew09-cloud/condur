@@ -399,7 +399,8 @@ async def silence_detector_job(owner_bot: Bot) -> None:
 
 
 # =========================================================================
-# Еженедельный разбор — воскресенье 20:00 локального времени владельца
+# Еженедельный разбор — воскресенье 21:30 локального времени владельца.
+# Нарочно ПОСЛЕ дневной сводки (21:00): сначала итог дня, потом итог недели.
 # =========================================================================
 async def weekly_review_job(owner_bot: Bot) -> None:
     async with async_session() as session:
@@ -407,8 +408,9 @@ async def weekly_review_job(owner_bot: Bot) -> None:
         for owner in owners_res.scalars().all():
             try:
                 local = now_in_tz(owner.timezone)
-                # воскресенье = weekday() == 6, окно 20:00..20:30
-                if local.weekday() != 6 or local.hour != 20 or local.minute >= 30:
+                # воскресенье = weekday() == 6, окно 21:30..21:59
+                # (дневная сводка уходит в 21:00..21:29 — недельная строго после неё)
+                if local.weekday() != 6 or local.hour != 21 or local.minute < 30:
                     continue
                 # уже отправляли сегодня?
                 already = await session.execute(

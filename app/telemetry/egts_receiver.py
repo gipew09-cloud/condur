@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -336,9 +337,12 @@ async def serve(config: ReceiverConfig | None = None) -> None:
 
 
 def main() -> None:
+    # stream=sys.stdout: иначе INFO-строки уходят в stderr и Railway
+    # показывает их красным как ошибки.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
     )
     asyncio.run(serve())
 

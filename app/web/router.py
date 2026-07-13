@@ -2059,8 +2059,9 @@ async def requisites_page(
             "created": fmt_dt(ws.created_at, owner.timezone, "%d.%m %H:%M"),
             "seen": fmt_dt(ws.last_seen_at, owner.timezone, "%d.%m %H:%M"),
             "is_current": current_ws is not None and ws.id == current_ws.id,
-            # свою сессию может завершить каждый; чужие — только владелец
-            "can_revoke": is_owner_viewer or (current_ws is not None and ws.id == current_ws.id),
+            # Админ — «второй телефон» владельца с полным доступом, поэтому
+            # завершать устройства кабинета может любой вошедший (владелец или админ).
+            "can_revoke": True,
         }
         for ws in ws_res.scalars().all()
     ]
@@ -2230,12 +2231,9 @@ async def sessions_revoke(
     if ws is None or ws.owner_id != owner.id:
         raise HTTPException(status_code=404)
     current_ws = await _session_from_request(request, session)
-    viewer_tid = await _viewer_telegram_id(request, session)
-    is_owner_viewer = viewer_tid is None or viewer_tid == owner.telegram_id
+    # Админ имеет полный доступ к кабинету (второй телефон владельца),
+    # поэтому завершать можно любое устройство ЭТОГО кабинета.
     is_own = current_ws is not None and ws.id == current_ws.id
-    # Владелец гасит любые устройства; админ — только своё текущее.
-    if not (is_owner_viewer or is_own):
-        raise HTTPException(status_code=403, detail="Только владелец может завершать чужие сессии")
     ws.revoked_at = datetime.now(timezone.utc)
     await session.commit()
     if is_own:
@@ -2252,11 +2250,8 @@ async def sessions_revoke_others(
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Владелец: выйти на всех устройствах, кроме текущего."""
+    """Выйти на всех устройствах кабинета, кроме текущего (владелец или админ)."""
     current_ws = await _session_from_request(request, session)
-    viewer_tid = await _viewer_telegram_id(request, session)
-    if viewer_tid is not None and viewer_tid != owner.telegram_id:
-        raise HTTPException(status_code=403, detail="Доступно только владельцу")
     stmt = update(WebSession).where(
         WebSession.owner_id == owner.id, WebSession.revoked_at.is_(None)
     )

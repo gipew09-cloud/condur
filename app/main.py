@@ -16,6 +16,7 @@ driver_bot мог отправить уведомление через owner_bot
 import asyncio
 import logging
 import os
+import sys
 
 import uvicorn
 from aiogram import Bot, Dispatcher
@@ -49,9 +50,12 @@ from app.services.scheduler_jobs import (
 )
 from app.web.router import app as web_app
 
+# stream=sys.stdout: по умолчанию логи идут в stderr, и Railway красит
+# обычные INFO-строки красным как ошибки. В stdout уровни отображаются честно.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
 )
 
 
