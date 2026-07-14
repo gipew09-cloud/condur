@@ -803,3 +803,63 @@ def test_render_shift_detail_gps_timeline():
 def test_render_shift_detail_no_timeline_when_no_gps():
     html = _render_shift(gps_seen=False, gps_timeline=[])
     assert "Хронология смены" not in html
+
+
+# ------------------------------------- стоянка → геозона РЦ, правка одометра
+def test_nearest_center_within_matches_radius():
+    from types import SimpleNamespace as NS2
+
+    from app.services import rc_service as RC
+
+    # Пулково-Волхонка условно: 59.816, 30.320; радиус по умолчанию 400 м
+    rc_a = NS2(name="РЦ Волхонка", latitude=Decimal("59.8160"),
+               longitude=Decimal("30.3200"), geofence_radius_m=None)
+    rc_b = NS2(name="РЦ Шушары", latitude=Decimal("59.7900"),
+               longitude=Decimal("30.3800"), geofence_radius_m=1000)
+    centers = [rc_a, rc_b]
+
+    # точка в 100 м от Волхонки → она
+    hit = RC.nearest_center_within(Decimal("59.8169"), Decimal("30.3200"), centers)
+    assert hit is rc_a
+    # точка в 700 м от Шушар (внутри их радиуса 1000) → Шушары
+    hit = RC.nearest_center_within(Decimal("59.7963"), Decimal("30.3800"), centers)
+    assert hit is rc_b
+    # точка в чистом поле → None
+    assert RC.nearest_center_within(Decimal("59.5"), Decimal("30.0"), centers) is None
+    # у РЦ нет координат → не участвует
+    assert RC.nearest_center_within(
+        Decimal("59.8160"), Decimal("30.3200"),
+        [NS2(name="без координат", latitude=None, longitude=None, geofence_radius_m=None)],
+    ) is None
+
+
+def test_parse_odometer_km():
+    from app.web.router import _parse_odometer_km
+
+    assert _parse_odometer_km("154820") == 154820
+    assert _parse_odometer_km(" 154 820 ") == 154820
+    assert _parse_odometer_km("") is None
+    assert _parse_odometer_km("   ") is None
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        _parse_odometer_km("12a34")
+    with _pytest.raises(ValueError):
+        _parse_odometer_km("12345678")  # длиннее 7 цифр
+
+
+def test_render_shift_detail_has_odometer_edit_form():
+    html = _render_shift()
+    assert "/shifts/7/odometer" in html
+    assert "Исправить одометр" in html
+    assert 'name="odometer_start"' in html and 'name="odometer_end"' in html
+
+
+def test_render_shift_detail_timeline_shows_place():
+    timeline = [
+        {"icon": "🅿️", "label": "Стоял", "frm": "08:02", "to": "08:43",
+         "dur": "40 мин", "kind": "stop", "ongoing": False, "place": "РЦ Волхонка"},
+        {"icon": "🚚", "label": "Ехал", "frm": "08:43", "to": "09:10",
+         "dur": "27 мин", "kind": "move", "ongoing": False, "place": None},
+    ]
+    html = _render_shift(gps_seen=True, gps_timeline=timeline)
+    assert "📍 РЦ Волхонка" in html
