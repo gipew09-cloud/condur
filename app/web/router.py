@@ -4545,6 +4545,8 @@ async def shift_detail(
                 select(
                     VehicleTelemetryPoint.observed_at,
                     VehicleTelemetryPoint.speed_kmh,
+                    VehicleTelemetryPoint.latitude,
+                    VehicleTelemetryPoint.longitude,
                 )
                 .where(
                     VehicleTelemetryPoint.vehicle_id == vehicle.id,
@@ -4559,7 +4561,7 @@ async def shift_detail(
         ).all()
         gps_seen = bool(pts)
         segments = telemetry_service.segment_movements(
-            [(t, s) for t, s in pts],
+            [(t, s) for t, s, _lat, _lon in pts],
             window_end=window_end,
             tail_open=shift.status == "started",
         )
@@ -4570,6 +4572,24 @@ async def shift_detail(
             gps_departure_delay = (
                 f"через {mins} мин" if mins < 120 else f"через {mins // 60} ч {mins % 60} мин"
             )
+        # Привязка стоянок к местам: середина стоянки попала в геозону РЦ →
+        # подписываем его имя. Мимо зон — без подписи, ничего не выдумываем.
+        centers = await _active_distribution_centers(session, owner.id)
+        geo_centers = [c for c in centers if c.latitude is not None and c.longitude is not None]
+
+        def _stop_place(seg) -> str | None:
+            if seg["kind"] != "stop" or not geo_centers:
+                return None
+            inside = [
+                (lat, lon) for t, _s, lat, lon in pts
+                if lat is not None and lon is not None and seg["start"] <= t <= seg["end"]
+            ]
+            if not inside:
+                return None
+            mid_lat, mid_lon = inside[len(inside) // 2]
+            rc = rc_service.nearest_center_within(mid_lat, mid_lon, geo_centers)
+            return rc.name if rc is not None else None
+
         seg_view = {
             "move": ("🚚", "Ехал", "Едет"),
             "stop": ("🅿️", "Стоял", "Стоит"),
@@ -4585,6 +4605,7 @@ async def shift_detail(
                 "dur": telemetry_service.duration_label(seg["start"], seg["end"]),
                 "kind": seg["kind"],
                 "ongoing": seg["ongoing"],
+                "place": _stop_place(seg),
             })
 
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
@@ -4679,6 +4700,52 @@ async def _reassign_targets(
     ):
         raise HTTPException(status_code=400, detail="Bad driver/vehicle id")
     return driver, vehicle
+
+
+def _parse_odometer_km(raw: str) -> int | None:
+    """'154 820' → 154820; пустая строка → None; мусор → ValueError."""
+    cleaned = (raw or "").strip().replace(" ", "")
+    if not cleaned:
+        return None
+    if not cleaned.isdigit() or len(cleaned) > 7:
+        raise ValueError(raw)
+    return int(cleaned)
+
+
+@app.post("/shifts/{shift_id}/odometer")
+async def shift_odometer_edit(
+    shift_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    odometer_start: Annotated[str, Form()] = "",
+    odometer_end: Annotated[str, Form()] = "",
+):
+    """Исправить показания одометра смены (опечатка при вводе).
+    Пробег смены — вычисляемая колонка, пересчитается сам; зарплата и
+    статистика считаются на лету, отдельного пересчёта не требуется."""
+    shift = await session.get(Shift, shift_id)
+    if shift is None or shift.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    try:
+        start = _parse_odometer_km(odometer_start)
+        end = _parse_odometer_km(odometer_end)
+    except ValueError:
+        return RedirectResponse(f"/shifts/{shift.id}?err=odo_invalid", status_code=303)
+    if start is not None and end is not None:
+        if end < start:
+            return RedirectResponse(f"/shifts/{shift.id}?err=odo_order", status_code=303)
+        if end - start > 5000:  # как в боте: за смену не бывает 5000+ км
+            return RedirectResponse(f"/shifts/{shift.id}?err=odo_toofar", status_code=303)
+    old = (shift.odometer_start, shift.odometer_end)
+    shift.odometer_start = start
+    shift.odometer_end = end
+    await log_event(
+        session, owner_id=owner.id, driver_id=shift.driver_id, shift_id=shift.id,
+        event_type="odometer_edited",
+        payload={"old_start": old[0], "old_end": old[1], "new_start": start, "new_end": end},
+    )
+    await session.commit()
+    return RedirectResponse(f"/shifts/{shift.id}?saved_odo=1", status_code=303)
 
 
 @app.post("/shifts/{shift_id}/reassign")

@@ -99,6 +99,30 @@ def haversine_m(
     return 2 * 6_371_000 * asin(sqrt(a))
 
 
+def nearest_center_within(
+    lat: Decimal | float,
+    lon: Decimal | float,
+    centers: list,
+    *,
+    default_radius_m: int = 400,
+):
+    """Ближайший РЦ, в чью геозону попадает точка (lat, lon). None — если
+    точка не попала ни в одну зону. Радиус у РЦ может быть свой
+    (geofence_radius_m), NULL = default_radius_m — как в геозонах scheduler."""
+    best = None
+    best_dist: float | None = None
+    for center in centers:
+        c_lat = getattr(center, "latitude", None)
+        c_lon = getattr(center, "longitude", None)
+        if c_lat is None or c_lon is None:
+            continue
+        radius = getattr(center, "geofence_radius_m", None) or default_radius_m
+        dist = haversine_m(lat, lon, c_lat, c_lon)
+        if dist <= float(radius) and (best_dist is None or dist < best_dist):
+            best, best_dist = center, dist
+    return best
+
+
 def _header_token(value) -> str:
     return route_key(str(value or ""))
 

@@ -34,10 +34,18 @@
 
 {% if request is defined and request.query_params.get('saved') %}
 <p style="color:var(--pico-ins-color, green);">✅ Сохранено: водитель/машина смены изменены, рейсы смены обновлены.</p>
+{% elif request is defined and request.query_params.get('saved_odo') %}
+<p style="color:var(--pico-ins-color, green);">✅ Одометр исправлен, пробег смены пересчитан.</p>
 {% elif request is defined and request.query_params.get('err') == 'driver_busy' %}
 <p style="color:var(--pico-del-color, red);">⛔ Этот водитель сейчас в другой активной смене — сначала завершите её.</p>
 {% elif request is defined and request.query_params.get('err') == 'vehicle_busy' %}
 <p style="color:var(--pico-del-color, red);">⛔ Эта машина сейчас в другой активной смене — сначала завершите её.</p>
+{% elif request is defined and request.query_params.get('err') == 'odo_invalid' %}
+<p style="color:var(--pico-del-color, red);">⛔ Не похоже на число километров — одометр не сохранён.</p>
+{% elif request is defined and request.query_params.get('err') == 'odo_order' %}
+<p style="color:var(--pico-del-color, red);">⛔ Одометр в конце смены не может быть меньше, чем в начале.</p>
+{% elif request is defined and request.query_params.get('err') == 'odo_toofar' %}
+<p style="color:var(--pico-del-color, red);">⛔ Больше 5000 км за смену — похоже на опечатку, одометр не сохранён.</p>
 {% endif %}
 
 <details class="add-panel" style="margin-top:1rem;">
@@ -66,6 +74,28 @@
   </p>
 </details>
 
+<details class="add-panel" style="margin-top:.6rem;">
+  <summary class="add-toggle">✏️ Исправить одометр (опечатка при вводе)</summary>
+  <form action="/shifts/{{ shift.id }}/odometer" method="post" class="add-form">
+    <div class="add-grid">
+      <label>Начало смены, км
+        <input type="number" name="odometer_start" min="0" max="2000000" inputmode="numeric"
+               value="{{ shift.odometer_start if shift.odometer_start is not none else '' }}"
+               placeholder="например, 154820">
+      </label>
+      <label>Конец смены, км
+        <input type="number" name="odometer_end" min="0" max="2000000" inputmode="numeric"
+               value="{{ shift.odometer_end if shift.odometer_end is not none else '' }}"
+               placeholder="пусто, если смена не закончена">
+      </label>
+    </div>
+    <button type="submit">Сохранить одометр</button>
+  </form>
+  <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+    Пробег смены и зарплата пересчитаются автоматически. Фото одометра ниже — сверяйтесь с ним.
+  </p>
+</details>
+
 {% if gps_timeline %}
 <h3 style="margin-top:1.5rem;">🛰 Хронология смены · по GPS</h3>
 <div style="border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--card-bg, #fff);">
@@ -79,6 +109,7 @@
       {% if seg.ongoing %}<span class="pill pill--info" style="font-size:.68em; vertical-align:middle;">сейчас</span>{% endif %}
     </b>
     <span style="color:var(--text-muted);">{{ seg.frm }} → {{ seg.to }}</span>
+    {% if seg.place %}<span style="font-weight:600;">📍 {{ seg.place }}</span>{% endif %}
     <span style="margin-left:auto; font-weight:700;">{{ seg.dur }}</span>
   </div>
   {% endfor %}
