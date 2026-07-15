@@ -171,3 +171,30 @@ def test_weekly_review_fires_after_daily_summary():
     assert "local.hour != 21 or local.minute >= 30" in daily_src
     # недельная: воскресенье, окно 21:30..21:59 (после дневной)
     assert "local.weekday() != 6 or local.hour != 21 or local.minute < 30" in weekly_src
+
+
+def test_idle_vehicle_note_hidden_while_shift_active(loop_run):
+    """Баг: «машина ещё ни разу не выезжала» показывалось, когда машина
+    прямо сейчас в открытой смене (противоречие с «в работе» на дашборде)."""
+    from app.web.insights import _idle_vehicles
+
+    async def scenario():
+        engine, sessionmaker = await _make_db()
+        async with sessionmaker() as session:
+            owner, driver, vehicle = await _seed(session)
+            await session.commit()
+            # рейсов нет, смены нет → замечание честное
+            notes = await _idle_vehicles(session, owner.id)
+            assert any("ни разу не выезжала" in n for n in notes)
+
+            # машина вышла в смену → замечание должно исчезнуть
+            session.add(Shift(
+                owner_id=owner.id, driver_id=driver.id,
+                vehicle_id=vehicle.id, status="started",
+            ))
+            await session.commit()
+            notes = await _idle_vehicles(session, owner.id)
+            assert notes == []
+        await engine.dispose()
+
+    loop_run(scenario())
