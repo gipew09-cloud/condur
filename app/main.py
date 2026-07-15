@@ -22,6 +22,7 @@ import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
@@ -80,6 +81,28 @@ def _redact_url(url: str) -> str:
     """Маскируем пароль в URL для логов: redis://default:SECRET@host -> redis://default:***@host"""
     import re as _re
     return _re.sub(r"(://[^:@/]+:)[^@/]+(@)", r"\1***\2", url)
+
+
+async def _setup_bot_commands(owner_bot: Bot) -> None:
+    """Меню команд (кнопка «☰» рядом с полем ввода) — только у бота ВЛАДЕЛЬЦА.
+
+    Выставляется при каждом старте — BotFather для этого не нужен.
+    Водителю меню нарочно не ставим: у него большие reply-кнопки, лишний
+    список команд только запутает. /wipe в меню владельца тоже НЕ показываем
+    (опасная команда), хотя набранная руками она работает.
+    """
+    try:
+        await owner_bot.set_my_commands([
+            BotCommand(command="start", description="Главное меню"),
+            BotCommand(command="calc", description="Калькулятор рейса"),
+            BotCommand(command="timezone", description="Часовой пояс"),
+            BotCommand(command="login", description="Код входа в веб-кабинет"),
+            BotCommand(command="tariffs", description="Тарифы"),
+            BotCommand(command="help", description="Справка"),
+            BotCommand(command="cancel", description="Отменить текущий ввод"),
+        ])
+    except Exception:  # noqa: BLE001 — меню не критично, бот работает и без него
+        logging.exception("Не удалось выставить меню команд бота владельца")
 
 
 def _require_bot_tokens() -> None:
@@ -182,6 +205,8 @@ async def main() -> None:
         max_instances=1, misfire_grace_time=3600,
     )
     scheduler.start()
+
+    await _setup_bot_commands(owner_bot)
 
     logging.info("Боты, веб-кабинет и планировщик запущены. Порт: %s. Ctrl+C для остановки.", port)
     try:

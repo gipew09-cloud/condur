@@ -87,13 +87,24 @@ async def _idle_vehicles(session: AsyncSession, owner_id: int) -> list[str]:
         .group_by(Trip.vehicle_id)
         .subquery()
     )
+    # Машины, которые прямо сейчас в открытой смене: писать про них
+    # «простаивает / ни разу не выезжала» — противоречие с шапкой дашборда,
+    # где та же машина показана «в работе».
+    working_res = await session.execute(
+        select(Shift.vehicle_id).where(
+            Shift.owner_id == owner_id, Shift.status == "started"
+        )
+    )
+    working_ids = {row[0] for row in working_res.all()}
     result = await session.execute(
-        select(Vehicle.license_plate, last_trip_subq.c.last_at)
+        select(Vehicle.id, Vehicle.license_plate, last_trip_subq.c.last_at)
         .outerjoin(last_trip_subq, last_trip_subq.c.vehicle_id == Vehicle.id)
         .where(Vehicle.owner_id == owner_id, Vehicle.is_active.is_(True))
     )
     insights = []
-    for plate, last_at in result.all():
+    for vid, plate, last_at in result.all():
+        if vid in working_ids:
+            continue  # машина в смене — не простаивает
         if last_at is None:
             insights.append(f"⏸ Машина <b>{plate}</b> ещё ни разу не выезжала.")
         elif last_at < cutoff:
