@@ -147,3 +147,21 @@ def test_bogus_huge_length_closes_immediately():
 def test_valid_packet_then_garbage_processes_first():
     # нормальный пакет обработан, мусор после него рвёт соединение
     assert _run_handler(_make_header(fdl=0) + b"\x77" * 20) == 1
+
+
+# ------------------------------------------- аналитика приездов на РЦ
+def test_typical_time_of_day_label():
+    assert telemetry_service.typical_time_of_day_label([]) is None
+    # приезды к ~8 утра, один ночной выброс не сдвигает медиану
+    minutes = [7 * 60 + 50, 8 * 60 + 10, 8 * 60 + 30, 2 * 60]
+    assert telemetry_service.typical_time_of_day_label(minutes) == "08:10"
+    assert telemetry_service.typical_time_of_day_label([505]) == "08:25"
+
+
+def test_best_arrival_hour_needs_enough_visits():
+    # в 7 утра выгрузка быстрее, чем в 10 — но нужен минимум 2 приезда в час
+    waits = [(7, 40), (7, 50), (10, 90), (10, 120), (13, 5)]
+    hour, avg = telemetry_service.best_arrival_hour(waits)
+    assert hour == 7 and avg == 45  # 13:00 с одним приездом не считается
+    assert telemetry_service.best_arrival_hour([(9, 30)]) is None
+    assert telemetry_service.best_arrival_hour([]) is None
