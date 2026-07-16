@@ -165,3 +165,69 @@ def test_best_arrival_hour_needs_enough_visits():
     assert hour == 7 and avg == 45  # 13:00 с одним приездом не считается
     assert telemetry_service.best_arrival_hour([(9, 30)]) is None
     assert telemetry_service.best_arrival_hour([]) is None
+
+
+def test_peer_reset_during_ack_does_not_raise():
+    """Инцидент дампа 16.07: пир оборвал соединение в момент отправки квитанции
+    → в логах сыпались трейсбеки «Unhandled exception in client_connected_cb».
+    Теперь обрыв — штатная ситуация, без исключений наружу."""
+    from app.telemetry.egts_receiver import ReceiverConfig, handle_client
+
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(_make_header(fdl=0))
+        writer = MagicMock()
+        writer.get_extra_info.return_value = ("10.0.0.1", 5555)
+        writer.drain = AsyncMock(side_effect=ConnectionResetError("Connection lost"))
+        writer.wait_closed = AsyncMock(side_effect=BrokenPipeError(32, "Broken pipe"))
+        cfg = ReceiverConfig(host="0.0.0.0", port=1, max_packet_bytes=512, idle_timeout_seconds=10)
+        with patch("app.telemetry.egts_receiver._process_packet", new=AsyncMock(return_value=b"ACK")):
+            # не должно вылететь исключение — иначе asyncio запишет unhandled
+            await asyncio.wait_for(handle_client(reader, writer, cfg), timeout=2)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+
+def test_mass_dump_logs_only_first_packets():
+    """Дамп истории — тысячи пакетов за секунды. Детальная строка лога пишется
+    только для первых пакетов соединения (лимит Railway 500 строк/сек)."""
+    from app.telemetry.egts_receiver import ReceiverConfig, handle_client
+
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(_make_header(fdl=0) * 6)  # 6 пакетов одним куском
+        reader.feed_eof()
+        writer = MagicMock()
+        writer.get_extra_info.return_value = ("10.0.0.1", 5555)
+        writer.drain = AsyncMock()
+        writer.wait_closed = AsyncMock()
+        cfg = ReceiverConfig(host="0.0.0.0", port=1, max_packet_bytes=512, idle_timeout_seconds=10)
+        proc = AsyncMock(return_value=b"")
+        with patch("app.telemetry.egts_receiver._process_packet", new=proc):
+            await asyncio.wait_for(handle_client(reader, writer, cfg), timeout=2)
+        flags = [call.kwargs["verbose"] for call in proc.await_args_list]
+        assert flags == [True, True, True, False, False, False]
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+
+def test_state_update_allowed_rejects_past_points():
+    """Баг «стоит уже 19 ч»: дамп истории шёл вперемешку с живыми пакетами,
+    и точка из прошлого перезатирала текущее состояние машины."""
+    from app.telemetry.egts_receiver import state_update_allowed
+
+    now = datetime(2026, 7, 16, 15, 0, tzinfo=timezone.utc)
+    past = now - timedelta(hours=14)
+    assert state_update_allowed(None, now) is True          # первого состояния нет
+    assert state_update_allowed(past, now) is True          # свежая точка — можно
+    assert state_update_allowed(now, now) is True           # та же секунда — можно
+    assert state_update_allowed(now, past) is False         # точка из прошлого — нельзя
+    assert state_update_allowed(now, None) is False         # без времени — нельзя

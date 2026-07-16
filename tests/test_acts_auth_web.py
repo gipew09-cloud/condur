@@ -411,7 +411,7 @@ def test_rc_xlsx_import_single_column_file():
 
 def test_render_trips_kpi():
     html = _render("trips.html", owner=OWNER, active_page="trips",
-                   drivers=[NS(id=1, full_name="Д")],
+                   drivers=[NS(id=1, full_name="Д", is_active=True)],
                    vehicles=[NS(id=1, license_plate="П", brand="")],
                    filter_driver_id=None, filter_date_from="", filter_date_to="",
                    today="2026-06-25",
@@ -863,3 +863,45 @@ def test_render_shift_detail_timeline_shows_place():
     ]
     html = _render_shift(gps_seen=True, gps_timeline=timeline)
     assert "📍 РЦ Волхонка" in html
+
+
+# ------------------------------------------- деньги по дню владельца, не UTC
+def test_owner_day_groups_by_owner_timezone():
+    """Баг: рейс, завершённый 16-го в 01:35 МСК (15-е 22:35 UTC), падал
+    в финансы «на вчера». _owner_day конвертирует в пояс владельца."""
+    from sqlalchemy import select
+
+    from app.models import Trip
+    from app.web.router import _owner_day
+
+    sql = str(select(_owner_day(Trip.completed_at, "Europe/Moscow")).compile())
+    assert "timezone(" in sql and "date(" in sql
+
+    # и никаких «голых» func.date по деньгам в роутере не осталось
+    import inspect
+
+    import app.web.router as router_mod
+    src = inspect.getsource(router_mod)
+    for line in src.splitlines():
+        code = line.split("#")[0]
+        # интересуют только настоящие запросы по колонкам, не докстринги
+        touches_column = any(m in code for m in ("Trip.", "Expense.", "Shift."))
+        if "func.date(" in code and touches_column and "func.timezone" not in code:
+            raise AssertionError(f"голый func.date: {line.strip()}")
+
+
+def test_render_trips_deleted_driver_marked():
+    """Два одинаковых имени в фильтре = старый удалённый + новый водитель.
+    Удалённый помечается, в форму добавления рейса не попадает."""
+    html = _render("trips.html", owner=OWNER, active_page="trips",
+                   drivers=[NS(id=1, full_name="Саломов Диёр", is_active=False),
+                            NS(id=2, full_name="Саломов Диёр", is_active=True)],
+                   vehicles=[NS(id=1, license_plate="П", brand="")],
+                   filter_driver_id=None, filter_date_from="", filter_date_to="",
+                   today="2026-06-25",
+                   totals={"count": 0, "revenue": Decimal(0), "profit": Decimal(0)},
+                   rows=[], page=1, has_next=False)
+    assert "Саломов Диёр (удалён)" in html
+    add_form_drivers = html.split('action="/trips/add"')[1].split("Машина*")[0]
+    assert 'value="2"' in add_form_drivers      # действующий — есть
+    assert 'value="1"' not in add_form_drivers  # удалённый — нет
