@@ -1313,7 +1313,9 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
 # растут бесконечно и зря едят диск на Railway.
 # =========================================================================
 RAW_PACKETS_KEEP_DAYS = 7
-TELEMETRY_POINTS_KEEP_DAYS = 60
+# GPS-точки — полгода: из них строится хронология смены и пробег. Рейсы,
+# смены, деньги и события (приезды на РЦ) не удаляются вообще никогда.
+TELEMETRY_POINTS_KEEP_DAYS = 180
 
 
 async def telemetry_cleanup_job(owner_bot: Bot) -> None:  # noqa: ARG001 — сигнатура как у всех джобов

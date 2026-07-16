@@ -123,6 +123,46 @@ def duration_label(start: datetime | None, end: datetime | None = None) -> str:
 
 
 # =========================================================================
+# Аналитика приездов на РЦ: типичное время приезда и «быстрый час».
+# =========================================================================
+def typical_time_of_day_label(minutes_of_day: list[int]) -> str | None:
+    """Медианное время суток «08:30» из списка минут от полуночи.
+
+    Медиана, а не среднее: один ночной приезд не сдвигает типичное время.
+    (Если приезды размазаны вокруг полуночи, медиана условна — для складов
+    с дневной работой это не мешает.)
+    """
+    if not minutes_of_day:
+        return None
+    vals = sorted(minutes_of_day)
+    mid = vals[len(vals) // 2]
+    return f"{mid // 60:02d}:{mid % 60:02d}"
+
+
+def best_arrival_hour(
+    hour_waits: list[tuple[int, int]], *, min_visits: int = 2
+) -> tuple[int, int] | None:
+    """Час приезда, в который выгрузка в среднем самая быстрая.
+
+    hour_waits: пары (час приезда 0..23, минут под выгрузкой).
+    Часы с меньше чем min_visits приездами не участвуют (одна удачная
+    выгрузка — не статистика). Возвращает (час, средние минуты) или None.
+    """
+    by_hour: dict[int, list[int]] = {}
+    for hour, waited in hour_waits:
+        by_hour.setdefault(hour, []).append(waited)
+    candidates = [
+        (sum(waits) // len(waits), hour)
+        for hour, waits in by_hour.items()
+        if len(waits) >= min_visits
+    ]
+    if not candidates:
+        return None
+    avg, hour = min(candidates)
+    return hour, avg
+
+
+# =========================================================================
 # Хронология смены: «ехал / стоял / нет сигнала» по точкам трекера.
 # Для карточки смены в кабинете — владелец видит всю историю дня.
 # =========================================================================

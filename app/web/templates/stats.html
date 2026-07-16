@@ -403,12 +403,14 @@
     {% if rc_summary %}
       <div class="stats-table-wrap">
         <table>
-          <thead><tr><th>РЦ</th><th class="num">Приездов</th><th class="num">Простой всего</th><th class="num">В среднем</th><th class="num">К выставлению</th></tr></thead>
+          <thead><tr><th>РЦ</th><th class="num">Приездов</th><th class="num">Обычно приезд</th><th class="num">Быстрее всего</th><th class="num">Простой всего</th><th class="num">В среднем</th><th class="num">К выставлению</th></tr></thead>
           <tbody>
             {% for r in rc_summary %}
             <tr class="{% if r.billable %}stats-row--danger{% endif %}">
               <td data-label="РЦ"><b>{{ r.name }}</b></td>
               <td data-label="Приездов" class="num">{{ r.visits }}</td>
+              <td data-label="Обычно приезд" class="num">{{ r.typical_label }}</td>
+              <td data-label="Быстрее всего" class="num">{{ r.best_label }}</td>
               <td data-label="Всего" class="num"><b>{{ r.total_label }}</b></td>
               <td data-label="В среднем" class="num">{{ r.avg_label }}</td>
               <td data-label="К выставлению" class="num {% if r.billable %}amount-danger{% else %}amount-muted{% endif %}">{{ r.billable_label }}</td>

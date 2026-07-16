@@ -246,6 +246,17 @@ ymaps.ready(function () {
     return v.updated_at && (Date.now() - new Date(v.updated_at).getTime()) < 10 * 60 * 1000;
   }
 
+  function signalAgeLabel(v) {
+    // Возраст ПОСЛЕДНЕГО сигнала GPS (не путать с длительностью стоянки).
+    if (!v.updated_at) return '';
+    const mins = Math.floor((Date.now() - new Date(v.updated_at).getTime()) / 60000);
+    if (mins < 1) return 'только что';
+    if (mins < 60) return `${mins} мин назад`;
+    const h = Math.floor(mins / 60), m = mins % 60;
+    if (h < 24) return m ? `${h} ч ${m} мин назад` : `${h} ч назад`;
+    return `${Math.floor(h / 24)} д ${h % 24} ч назад`;
+  }
+
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -268,8 +279,12 @@ ymaps.ready(function () {
       const detail = !v.is_valid
         ? 'GPS недостоверный'
         : (!fresh ? 'GPS устарел' : st.text.replace(/[🟢🟡⚪️]/g, '').trim());
-      const since = v.motion_duration_label && v.motion_duration_label !== '—'
-        ? ` · ${escapeHtml(v.motion_duration_label)}` : '';
+      // Для устаревшего сигнала показываем возраст СИГНАЛА, а не длительность
+      // стоянки — раньше тут была стоянка, и цифры сбивали с толку.
+      const since = !fresh
+        ? (signalAgeLabel(v) ? ` · ${escapeHtml(signalAgeLabel(v))}` : '')
+        : (v.motion_duration_label && v.motion_duration_label !== '—'
+            ? ` · ${escapeHtml(v.motion_duration_label)}` : '');
       return `<div class="map-vehicle-row">
         <i class="map-dot ${dot}"></i>
         <span><b>${escapeHtml(v.plate)}</b><small>${escapeHtml(detail)}${since}</small></span>
@@ -286,7 +301,8 @@ ymaps.ready(function () {
       : '<span class="badge-idle">⚪️ Без смены</span>';
     const gps = v.is_valid ? '' :
       '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
-    const stale = isFresh(v) ? '' : '<div class="meta">⚠️ Сигнал давно не обновлялся</div>';
+    const stale = isFresh(v) ? '' :
+      `<div class="meta">⚠️ Сигнал давно не обновлялся${signalAgeLabel(v) ? ` — ${escapeHtml(signalAgeLabel(v))}` : ''}</div>`;
     return `<div class="map-balloon">
       <h4>🚚 ${escapeHtml(v.plate)}</h4>
       <div>${shift}</div>

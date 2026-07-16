@@ -3204,23 +3204,39 @@ async def stats_page(
     rc_agg: dict[int, dict] = {}
     for r in journal_all:
         agg = rc_agg.setdefault(
-            r["rc_id"], {"name": r["rc_name"], "visits": 0, "total": 0, "billable": 0}
+            r["rc_id"], {
+                "name": r["rc_name"], "visits": 0, "total": 0, "billable": 0,
+                "arr_minutes": [], "hour_waits": [],
+            }
         )
         agg["visits"] += 1
         agg["total"] += r["waited_minutes"]
         agg["billable"] += r["billable_downtime_rub"]
+        # Время приезда в поясе владельца — для «обычно приезжает к…»
+        # и «в какой час выгрузка быстрее».
+        if r["arrived_at"] is not None:
+            local_arr = r["arrived_at"].astimezone(tz)
+            agg["arr_minutes"].append(local_arr.hour * 60 + local_arr.minute)
+            agg["hour_waits"].append((local_arr.hour, r["waited_minutes"]))
+
+    def _rc_row(a: dict) -> dict:
+        typical = telemetry_service.typical_time_of_day_label(a["arr_minutes"])
+        best = telemetry_service.best_arrival_hour(a["hour_waits"])
+        return {
+            "name": a["name"], "visits": a["visits"],
+            "total_label": _minutes_label(a["total"]),
+            "avg_label": _minutes_label(a["total"] // a["visits"]) if a["visits"] else "—",
+            "total": a["total"],
+            "billable_label": telemetry_service.rub_label(a["billable"]),
+            "billable": a["billable"],
+            "typical_label": f"к {typical}" if typical else "—",
+            "best_label": (
+                f"около {best[0]:02d}:00 (~{_minutes_label(best[1])})" if best else "—"
+            ),
+        }
+
     rc_summary = sorted(
-        (
-            {
-                "name": a["name"], "visits": a["visits"],
-                "total_label": _minutes_label(a["total"]),
-                "avg_label": _minutes_label(a["total"] // a["visits"]) if a["visits"] else "—",
-                "total": a["total"],
-                "billable_label": telemetry_service.rub_label(a["billable"]),
-                "billable": a["billable"],
-            }
-            for a in rc_agg.values()
-        ),
+        (_rc_row(a) for a in rc_agg.values()),
         key=lambda x: x["total"], reverse=True,
     )
 
