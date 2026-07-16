@@ -703,6 +703,18 @@ async def _do_end_shift(
             )
         if pending_revenue:
             owner_text += f"\n⏳ Выручка на подтверждении: <b>{pending_revenue:.0f} ₽</b>"
+        # Честность цифры: если по части рейсов выручка ещё не вписана,
+        # говорим это прямо — иначе «Рейсов: 3 · Выручка: 50000» выглядит
+        # как ошибка, хотя просто не всё введено.
+        no_revenue = sum(
+            1 for t in trips
+            if t.revenue_rub is None and t.driver_revenue_pending_rub is None
+        )
+        if no_revenue:
+            owner_text += (
+                f"\n⚠️ По {no_revenue} из {len(trips)} рейс(ам) выручка ещё не "
+                "указана — итог смены вырастет после ввода."
+            )
         await notify_owner(owner_bot, session, owner, owner_text)
         # Контроль топлива: сумма fuel-расходов смены vs норма
         await _maybe_fuel_overrun_alert(session, owner_bot, owner, driver, shift, approved_list)

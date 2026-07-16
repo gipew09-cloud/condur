@@ -237,10 +237,22 @@ def _month_window(today: date | None = None) -> tuple[datetime, datetime]:
     return start, datetime.now(timezone.utc)
 
 
-def _today_window() -> tuple[datetime, datetime]:
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    return start, now
+def _today_window(tz_name: str | None = None) -> tuple[datetime, datetime]:
+    """«Сегодня» в поясе владельца (полночь местная → UTC для фильтров)."""
+    tz = owner_tz(tz_name) if tz_name else timezone.utc
+    now_local = datetime.now(tz)
+    start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc), now_local.astimezone(timezone.utc)
+
+
+def _owner_day(column, tz_name: str | None):
+    """Дата в часовом поясе владельца для группировок денег по дням.
+
+    Голый func.date(...) режет сутки по Гринвичу: рейс, завершённый 16-го
+    в 01:35 МСК, в базе — 15-е 22:35 UTC, и его выручка «уезжала на вчера»
+    в финансах и на графиках. Считаем день по поясу владельца.
+    """
+    return func.date(func.timezone(tz_name or "Europe/Moscow", column))
 
 
 async def _period_totals(
@@ -640,7 +652,7 @@ async def dashboard(
     last_trips = list(last_trips_res.all())
 
     # график: по умолчанию 7 дней; период переключается на странице через /api/dashboard-chart
-    chart = await _dashboard_chart(session, owner.id, "7d")
+    chart = await _dashboard_chart(session, owner.id, "7d", owner.timezone)
 
     insights = await generate_insights(session, owner.id)
     overview = await _dashboard_overview(session, owner)
@@ -672,7 +684,7 @@ async def api_dashboard_chart(
     period: str = "7d",
 ):
     """JSON для переключателя периода графика на дашборде (7d / 30d / 12m)."""
-    return await _dashboard_chart(session, owner.id, period)
+    return await _dashboard_chart(session, owner.id, period, owner.timezone)
 
 
 # Календарные помощники и шаг графика — в timeutil (там и тестируются).
@@ -681,7 +693,9 @@ _month_floor = month_floor
 _add_months = add_months
 
 
-async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) -> dict:
+async def _dashboard_chart(
+    session: AsyncSession, owner_id: int, period: str, tz_name: str | None
+) -> dict:
     """
     Данные для графика дашборда за период 7д / 30д / 12 мес.
     Доход/расход считаем ТЕМ ЖЕ определением, что и финансовая матрица
@@ -690,7 +704,7 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
     НЕ суммируем — иначе двойной счёт. profit = доход − расход.
     """
     period = period if period in ("7d", "30d", "6m", "12m") else "7d"
-    today = date.today()
+    today = datetime.now(owner_tz(tz_name)).date()
 
     if period in ("6m", "12m"):
         months = 12 if period == "12m" else 6
@@ -725,13 +739,13 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
                 target[k] += Decimal(amount)
 
     rev_rows = await session.execute(
-        select(func.date(Trip.completed_at), func.coalesce(func.sum(Trip.revenue_rub), 0))
+        select(_owner_day(Trip.completed_at, tz_name), func.coalesce(func.sum(Trip.revenue_rub), 0))
         .where(
             Trip.owner_id == owner_id,
             Trip.status == "completed",
-            func.date(Trip.completed_at) >= start,
+            _owner_day(Trip.completed_at, tz_name) >= start,
         )
-        .group_by(func.date(Trip.completed_at))
+        .group_by(_owner_day(Trip.completed_at, tz_name))
     )
     accumulate(rev_rows.all(), revenue)
 
@@ -747,13 +761,13 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
     accumulate(inc_rows.all(), revenue)
 
     exp_rows = await session.execute(
-        select(func.date(Expense.created_at), func.coalesce(func.sum(Expense.amount_rub), 0))
+        select(_owner_day(Expense.created_at, tz_name), func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
             Expense.owner_id == owner_id,
             Expense.status == "approved",
-            func.date(Expense.created_at) >= start,
+            _owner_day(Expense.created_at, tz_name) >= start,
         )
-        .group_by(func.date(Expense.created_at))
+        .group_by(_owner_day(Expense.created_at, tz_name))
     )
     accumulate(exp_rows.all(), expense)
 
@@ -781,7 +795,7 @@ async def _dashboard_chart(session: AsyncSession, owner_id: int, period: str) ->
 
 
 async def _cashflow_chart(
-    session: AsyncSession, owner_id: int, df: date, dt: date
+    session: AsyncSession, owner_id: int, df: date, dt: date, tz_name: str | None
 ) -> dict:
     """Денежный поток за выбранный период «с… по…» (страница /finances).
     Те же определения дохода/расхода, что и в финансовой матрице."""
@@ -798,14 +812,14 @@ async def _cashflow_chart(
                 target[k] += Decimal(amount)
 
     rev_rows = await session.execute(
-        select(func.date(Trip.completed_at), func.coalesce(func.sum(Trip.revenue_rub), 0))
+        select(_owner_day(Trip.completed_at, tz_name), func.coalesce(func.sum(Trip.revenue_rub), 0))
         .where(
             Trip.owner_id == owner_id,
             Trip.status == "completed",
-            func.date(Trip.completed_at) >= df,
-            func.date(Trip.completed_at) <= dt,
+            _owner_day(Trip.completed_at, tz_name) >= df,
+            _owner_day(Trip.completed_at, tz_name) <= dt,
         )
-        .group_by(func.date(Trip.completed_at))
+        .group_by(_owner_day(Trip.completed_at, tz_name))
     )
     accumulate(rev_rows.all(), revenue)
     inc_rows = await session.execute(
@@ -820,14 +834,14 @@ async def _cashflow_chart(
     )
     accumulate(inc_rows.all(), revenue)
     exp_rows = await session.execute(
-        select(func.date(Expense.created_at), func.coalesce(func.sum(Expense.amount_rub), 0))
+        select(_owner_day(Expense.created_at, tz_name), func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
             Expense.owner_id == owner_id,
             Expense.status == "approved",
-            func.date(Expense.created_at) >= df,
-            func.date(Expense.created_at) <= dt,
+            _owner_day(Expense.created_at, tz_name) >= df,
+            _owner_day(Expense.created_at, tz_name) <= dt,
         )
-        .group_by(func.date(Expense.created_at))
+        .group_by(_owner_day(Expense.created_at, tz_name))
     )
     accumulate(exp_rows.all(), expense)
     mexp_rows = await session.execute(
@@ -1631,11 +1645,11 @@ async def finances_page(
     period_to: Annotated[str | None, Query()] = None,
 ):
     df, dt = _parse_period(period_from, period_to)
-    summary = await _finance_summary(session, owner.id, df, dt)
+    summary = await _finance_summary(session, owner.id, df, dt, owner.timezone)
 
     # Денежный поток за выбранный период: шаг (день/неделя/месяц) сам
     # подстраивается под длину диапазона «с… по…».
-    cashflow = await _cashflow_chart(session, owner.id, df, dt)
+    cashflow = await _cashflow_chart(session, owner.id, df, dt, owner.timezone)
 
     # Прибыльность направлений: прибыль завершённых рейсов по маршруту за период.
     dir_res = await session.execute(
@@ -1649,8 +1663,8 @@ async def finances_page(
         .where(
             Trip.owner_id == owner.id,
             Trip.status == "completed",
-            func.date(Trip.completed_at) >= df,
-            func.date(Trip.completed_at) <= dt,
+            _owner_day(Trip.completed_at, owner.timezone) >= df,
+            _owner_day(Trip.completed_at, owner.timezone) <= dt,
         )
         .group_by(Trip.origin, Trip.destination)
         .order_by(func.coalesce(func.sum(Trip.profit_rub), 0).desc())
@@ -1763,11 +1777,11 @@ async def finances_export(
     period_to: Annotated[str | None, Query()] = None,
 ):
     df, dt = _parse_period(period_from, period_to)
-    summary = await _finance_summary(session, owner.id, df, dt)
+    summary = await _finance_summary(session, owner.id, df, dt, owner.timezone)
 
     wb = _build_finance_workbook(summary, df, dt)
     await _fill_entries_sheet(wb, session, owner.id, df, dt)
-    await _fill_trips_sheet(wb, session, owner.id, df, dt)
+    await _fill_trips_sheet(wb, session, owner.id, df, dt, owner.timezone)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -2366,7 +2380,9 @@ async def _fill_entries_sheet(wb: Workbook, session, owner_id: int, df: date, dt
     _autosize(ws)
 
 
-async def _fill_trips_sheet(wb: Workbook, session, owner_id: int, df: date, dt: date) -> None:
+async def _fill_trips_sheet(
+    wb: Workbook, session, owner_id: int, df: date, dt: date, tz_name: str | None
+) -> None:
     ws = wb.create_sheet("Рейсы")
     ws.append(["Дата", "Маршрут", "Водитель", "Машина", "Выручка", "Топливо", "Прибыль"])
     trips_res = await session.execute(
@@ -2376,8 +2392,8 @@ async def _fill_trips_sheet(wb: Workbook, session, owner_id: int, df: date, dt: 
         .where(
             Trip.owner_id == owner_id,
             Trip.status == "completed",
-            func.date(Trip.completed_at) >= df,
-            func.date(Trip.completed_at) <= dt,
+            _owner_day(Trip.completed_at, tz_name) >= df,
+            _owner_day(Trip.completed_at, tz_name) <= dt,
         )
         .order_by(Trip.completed_at)
     )
@@ -2422,15 +2438,15 @@ def _parse_period(period_from: str | None, period_to: str | None) -> tuple[date,
 
 
 async def _finance_summary(
-    session: AsyncSession, owner_id: int, df: date, dt: date
+    session: AsyncSession, owner_id: int, df: date, dt: date, tz_name: str | None
 ) -> dict:
     trip_revenue = (
         await session.execute(
             select(func.coalesce(func.sum(Trip.revenue_rub), 0)).where(
                 Trip.owner_id == owner_id,
                 Trip.status == "completed",
-                func.date(Trip.completed_at) >= df,
-                func.date(Trip.completed_at) <= dt,
+                _owner_day(Trip.completed_at, tz_name) >= df,
+                _owner_day(Trip.completed_at, tz_name) <= dt,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -2439,8 +2455,8 @@ async def _finance_summary(
             select(func.coalesce(func.sum(Trip.fuel_cost_rub), 0)).where(
                 Trip.owner_id == owner_id,
                 Trip.status == "completed",
-                func.date(Trip.completed_at) >= df,
-                func.date(Trip.completed_at) <= dt,
+                _owner_day(Trip.completed_at, tz_name) >= df,
+                _owner_day(Trip.completed_at, tz_name) <= dt,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -2449,8 +2465,8 @@ async def _finance_summary(
             select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
                 Expense.owner_id == owner_id,
                 Expense.status == "approved",
-                func.date(Expense.created_at) >= df,
-                func.date(Expense.created_at) <= dt,
+                _owner_day(Expense.created_at, tz_name) >= df,
+                _owner_day(Expense.created_at, tz_name) <= dt,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -3720,6 +3736,14 @@ async def api_drivers_locations(
         )
     )
     busy_vehicle_ids = {row[0] for row in busy_res.all()}
+    # машины с активным рейсом — балун показывает конкретнее: «в рейсе»
+    trips_res = await session.execute(
+        select(Trip.vehicle_id).where(
+            Trip.owner_id == owner.id,
+            Trip.status.in_(("created", "in_transit", "unloading")),
+        )
+    )
+    in_trip_ids = {row[0] for row in trips_res.all()}
     vehicles = [
         {
             "vehicle_id": st.vehicle_id,
@@ -3736,6 +3760,7 @@ async def api_drivers_locations(
             "motion_since_label": smart_since_label(st.motion_since_at, owner.timezone),
             "motion_duration_label": telemetry_service.duration_label(st.motion_since_at),
             "has_active_shift": st.vehicle_id in busy_vehicle_ids,
+            "has_active_trip": st.vehicle_id in in_trip_ids,
             "is_valid": st.is_valid,
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
             "updated_label": fmt_dt(st.last_seen_at, owner.timezone, "%d.%m, %H:%M"),

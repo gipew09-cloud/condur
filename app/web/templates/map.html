@@ -296,9 +296,11 @@ ymaps.ready(function () {
     const st = vehicleStatus(v);
     const since = (v.motion_since_label && v.motion_since_label !== '—')
       ? `<div class="meta">⏱ ${escapeHtml(v.motion_since_label)} · уже ${escapeHtml(v.motion_duration_label || '—')}</div>` : '';
-    const shift = v.has_active_shift
-      ? '<span class="badge-active">🟢 В смене</span>'
-      : '<span class="badge-idle">⚪️ Без смены</span>';
+    const shift = v.has_active_trip
+      ? '<span class="badge-active">🚚 В рейсе</span>'
+      : (v.has_active_shift
+          ? '<span class="badge-active">🟢 В смене</span>'
+          : '<span class="badge-idle">⚪️ Без смены</span>');
     const gps = v.is_valid ? '' :
       '<div class="meta">⚠️ GPS без достоверных координат — метка на последнем надёжном месте</div>';
     const stale = isFresh(v) ? '' :

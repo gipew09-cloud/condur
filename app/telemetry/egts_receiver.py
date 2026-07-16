@@ -18,6 +18,7 @@ EGTS_PT_RESPONSE, чтобы Stavtrack не рвал связь и не слал
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -78,11 +79,25 @@ def _preview_hex(payload: bytes, *, limit: int = 24) -> str:
     return payload[:limit].hex(" ")
 
 
+def state_update_allowed(previous_seen, new_seen) -> bool:
+    """Можно ли обновлять «быстрый слой» (VehicleState) этой точкой.
+
+    Точки без времени и точки СТАРЕЕ уже записанного состояния идут только в
+    историю: дампы прошлого и параллельные соединения не должны откатывать
+    живую метку на карте (баг «стоит уже 19 ч» от 16.07).
+    """
+    if new_seen is None:
+        return False
+    return previous_seen is None or previous_seen <= new_seen
+
+
 async def _process_packet(
-    payload: bytes, *, peer_host: str | None, peer_port: int | None
+    payload: bytes, *, peer_host: str | None, peer_port: int | None,
+    verbose: bool = True,
 ) -> bytes | None:
     """Разбирает пакет, пишет в БД, возвращает байты ACK (или None).
 
+    verbose=False — не писать детальную строку в лог (массовые дампы истории).
     Импорты БД — внутри функции: чистые тесты парсера не требуют SQLAlchemy.
     """
     from sqlalchemy import select
@@ -180,9 +195,20 @@ async def _process_packet(
                     if good:
                         last_good = point
 
+            state_point = last_good or last_any
+            # Дампы истории и параллельные соединения могут принести точку ИЗ
+            # ПРОШЛОГО после свежей. Историю сохраняем всю, но «быстрый слой»
+            # (метка на карте, «стоит с …») старой точкой не перезатираем —
+            # иначе у машины, ездившей днём, появлялось «стоит уже 19 ч».
             if last_any is not None:
                 await session.flush()  # нужны id точек
                 previous_state = await session.get(VehicleState, vehicle.id)
+                if not state_update_allowed(
+                    previous_state.last_seen_at if previous_state is not None else None,
+                    state_point.observed_at if state_point is not None else None,
+                ):
+                    last_any = None  # точка старее текущего состояния — только в историю
+            if last_any is not None:
                 motion_status = telemetry_service.vehicle_motion_status(
                     last_any.speed_kmh, last_any.ignition
                 )
@@ -237,6 +263,13 @@ async def _process_packet(
                 stmt = stmt.on_conflict_do_update(
                     index_elements=[VehicleState.vehicle_id],
                     set_={col: getattr(stmt.excluded, col) for col in update_cols},
+                    # Гонка параллельных соединений: даже если проверка выше
+                    # прошла, состояние обновляем только точкой НЕ старее уже
+                    # записанной (дамп не откатывает живые данные).
+                    where=(
+                        VehicleState.last_seen_at.is_(None)
+                        | (VehicleState.last_seen_at <= stmt.excluded.last_seen_at)
+                    ),
                 )
                 await session.execute(stmt)
 
@@ -257,17 +290,18 @@ async def _process_packet(
              if rec.state is not None),
             None,
         )
-        logger.info(
-            "EGTS packet id=%s status=%s terminal=%s vehicle=%s points=%s bytes=%s "
-            "power=%sV ext_pos=%s unknown_sr=%s hex=%s",
-            raw.id, raw.parse_status, terminal_id,
-            vehicle.license_plate if vehicle else "—",
-            points_saved, len(payload),
-            state_v if state_v is not None else "—",
-            ext_pos_payloads or "—",
-            unknown_types or "—",
-            _preview_hex(payload, limit=96),
-        )
+        if verbose:
+            logger.info(
+                "EGTS packet id=%s status=%s terminal=%s vehicle=%s points=%s bytes=%s "
+                "power=%sV ext_pos=%s unknown_sr=%s hex=%s",
+                raw.id, raw.parse_status, terminal_id,
+                vehicle.license_plate if vehicle else "—",
+                points_saved, len(payload),
+                state_v if state_v is not None else "—",
+                ext_pos_payloads or "—",
+                unknown_types or "—",
+                _preview_hex(payload, limit=96),
+            )
 
     # ACK шлём на любой корректно разобранный транспортный пакет — иначе
     # Stavtrack продолжит рвать связь и слать повторы.
@@ -285,6 +319,7 @@ async def handle_client(
 
     buffer = b""
     desynced = False
+    packets_done = 0  # для лимита болтовни в логах при массовых дампах
     try:
         while not desynced:
             try:
@@ -311,10 +346,14 @@ async def handle_client(
                 # молча ждёт «пакет» выдуманной длины и глотает всё подряд.
                 head_err = egts.header_error(buffer)
                 if head_err is not None:
+                    # Пишем начало потока в hex: если сюда направили ДРУГОЙ
+                    # протокол (например, wialon), по этим байтам его можно
+                    # опознать и написать парсер — без документации.
                     logger.warning(
-                        "EGTS поток рассинхронизирован от %s (%s, буфер %s байт) — "
-                        "закрываем соединение",
+                        "EGTS поток рассинхронизирован от %s (%s, буфер %s байт, "
+                        "начало: %s) — закрываем соединение",
                         peer_label, head_err, len(buffer),
+                        _preview_hex(buffer, limit=96),
                     )
                     desynced = True
                     break
@@ -333,17 +372,32 @@ async def handle_client(
                     break
                 packet, buffer = buffer[:need], buffer[need:]
                 try:
-                    ack = await _process_packet(packet, peer_host=peer_host, peer_port=peer_port)
+                    # При историческом дампе Stavtrack шлёт тысячи пакетов в
+                    # секунду по одному соединению — детально логируем только
+                    # первые, иначе упираемся в лимит Railway 500 строк/сек.
+                    ack = await _process_packet(
+                        packet, peer_host=peer_host, peer_port=peer_port,
+                        verbose=packets_done < 3,
+                    )
                 except Exception:
                     logger.exception("Не удалось обработать EGTS-пакет от %s", peer_label)
                     continue
+                packets_done += 1
                 if ack:
                     writer.write(ack)
                     await writer.drain()
+    except (ConnectionResetError, BrokenPipeError, OSError) as exc:
+        # Пир оборвал соединение (например, в момент отправки квитанции при
+        # массовом дампе) — это штатно: всё принятое уже сохранено,
+        # ретранслятор переподключится. Без трейсбеков в лог.
+        logger.info("EGTS соединение оборвано пиром %s: %s", peer_label, exc)
     finally:
-        writer.close()
-        await writer.wait_closed()
-        logger.info("EGTS connection closed: %s", peer_label)
+        with contextlib.suppress(Exception):
+            writer.close()
+            await writer.wait_closed()
+        logger.info(
+            "EGTS connection closed: %s (packets=%s)", peer_label, packets_done
+        )
 
 
 async def serve(config: ReceiverConfig | None = None) -> None:

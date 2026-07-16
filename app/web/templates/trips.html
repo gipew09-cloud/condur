@@ -21,7 +21,9 @@
       <select name="driver_id">
         <option value="">— все —</option>
         {% for d in drivers %}
-          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}</option>
+          {# удалённые водители остаются в фильтре ради их старых рейсов,
+             но помечаются — иначе выглядят как загадочный дубль #}
+          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}{% if not d.is_active %} (удалён){% endif %}</option>
         {% endfor %}
       </select>
     </label>
@@ -38,7 +40,8 @@
       <label>Водитель*
         <select name="driver_id" required>
           <option value="">—</option>
-          {% for d in drivers %}<option value="{{ d.id }}">{{ d.full_name }}</option>{% endfor %}
+          {# новый рейс — только на действующего водителя #}
+          {% for d in drivers if d.is_active %}<option value="{{ d.id }}">{{ d.full_name }}</option>{% endfor %}
         </select>
       </label>
       <label>Машина*
