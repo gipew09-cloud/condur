@@ -284,8 +284,9 @@ async def handle_client(
     logger.info("EGTS connection opened: %s", peer_label)
 
     buffer = b""
+    desynced = False
     try:
-        while True:
+        while not desynced:
             try:
                 chunk = await asyncio.wait_for(
                     reader.read(config.max_packet_bytes),
@@ -304,8 +305,31 @@ async def handle_client(
 
             # В буфере может лежать несколько пакетов (или пол-пакета).
             while True:
+                # Рассинхронизация потока (мусор/половина пакета в начале):
+                # чинить бесполезно — рвём соединение, ретранслятор
+                # переподключится и дошлёт пакеты заново. Иначе приёмник
+                # молча ждёт «пакет» выдуманной длины и глотает всё подряд.
+                head_err = egts.header_error(buffer)
+                if head_err is not None:
+                    logger.warning(
+                        "EGTS поток рассинхронизирован от %s (%s, буфер %s байт) — "
+                        "закрываем соединение",
+                        peer_label, head_err, len(buffer),
+                    )
+                    desynced = True
+                    break
                 need = egts.packet_length(buffer)
-                if need is None or len(buffer) < need:
+                if need is None:
+                    break
+                if need > config.max_packet_bytes:
+                    logger.warning(
+                        "EGTS пакет заявляет %s байт (> лимита %s) от %s — "
+                        "закрываем соединение",
+                        need, config.max_packet_bytes, peer_label,
+                    )
+                    desynced = True
+                    break
+                if len(buffer) < need:
                     break
                 packet, buffer = buffer[:need], buffer[need:]
                 try:

@@ -137,6 +137,30 @@ def packet_length(buffer: bytes) -> int | None:
     return hl + fdl + (2 if fdl else 0)
 
 
+def header_error(buffer: bytes) -> str | None:
+    """Проверка, что В НАЧАЛЕ буфера стоит правдоподобный заголовок ЕГТС.
+
+    Возвращает причину («PRV=…», «HL=…», «CRC8 заголовка») или None, если
+    заголовок валиден ЛИБО данных пока мало для вывода.
+
+    Зачем: packet_length() слепо читает длину из байтов. Если поток
+    рассинхронизировался (соединение началось с середины пакета, keepalive,
+    мусор), из случайных байтов получается «длина» в десятки килобайт — и
+    приёмник молча ждёт её часами, глотая все пакеты этого соединения
+    (реальный инцидент 16.07.2026: две машины «пропали» с карты).
+    Такое соединение нужно рвать — ретранслятор переподключится и дошлёт.
+    """
+    if len(buffer) >= 1 and buffer[0] != 0x01:
+        return f"PRV={buffer[0]}"
+    if len(buffer) >= 4 and buffer[3] not in (11, 16):
+        return f"HL={buffer[3]}"
+    if len(buffer) >= 4 and len(buffer) >= buffer[3]:
+        hl = buffer[3]
+        if crc8(buffer[: hl - 1]) != buffer[hl - 1]:
+            return "CRC8 заголовка"
+    return None
+
+
 def parse_packet(data: bytes) -> ParsedPacket:
     """Разбирает один пакет ЕГТС. Кидает EgtsParseError на битых данных."""
     if len(data) < 11:
