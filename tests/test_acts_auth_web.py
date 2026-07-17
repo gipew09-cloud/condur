@@ -905,3 +905,30 @@ def test_render_trips_deleted_driver_marked():
     add_form_drivers = html.split('action="/trips/add"')[1].split("Машина*")[0]
     assert 'value="2"' in add_form_drivers      # действующий — есть
     assert 'value="1"' not in add_form_drivers  # удалённый — нет
+
+
+def test_owner_day_group_by_uses_single_bind_param():
+    """Инцидент 17.07: /finances падал с GroupingError — каждый вызов
+    _owner_day создавал свой bind-параметр ($1, $2), и Postgres не считал
+    SELECT и GROUP BY одинаковыми. Выражение должно строиться один раз."""
+    from sqlalchemy import func, select
+
+    from app.models import Trip
+    from app.web.router import _owner_day
+
+    day = _owner_day(Trip.completed_at, "Europe/Moscow")
+    stmt = (
+        select(day, func.coalesce(func.sum(Trip.revenue_rub), 0))
+        .where(day >= "2026-07-01")
+        .group_by(day)
+    )
+    sql = str(stmt.compile())
+    assert "timezone_1" in sql
+    assert "timezone_2" not in sql, "второй bind-параметр — снова GroupingError"
+
+    # и в роутере не осталось group_by с повторным вызовом _owner_day
+    import inspect
+
+    import app.web.router as router_mod
+    src = inspect.getsource(router_mod)
+    assert ".group_by(_owner_day(" not in src
