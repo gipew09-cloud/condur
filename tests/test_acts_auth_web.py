@@ -805,6 +805,23 @@ def test_render_shift_detail_no_timeline_when_no_gps():
     assert "Хронология смены" not in html
 
 
+def test_render_shift_detail_timeline_ignition_marks():
+    """🔑 «Завёл/Заглушил двигатель» — точечные события: без «→ конец»;
+    запуск до открытия смены подписан «за N мин до начала смены»."""
+    timeline = [
+        {"icon": "🔑", "label": "Завёл двигатель", "frm": "07:53", "to": "",
+         "dur": "за 7 мин до начала смены", "kind": "ignition_on", "ongoing": False},
+        {"icon": "🅿️", "label": "Стоял", "frm": "08:00", "to": "08:30",
+         "dur": "30 мин", "kind": "stop", "ongoing": False},
+        {"icon": "🔑", "label": "Заглушил двигатель", "frm": "19:42", "to": "",
+         "dur": "", "kind": "ignition_off", "ongoing": False},
+    ]
+    html = _render_shift(gps_seen=True, gps_timeline=timeline)
+    assert "Завёл двигатель" in html and "Заглушил двигатель" in html
+    assert "за 7 мин до начала смены" in html
+    assert "07:53 →" not in html  # у точечного события нет стрелки к «концу»
+
+
 # ------------------------------------- стоянка → геозона РЦ, правка одометра
 def test_nearest_center_within_matches_radius():
     from types import SimpleNamespace as NS2
