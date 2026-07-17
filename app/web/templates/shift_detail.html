@@ -108,7 +108,7 @@
       {{ seg.label }}
       {% if seg.ongoing %}<span class="pill pill--info" style="font-size:.68em; vertical-align:middle;">сейчас</span>{% endif %}
     </b>
-    <span style="color:var(--text-muted);">{{ seg.frm }} → {{ seg.to }}</span>
+    <span style="color:var(--text-muted);">{{ seg.frm }}{% if seg.to %} → {{ seg.to }}{% endif %}</span>
     {% if seg.place %}<span style="font-weight:600;">📍 {{ seg.place }}</span>{% endif %}
     <span style="margin-left:auto; font-weight:700;">{{ seg.dur }}</span>
   </div>
@@ -116,7 +116,8 @@
 </div>
 <p class="sub" style="margin-top:.4rem;">
   По точкам трекера: движение — скорость выше 3 км/ч; остановки короче 3 минут
-  (светофоры, шлагбаумы) не рвут поездку; «нет сигнала» — трекер молчал дольше 15 минут.
+  (светофоры, шлагбаумы) не рвут поездку; «нет сигнала» — трекер молчал дольше 15 минут;
+  🔑 — зажигание по датчику трекера (когда завели и заглушили двигатель).
 </p>
 {% endif %}
 

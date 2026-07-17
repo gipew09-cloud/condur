@@ -50,6 +50,7 @@ from app.services import (
     receipt_ocr,
     salary_service,
     shift_service,
+    telemetry_service,
     trip_service,
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
@@ -273,13 +274,24 @@ async def _do_start_shift(
         photo_file_id=photo_file_id,
     )
     await session.flush()
+    # Зажигание на момент открытия смены: завели двигатель до смены или ещё
+    # нет — уходит владельцу и в событие (GPS-точки живут 180 дней, события — вечно).
+    started_moment = datetime.now(timezone.utc)
+    ignition = await telemetry_service.shift_ignition_snapshot(
+        session, vehicle_id=vehicle.id, moment=started_moment
+    )
     await log_event(
         session,
         owner_id=driver.owner_id,
         driver_id=driver.id,
         shift_id=shift.id,
         event_type="shift_started",
-        payload={"vehicle_id": vehicle.id, "odometer_start": odometer_start},
+        payload={
+            "vehicle_id": vehicle.id,
+            "odometer_start": odometer_start,
+            "engine_on": None if ignition is None else ignition["on"],
+            "engine_since": ignition["since"].isoformat() if ignition else None,
+        },
     )
     await session.commit()
     await state.clear()
@@ -293,14 +305,20 @@ async def _do_start_shift(
     owner = await session.get(Owner, driver.owner_id)
     if owner is None:
         return
+    ignition_line = telemetry_service.ignition_shift_line(
+        ignition, moment=started_moment, tz_name=owner.timezone, closing=False
+    )
     # Фото-режим: шлём владельцу фото одометра + кнопку «Указать пробег».
     if photo_file_id and odometer_start is None and source_bot is not None:
+        caption = msg.ODOMETER_PHOTO_TO_OWNER_START.format(
+            driver=driver.full_name, plate=vehicle.license_plate
+        )
+        if ignition_line:
+            caption += f"\n{ignition_line}"
         await transfer_photo_to_owner(
             source_bot=source_bot, owner_bot=owner_bot, session=session, owner=owner,
             source_file_id=photo_file_id,
-            caption=msg.ODOMETER_PHOTO_TO_OWNER_START.format(
-                driver=driver.full_name, plate=vehicle.license_plate
-            ),
+            caption=caption,
             reply_markup=kb.odometer_set_keyboard(shift.id, "start"),
         )
         return
@@ -312,6 +330,8 @@ async def _do_start_shift(
         owner_text = msg.NOTIFY_SHIFT_STARTED_SIMPLE.format(
             driver=driver.full_name, plate=vehicle.license_plate
         )
+    if ignition_line:
+        owner_text += f"\n{ignition_line}"
     await notify_owner(owner_bot, session, owner, owner_text)
 
 
@@ -649,15 +669,20 @@ async def _do_end_shift(
     Зарплату водителю показываем только при FEATURE_SHOW_SALARY."""
     data = await state.get_data()
     end_photo = data.get("odometer_photo")
+    ended_moment = datetime.now(timezone.utc)
     await shift_service.end_shift(
         session,
         shift=shift,
         odometer_end=odometer_end,
         photo_file_id=data.get("odometer_photo"),
-        ended_at=datetime.now(timezone.utc),
+        ended_at=ended_moment,
     )
     await session.flush()
     await session.refresh(shift)
+    # Зажигание на момент закрытия: заглушил двигатель или уехал с работающим.
+    ignition = await telemetry_service.shift_ignition_snapshot(
+        session, vehicle_id=shift.vehicle_id, moment=ended_moment
+    )
 
     trips = await shift_service.get_shift_trips(session, shift.id)
     revenue = sum((t.revenue_rub or Decimal(0)) for t in trips) or Decimal(0)
@@ -677,7 +702,13 @@ async def _do_end_shift(
         driver_id=driver.id,
         shift_id=shift.id,
         event_type="shift_completed",
-        payload={"distance_km": shift.distance_km, "trips": len(trips), "salary": str(salary)},
+        payload={
+            "distance_km": shift.distance_km,
+            "trips": len(trips),
+            "salary": str(salary),
+            "engine_on": None if ignition is None else ignition["on"],
+            "engine_since": ignition["since"].isoformat() if ignition else None,
+        },
     )
     await session.commit()
     await state.clear()
@@ -715,6 +746,11 @@ async def _do_end_shift(
                 f"\n⚠️ По {no_revenue} из {len(trips)} рейс(ам) выручка ещё не "
                 "указана — итог смены вырастет после ввода."
             )
+        ignition_line = telemetry_service.ignition_shift_line(
+            ignition, moment=ended_moment, tz_name=owner.timezone, closing=True
+        )
+        if ignition_line:
+            owner_text += f"\n{ignition_line}"
         await notify_owner(owner_bot, session, owner, owner_text)
         # Контроль топлива: сумма fuel-расходов смены vs норма
         await _maybe_fuel_overrun_alert(session, owner_bot, owner, driver, shift, approved_list)

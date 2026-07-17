@@ -4302,6 +4302,29 @@ async def _trip_timeline(
                     amount=_money_label(billable) if billable else None,
                 ))
 
+        # Зажигание в окне рейса: «завёл/заглушил двигатель» по датчику
+        # трекера — владелец видит, глушили ли мотор на выгрузке/простое.
+        ign_rows = (
+            await session.execute(
+                select(VehicleTelemetryPoint.observed_at, VehicleTelemetryPoint.ignition)
+                .where(
+                    VehicleTelemetryPoint.vehicle_id == vehicle.id,
+                    VehicleTelemetryPoint.ignition.is_not(None),
+                    VehicleTelemetryPoint.observed_at.is_not(None),
+                    VehicleTelemetryPoint.observed_at >= window_start,
+                    VehicleTelemetryPoint.observed_at <= window_end,
+                )
+                .order_by(VehicleTelemetryPoint.observed_at)
+                .limit(20000)
+            )
+        ).all()
+        for tr in telemetry_service.ignition_transitions([(t, i) for t, i in ign_rows]):
+            add(_timeline_item(
+                kind="info", order=44, at=tr["at"],
+                title="Завёл двигатель" if tr["on"] else "Заглушил двигатель",
+                subtitle="по датчику зажигания трекера",
+            ))
+
     if waybill_uploaded_at:
         add(_timeline_item(
             kind="success", order=70, at=waybill_uploaded_at, title="ТТН загружена",
@@ -4651,7 +4674,54 @@ async def shift_detail(
                 "kind": seg["kind"],
                 "ongoing": seg["ongoing"],
                 "place": _stop_place(seg),
+                "_at": seg["start"],
             })
+
+        # Зажигание: «завёл/заглушил двигатель» по датчику трекера. Смотрим и
+        # ДО начала смены: если двигатель завели заранее, владелец видит когда.
+        started_ref = (
+            shift.started_at if shift.started_at.tzinfo
+            else shift.started_at.replace(tzinfo=timezone.utc)
+        )
+        ign_rows = (
+            await session.execute(
+                select(VehicleTelemetryPoint.observed_at, VehicleTelemetryPoint.ignition)
+                .where(
+                    VehicleTelemetryPoint.vehicle_id == vehicle.id,
+                    VehicleTelemetryPoint.ignition.is_not(None),
+                    VehicleTelemetryPoint.observed_at.is_not(None),
+                    VehicleTelemetryPoint.observed_at >= shift.started_at - timedelta(hours=2),
+                    VehicleTelemetryPoint.observed_at <= window_end,
+                )
+                .order_by(VehicleTelemetryPoint.observed_at)
+                .limit(20000)
+            )
+        ).all()
+        transitions = telemetry_service.ignition_transitions([(t, i) for t, i in ign_rows])
+        pre_start = [tr for tr in transitions if tr["at"] < started_ref]
+        in_shift = [tr for tr in transitions if tr["at"] >= started_ref]
+        # До смены интересен только последний запуск двигателя, который ещё
+        # «жил» на момент открытия (историю чужих поездок не тащим).
+        if pre_start and pre_start[-1]["on"]:
+            tr = pre_start[-1]
+            in_shift.insert(0, tr)
+        for tr in in_shift:
+            before_start = tr["at"] < started_ref
+            gps_timeline.append({
+                "icon": "🔑",
+                "label": "Завёл двигатель" if tr["on"] else "Заглушил двигатель",
+                "frm": fmt_dt(tr["at"], owner.timezone, "%H:%M"),
+                "to": "",
+                "dur": (
+                    f"за {telemetry_service.duration_label(tr['at'], started_ref)} до начала смены"
+                    if before_start else ""
+                ),
+                "kind": "ignition_on" if tr["on"] else "ignition_off",
+                "ongoing": False,
+                "place": None,
+                "_at": tr["at"],
+            })
+        gps_timeline.sort(key=lambda e: e["_at"])
 
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
     return templates.TemplateResponse(

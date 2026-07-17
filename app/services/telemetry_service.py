@@ -412,3 +412,160 @@ def format_mileage_comparison(odometer_km: int, gps_km: Decimal) -> str:
     if abs(diff) / reference > MILEAGE_MISMATCH_ALERT_RATIO:
         base += " ⚠️ Больше 10% — стоит проверить."
     return base
+
+
+# =========================================================================
+# Зажигание: «завёл/заглушил двигатель» — переходы и состояние на момент.
+# Для уведомлений о начале/конце смены и хронологии в кабинете.
+# =========================================================================
+IGNITION_FLICKER_SECONDS = 60      # состояние короче — дребезг/кривой пакет
+IGNITION_FRESH_MINUTES = 15        # последняя точка старее — состояние не знаем
+IGNITION_LOOKBACK_HOURS = 12       # сколько истории смотрим назад
+
+
+def _ignition_runs(
+    points: list[tuple[datetime, bool | None]],
+    flicker_seconds: int = IGNITION_FLICKER_SECONDS,
+) -> list[dict]:
+    """Непрерывные отрезки одного состояния зажигания по точкам
+    (observed_at, ignition). Точки с ignition=None пропускаем — датчик не
+    пришёл, не выдумываем. Отрезок короче flicker_seconds, зажатый между
+    двумя одинаковыми соседями, вливаем в них: одиночный кривой пакет не
+    должен рождать «завёл/заглушил». Последний отрезок не трогаем — текущее
+    состояние честное, даже если ему пара секунд.
+    Возвращает [{"on": bool, "first": dt, "last": dt}] по времени.
+    """
+    known = sorted(
+        ((_utc(t), bool(ign)) for t, ign in points if t is not None and ign is not None),
+        key=lambda p: p[0],
+    )
+    runs: list[dict] = []
+    for t, on in known:
+        if runs and runs[-1]["on"] == on:
+            runs[-1]["last"] = t
+        else:
+            runs.append({"on": on, "first": t, "last": t})
+
+    # Склейка дребезга — итеративно, БЕЗ рекурсии: болтающийся контакт датчика
+    # может дать тысячи коротких отрезков подряд, рекурсия бы упала по глубине
+    # (а это уронило бы открытие смены в боте).
+    changed = True
+    while changed:
+        changed = False
+        i = 1
+        while i < len(runs) - 1:
+            mid = runs[i]
+            if (
+                (mid["last"] - mid["first"]).total_seconds() < flicker_seconds
+                and runs[i - 1]["on"] == runs[i + 1]["on"]
+            ):
+                runs[i - 1]["last"] = runs[i + 1]["last"]
+                del runs[i : i + 2]
+                changed = True
+            else:
+                i += 1
+    return runs
+
+
+def ignition_transitions(
+    points: list[tuple[datetime, bool | None]],
+    flicker_seconds: int = IGNITION_FLICKER_SECONDS,
+) -> list[dict]:
+    """Моменты «завёл двигатель» / «заглушил двигатель».
+
+    Возвращает [{"at": dt, "on": bool}]: on=True — завёл, False — заглушил.
+    Момент перехода — первая точка нового состояния (точнее по данным не
+    узнать: между точками трекер молчал).
+    """
+    runs = _ignition_runs(points, flicker_seconds)
+    return [{"at": run["first"], "on": run["on"]} for run in runs[1:]]
+
+
+def ignition_state_at(
+    points: list[tuple[datetime, bool | None]],
+    moment: datetime,
+    fresh_minutes: int = IGNITION_FRESH_MINUTES,
+) -> dict | None:
+    """Состояние зажигания на момент moment по точкам (observed_at, ignition).
+
+    None — данных нет или последняя точка старее fresh_minutes (трекер молчит —
+    не выдумываем). Иначе {"on": bool, "since": dt, "since_exact": bool}:
+    since — с какого времени это состояние; since_exact=False — состояние
+    длилось уже на первой точке окна, реальное начало раньше («не меньше …»).
+    """
+    moment = _utc(moment)
+    runs = _ignition_runs([(t, ign) for t, ign in points if t is not None and _utc(t) <= moment])
+    if not runs:
+        return None
+    last = runs[-1]
+    if (moment - last["last"]).total_seconds() > fresh_minutes * 60:
+        return None
+    return {"on": last["on"], "since": last["first"], "since_exact": len(runs) > 1}
+
+
+async def shift_ignition_snapshot(
+    session: AsyncSession, *, vehicle_id: int, moment: datetime
+) -> dict | None:
+    """Состояние зажигания машины на момент открытия/закрытия смены.
+
+    Одна выборка двух колонок за IGNITION_LOOKBACK_HOURS, вызывается дважды
+    за смену — бота не нагружает. None — датчик зажигания не приходит.
+    """
+    from sqlalchemy import select
+
+    from app.models import VehicleTelemetryPoint
+
+    rows = (
+        await session.execute(
+            select(VehicleTelemetryPoint.observed_at, VehicleTelemetryPoint.ignition)
+            .where(
+                VehicleTelemetryPoint.vehicle_id == vehicle_id,
+                VehicleTelemetryPoint.ignition.is_not(None),
+                VehicleTelemetryPoint.observed_at.is_not(None),
+                VehicleTelemetryPoint.observed_at >= moment - timedelta(hours=IGNITION_LOOKBACK_HOURS),
+                VehicleTelemetryPoint.observed_at <= moment,
+            )
+            .order_by(VehicleTelemetryPoint.observed_at)
+            .limit(20000)
+        )
+    ).all()
+    return ignition_state_at([(t, ign) for t, ign in rows], moment)
+
+
+def ignition_shift_line(
+    snapshot: dict | None, *, moment: datetime, tz_name: str | None, closing: bool
+) -> str | None:
+    """Строка о двигателе для уведомления владельцу о смене.
+
+    None — датчик зажигания не приходит: строку не пишем вовсе, чтобы у машин
+    без wialon-ретрансляции уведомления не обрастали «нет данных».
+    """
+    from app.services.timeutil import smart_since_label
+
+    if snapshot is None:
+        return None
+    moment = _utc(moment)
+    on, since, exact = snapshot["on"], snapshot["since"], snapshot["since_exact"]
+    ago = duration_label(since, moment)
+    when = smart_since_label(since, tz_name)  # «с 07:58» / «со вчера, 21:52»
+    just_now = (moment - since).total_seconds() < 60
+
+    if not closing:  # уведомление о НАЧАЛЕ смены
+        if on:
+            if not exact:
+                return f"🔑 Двигатель работает — уже не меньше {ago}."
+            if just_now:
+                return "🔑 Двигатель завели прямо перед началом смены."
+            return f"🔑 Двигатель работает {when} — завели за {ago} до начала смены."
+        if not exact:
+            return f"🔑 Двигатель не заведён (заглушен уже не меньше {ago})."
+        return f"🔑 Двигатель пока не заведён (заглушен {when})."
+
+    # уведомление о ЗАВЕРШЕНИИ смены
+    if on:
+        return "🔑 Двигатель ещё работает" + (f" ({when})." if exact else ".")
+    if not exact:
+        return f"🔑 Двигатель заглушен — уже не меньше {ago}."
+    if just_now:
+        return "🔑 Двигатель заглушен прямо перед завершением смены."
+    return f"🔑 Двигатель заглушен {when} — за {ago} до завершения смены."
