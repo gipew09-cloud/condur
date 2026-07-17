@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.services import telemetry_service
-from app.telemetry import egts
+from app.telemetry import egts, wialon
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +308,237 @@ async def _process_packet(
     return egts.build_response(parsed) if parsed is not None else None
 
 
+async def _store_wialon_points(
+    terminal_id: str,
+    points: list[wialon.WialonPoint],
+    *,
+    raw_line: str,
+    peer_host: str | None,
+    peer_port: int | None,
+    verbose: bool = True,
+) -> None:
+    """Сохранить точки Wialon IPS: история + «быстрый слой» VehicleState.
+
+    Та же дисциплина, что у EGTS: чужой терминал — только строка в лог;
+    точка из прошлого не перезатирает живое состояние (state_update_allowed
+    + where-защита от гонки параллельных соединений).
+    """
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from app.database import async_session
+    from app.models import (
+        Vehicle,
+        VehicleState,
+        VehicleTelemetryPoint,
+        VehicleTelemetryRawPacket,
+    )
+
+    async with async_session() as session:
+        matches = (
+            await session.execute(
+                select(Vehicle).where(
+                    Vehicle.stavtrack_object_id == terminal_id,
+                    Vehicle.is_active.is_(True),
+                )
+            )
+        ).scalars().all()
+        if len(matches) != 1:
+            logger.info(
+                "Wialon skipped (terminal=%s): %s", terminal_id,
+                "машина не привязана" if not matches else "несколько машин с этим ID",
+            )
+            return
+        vehicle = matches[0]
+
+        raw = VehicleTelemetryRawPacket(
+            protocol="wialon_ips",
+            source="stavtrack",
+            peer_host=peer_host,
+            peer_port=peer_port,
+            terminal_id=terminal_id,
+            vehicle_id=vehicle.id,
+            payload=raw_line.encode("utf-8", errors="replace"),
+            payload_size=len(raw_line),
+            parse_status="parsed",
+        )
+        session.add(raw)
+        await session.flush()
+
+        last_good: VehicleTelemetryPoint | None = None
+        last_any: VehicleTelemetryPoint | None = None
+        for wp in points:
+            zeroish = (
+                wp.latitude is not None and wp.longitude is not None
+                and abs(wp.latitude) < 0.001 and abs(wp.longitude) < 0.001
+            )
+            good = wp.is_valid and not zeroish
+            point = VehicleTelemetryPoint(
+                raw_packet_id=raw.id,
+                owner_id=vehicle.owner_id,
+                vehicle_id=vehicle.id,
+                terminal_id=terminal_id,
+                observed_at=wp.observed_at,
+                latitude=Decimal(str(wp.latitude)) if wp.latitude is not None else None,
+                longitude=Decimal(str(wp.longitude)) if wp.longitude is not None else None,
+                speed_kmh=Decimal(str(wp.speed_kmh)),
+                course=Decimal(str(wp.course)) if wp.course is not None else None,
+                ignition=wp.ignition,
+                is_valid=good,
+                anomaly_reason=None if good else "нет достоверных координат (GPS)",
+            )
+            session.add(point)
+            last_any = point
+            if good:
+                last_good = point
+
+        state_point = last_good or last_any
+        if last_any is not None:
+            await session.flush()
+            previous_state = await session.get(VehicleState, vehicle.id)
+            if not state_update_allowed(
+                previous_state.last_seen_at if previous_state is not None else None,
+                state_point.observed_at if state_point is not None else None,
+            ):
+                last_any = None
+        if last_any is not None:
+            motion_status = telemetry_service.vehicle_motion_status(
+                last_any.speed_kmh, last_any.ignition
+            )
+            if (
+                previous_state is not None
+                and previous_state.motion_status == motion_status
+                and previous_state.motion_since_at is not None
+            ):
+                motion_since_at = previous_state.motion_since_at
+            else:
+                motion_since_at = last_any.observed_at
+            if last_good is not None:
+                values = dict(
+                    vehicle_id=vehicle.id,
+                    terminal_id=terminal_id,
+                    last_point_id=last_good.id,
+                    last_seen_at=last_good.observed_at,
+                    latitude=last_good.latitude,
+                    longitude=last_good.longitude,
+                    speed_kmh=last_good.speed_kmh,
+                    ignition=last_good.ignition,
+                    motion_status=motion_status,
+                    motion_since_at=motion_since_at,
+                    is_valid=True,
+                    anomaly_reason=None,
+                )
+                update_cols = (
+                    "terminal_id", "last_point_id", "last_seen_at", "latitude",
+                    "longitude", "speed_kmh", "ignition", "motion_status",
+                    "motion_since_at", "is_valid", "anomaly_reason",
+                )
+            else:
+                values = dict(
+                    vehicle_id=vehicle.id,
+                    terminal_id=terminal_id,
+                    last_seen_at=last_any.observed_at,
+                    ignition=last_any.ignition,
+                    motion_status=motion_status,
+                    motion_since_at=motion_since_at,
+                    is_valid=False,
+                    anomaly_reason="нет достоверных координат (GPS)",
+                )
+                update_cols = (
+                    "terminal_id", "last_seen_at", "ignition", "motion_status",
+                    "motion_since_at", "is_valid", "anomaly_reason",
+                )
+            stmt = pg_insert(VehicleState).values(**values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[VehicleState.vehicle_id],
+                set_={col: getattr(stmt.excluded, col) for col in update_cols},
+                where=(
+                    VehicleState.last_seen_at.is_(None)
+                    | (VehicleState.last_seen_at <= stmt.excluded.last_seen_at)
+                ),
+            )
+            await session.execute(stmt)
+
+        await session.commit()
+        if verbose:
+            sample = points[0] if points else None
+            logger.info(
+                "Wialon packet terminal=%s vehicle=%s points=%s ignition=%s params=%s",
+                terminal_id, vehicle.license_plate, len(points),
+                sample.ignition if sample else "—",
+                sample.params if sample else "—",
+            )
+
+
+async def _handle_wialon(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    buffer: bytes,
+    *,
+    peer_label: str,
+    peer_host: str | None,
+    peer_port: int | None,
+    config: ReceiverConfig,
+) -> int:
+    """Сессия Wialon IPS на том же порту: логин → квитанция → точки.
+
+    Возвращает число обработанных сообщений (для строки «connection closed»).
+    """
+    terminal_id: str | None = None
+    processed = 0
+    while True:
+        # Разбираем полные строки, остаток храним в буфере.
+        while b"\n" in buffer:
+            line_bytes, buffer = buffer.split(b"\n", 1)
+            text = line_bytes.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+            message = wialon.parse_message(text)
+            if message.kind == "?":
+                logger.warning(
+                    "Wialon: неизвестное сообщение от %s (%r) — закрываем соединение",
+                    peer_label, text[:80],
+                )
+                return processed
+            if message.kind == "L":
+                terminal_id = message.terminal_id
+                logger.info("Wialon login от %s: terminal=%s", peer_label, terminal_id)
+            elif message.points:
+                if terminal_id is None:
+                    logger.warning(
+                        "Wialon: данные без логина от %s — закрываем соединение", peer_label
+                    )
+                    return processed
+                try:
+                    await _store_wialon_points(
+                        terminal_id, message.points,
+                        raw_line=text, peer_host=peer_host, peer_port=peer_port,
+                        verbose=processed < 3,
+                    )
+                except Exception:
+                    logger.exception("Wialon: не удалось сохранить точки от %s", peer_label)
+            processed += 1
+            ack = wialon.ack_for(message)
+            if ack:
+                writer.write(ack)
+                await writer.drain()
+
+        if len(buffer) > config.max_packet_bytes * 4:
+            logger.warning("Wialon buffer overflow от %s — закрываем", peer_label)
+            return processed
+        try:
+            chunk = await asyncio.wait_for(
+                reader.read(config.max_packet_bytes),
+                timeout=config.idle_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.info("Wialon idle timeout: %s", peer_label)
+            return processed
+        if not chunk:
+            return processed
+        buffer += chunk
+
+
 async def handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -346,9 +577,21 @@ async def handle_client(
                 # молча ждёт «пакет» выдуманной длины и глотает всё подряд.
                 head_err = egts.header_error(buffer)
                 if head_err is not None:
+                    # Один порт — два протокола: Wialon IPS начинается с '#'.
+                    # Ретрансляцию можно переключать egts↔wialon без смены
+                    # адреса — приёмник понимает оба.
+                    if buffer.startswith(b"#"):
+                        logger.info("Wialon IPS поток от %s — переключаюсь", peer_label)
+                        packets_done += await _handle_wialon(
+                            reader, writer, buffer,
+                            peer_label=peer_label, peer_host=peer_host,
+                            peer_port=peer_port, config=config,
+                        )
+                        desynced = True
+                        break
                     # Пишем начало потока в hex: если сюда направили ДРУГОЙ
-                    # протокол (например, wialon), по этим байтам его можно
-                    # опознать и написать парсер — без документации.
+                    # протокол, по этим байтам его можно опознать и написать
+                    # парсер — без документации.
                     logger.warning(
                         "EGTS поток рассинхронизирован от %s (%s, буфер %s байт, "
                         "начало: %s) — закрываем соединение",
