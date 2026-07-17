@@ -463,8 +463,14 @@ async def _store_wialon_points(
         if verbose:
             sample = points[0] if points else None
             logger.info(
-                "Wialon packet terminal=%s vehicle=%s points=%s ignition=%s params=%s",
+                "Wialon packet terminal=%s vehicle=%s points=%s time=%s lat=%s lon=%s "
+                "speed=%s valid=%s ignition=%s params=%s",
                 terminal_id, vehicle.license_plate, len(points),
+                sample.observed_at if sample else "—",
+                sample.latitude if sample else "—",
+                sample.longitude if sample else "—",
+                sample.speed_kmh if sample else "—",
+                sample.is_valid if sample else "—",
                 sample.ignition if sample else "—",
                 sample.params if sample else "—",
             )

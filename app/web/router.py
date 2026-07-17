@@ -738,14 +738,15 @@ async def _dashboard_chart(
             if k in target:
                 target[k] += Decimal(amount)
 
+    trip_day = _owner_day(Trip.completed_at, tz_name)
     rev_rows = await session.execute(
-        select(_owner_day(Trip.completed_at, tz_name), func.coalesce(func.sum(Trip.revenue_rub), 0))
+        select(trip_day, func.coalesce(func.sum(Trip.revenue_rub), 0))
         .where(
             Trip.owner_id == owner_id,
             Trip.status == "completed",
-            _owner_day(Trip.completed_at, tz_name) >= start,
+            trip_day >= start,
         )
-        .group_by(_owner_day(Trip.completed_at, tz_name))
+        .group_by(trip_day)
     )
     accumulate(rev_rows.all(), revenue)
 
@@ -760,14 +761,15 @@ async def _dashboard_chart(
     )
     accumulate(inc_rows.all(), revenue)
 
+    expense_day = _owner_day(Expense.created_at, tz_name)
     exp_rows = await session.execute(
-        select(_owner_day(Expense.created_at, tz_name), func.coalesce(func.sum(Expense.amount_rub), 0))
+        select(expense_day, func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
             Expense.owner_id == owner_id,
             Expense.status == "approved",
-            _owner_day(Expense.created_at, tz_name) >= start,
+            expense_day >= start,
         )
-        .group_by(_owner_day(Expense.created_at, tz_name))
+        .group_by(expense_day)
     )
     accumulate(exp_rows.all(), expense)
 
@@ -811,15 +813,16 @@ async def _cashflow_chart(
             if k in target:
                 target[k] += Decimal(amount)
 
+    trip_day = _owner_day(Trip.completed_at, tz_name)
     rev_rows = await session.execute(
-        select(_owner_day(Trip.completed_at, tz_name), func.coalesce(func.sum(Trip.revenue_rub), 0))
+        select(trip_day, func.coalesce(func.sum(Trip.revenue_rub), 0))
         .where(
             Trip.owner_id == owner_id,
             Trip.status == "completed",
-            _owner_day(Trip.completed_at, tz_name) >= df,
-            _owner_day(Trip.completed_at, tz_name) <= dt,
+            trip_day >= df,
+            trip_day <= dt,
         )
-        .group_by(_owner_day(Trip.completed_at, tz_name))
+        .group_by(trip_day)
     )
     accumulate(rev_rows.all(), revenue)
     inc_rows = await session.execute(
@@ -833,15 +836,16 @@ async def _cashflow_chart(
         .group_by(ManualEntry.entry_date)
     )
     accumulate(inc_rows.all(), revenue)
+    expense_day = _owner_day(Expense.created_at, tz_name)
     exp_rows = await session.execute(
-        select(_owner_day(Expense.created_at, tz_name), func.coalesce(func.sum(Expense.amount_rub), 0))
+        select(expense_day, func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
             Expense.owner_id == owner_id,
             Expense.status == "approved",
-            _owner_day(Expense.created_at, tz_name) >= df,
-            _owner_day(Expense.created_at, tz_name) <= dt,
+            expense_day >= df,
+            expense_day <= dt,
         )
-        .group_by(_owner_day(Expense.created_at, tz_name))
+        .group_by(expense_day)
     )
     accumulate(exp_rows.all(), expense)
     mexp_rows = await session.execute(
