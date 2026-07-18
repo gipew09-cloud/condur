@@ -373,6 +373,20 @@ async def _store_wialon_points(
                 and abs(wp.latitude) < 0.001 and abs(wp.longitude) < 0.001
             )
             good = wp.is_valid and not zeroish
+            # Двигатель заведён определяем по напряжению бортсети (генератор),
+            # если оно пришло: сырой бит ign у части трекеров залипает на 1
+            # (см. telemetry_service.engine_running_from_voltage). Нет
+            # напряжения — доверяем биту, как раньше.
+            voltage_engine = telemetry_service.engine_running_from_voltage(
+                wp.params.get("power") if wp.params else None
+            )
+            ignition_value = voltage_engine if voltage_engine is not None else wp.ignition
+            # Пробег прибора из Wialon (totalDistance, метры → км) — чтобы
+            # сравнение «одометр vs GPS» работало и по wialon-машинам, а не
+            # только по EGTS (иначе счётчик пустой и расхождение ложное).
+            mileage_km = telemetry_service.wialon_odometer_km(
+                wp.params.get("totalDistance") if wp.params else None
+            )
             point = VehicleTelemetryPoint(
                 raw_packet_id=raw.id,
                 owner_id=vehicle.owner_id,
@@ -383,7 +397,8 @@ async def _store_wialon_points(
                 longitude=Decimal(str(wp.longitude)) if wp.longitude is not None else None,
                 speed_kmh=Decimal(str(wp.speed_kmh)),
                 course=Decimal(str(wp.course)) if wp.course is not None else None,
-                ignition=wp.ignition,
+                ignition=ignition_value,
+                mileage_km=mileage_km,
                 is_valid=good,
                 anomaly_reason=None if good else "нет достоверных координат (GPS)",
             )

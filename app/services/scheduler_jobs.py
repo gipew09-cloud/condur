@@ -994,6 +994,24 @@ def _event_datetime(value, fallback: datetime) -> datetime:
     return parsed
 
 
+def _downtime_started_at(stored_parked_since, fallback_at: datetime, motion_since_at) -> datetime:
+    """С какого момента считать простой на РЦ.
+
+    Защита от фантомного простоя (инцидент 18.07.2026: «стоит уже 12 ч», хотя
+    трекер парковался 13 минут): машина физически не могла «стоять на РЦ»
+    раньше, чем началась её ТЕКУЩАЯ непрерывная стоянка (motion_since_at). Если
+    сохранённый приезд старше — значит машина уезжала и вернулась (или прошлый
+    «отъезд» потерялся на устаревшем GPS), берём более поздний момент. Это может
+    лишь занизить простой — для «проверьте вручную» это безопасная сторона.
+    """
+    arrived = _event_datetime(stored_parked_since, fallback_at)
+    if motion_since_at is not None:
+        msince = motion_since_at if motion_since_at.tzinfo else motion_since_at.replace(tzinfo=timezone.utc)
+        if msince > arrived:
+            return msince
+    return arrived
+
+
 async def rc_geofence_job(owner_bot: Bot) -> None:
     async with async_session() as session:
         owners_res = await session.execute(select(Owner))
@@ -1111,8 +1129,11 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
                 departure_driver_name = last.get("driver_name") or driver_name
                 departure_who = f" ({departure_driver_name})" if departure_driver_name else ""
                 # стоянку считаем с момента фактической остановки (parked_since),
-                # а не с момента срабатывания детектора
-                arrived_ref = _event_datetime(last.get("parked_since"), last["at"])
+                # но не раньше начала текущей непрерывной стоянки (защита от
+                # фантомного простоя, если прошлый «отъезд» потерялся)
+                arrived_ref = _downtime_started_at(
+                    last.get("parked_since"), last["at"], st.motion_since_at
+                )
                 waited_minutes = max(0, int((now - arrived_ref).total_seconds() // 60))
                 billable_amount = telemetry_service.rc_billable_downtime_rub(waited_minutes)
                 waited = telemetry_service.duration_label(arrived_ref, now)
@@ -1164,7 +1185,9 @@ async def _check_rc_geofences(session, owner_bot: Bot, owner: Owner) -> None:
                 sent_any = True
             else:
                 still_inside = True
-                arrived_ref = _event_datetime(last.get("parked_since"), last["at"])
+                arrived_ref = _downtime_started_at(
+                    last.get("parked_since"), last["at"], st.motion_since_at
+                )
                 waited_minutes = max(0, int((now - arrived_ref).total_seconds() // 60))
                 billable_amount = telemetry_service.rc_billable_downtime_rub(waited_minutes)
                 parked_key = arrived_ref.isoformat()

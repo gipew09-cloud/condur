@@ -9,7 +9,7 @@ max − min за период), а НЕ суммой расстояний меж
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -35,6 +35,48 @@ SIGNAL_GPS_INVALID = "gps_invalid"
 SIGNAL_MOVING_WITHOUT_SHIFT = "moving_without_shift"
 SIGNAL_MOVING_WITHOUT_TRIP = "moving_without_trip"
 SIGNAL_IDLE_ENGINE = "idle_engine"
+
+
+# Двигатель заведён определяем по напряжению бортсети (генератор заряжает
+# АКБ), а НЕ по сырому биту ign. Инцидент 18.07.2026: у трекера Т557ОС178 в
+# ретрансляции ignition=1 «залип», хотя двигатель заглушен — Stavtrack честно
+# показывал «Зажигание Off» при 25.3 В. Напряжение — тот же признак, по
+# которому судит Stavtrack: работает генератор → ~28 В (борт 24 В) / ~14 В
+# (борт 12 В); заглушен → питание от АКБ ~25 В / ~12.6 В.
+ENGINE_BOARD_POWER_MIN_V = Decimal("5")     # ниже — питание борта потеряно/нет данных
+ENGINE_SYSTEM_24V_MIN_V = Decimal("18")     # выше этого — бортсеть 24 В, иначе 12 В
+ENGINE_ON_THRESHOLD_24V = Decimal("27.0")   # генератор 24-В сети
+ENGINE_ON_THRESHOLD_12V = Decimal("13.2")   # генератор 12-В сети
+
+
+def engine_running_from_voltage(power_v) -> bool | None:
+    """Двигатель заведён по напряжению бортсети. None — судить нельзя (нет
+    достоверного напряжения): пусть решает сырой бит зажигания как раньше."""
+    if power_v is None:
+        return None
+    try:
+        volts = Decimal(str(power_v))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    if volts < ENGINE_BOARD_POWER_MIN_V:
+        return None
+    threshold = ENGINE_ON_THRESHOLD_24V if volts >= ENGINE_SYSTEM_24V_MIN_V else ENGINE_ON_THRESHOLD_12V
+    return volts >= threshold
+
+
+# Пробег трекера в Wialon приходит в параметре totalDistance в МЕТРАХ
+# (проверено 18.07.2026: totalDistance=1691610321 м → 1691610.32 км, ровно
+# как одометр в самом Stavtrack). В EGTS пробег уже в км (odometer_km).
+# Наш столбец mileage_km — в километрах, поэтому метры делим на 1000.
+def wialon_odometer_km(total_distance_m) -> Decimal | None:
+    """totalDistance (метры) → пробег прибора в км. None — нет/мусор/ноль."""
+    if total_distance_m is None:
+        return None
+    try:
+        km = Decimal(str(total_distance_m)) / Decimal(1000)
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    return km if km > 0 else None
 
 
 def vehicle_motion_status(speed_kmh: Decimal | float | int | None, ignition: bool | None) -> str:
