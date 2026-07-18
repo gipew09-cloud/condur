@@ -21,13 +21,60 @@ os.environ.setdefault("DRIVER_BOT_TOKEN", "test")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
 os.environ.setdefault("JWT_SECRET", "test")
 
+from decimal import Decimal  # noqa: E402
+
 from app.services.telemetry_service import (  # noqa: E402
+    engine_running_from_voltage,
     ignition_shift_line,
     ignition_state_at,
     ignition_transitions,
+    wialon_odometer_km,
 )
 
+
+# ------------------------------------- пробег прибора из Wialon (метры → км)
+def test_wialon_odometer_km_meters_to_km():
+    """totalDistance в МЕТРАХ → км. 18.07: 1691610321 м = 1691610.32 км,
+    ровно как одометр в самом Ставтрэке."""
+    assert wialon_odometer_km(1691610321.7272892) == Decimal("1691610.3217272892")
+    assert wialon_odometer_km(885937140.9424347) == Decimal("885937.1409424347")
+
+
+def test_wialon_odometer_km_bad_values():
+    assert wialon_odometer_km(None) is None
+    assert wialon_odometer_km(0) is None
+    assert wialon_odometer_km("мусор") is None
+
 _T0 = datetime(2026, 7, 17, 5, 0, tzinfo=timezone.utc)
+
+
+# ------------------------------------- зажигание по напряжению бортсети
+def test_engine_running_from_voltage_24v():
+    """Инцидент 18.07: борт 24 В. Двигатель заглушен → ~25 В (питание от АКБ),
+    заведён → ~28 В (генератор). Совпадает с «Зажигание Off» Ставтрэка."""
+    # реальные значения из логов: Т557 стоит заглушенный
+    assert engine_running_from_voltage(25.36) is False
+    assert engine_running_from_voltage(25.47) is False
+    assert engine_running_from_voltage(26.38) is False   # У774 после остановки
+    # реальные значения: У774 едет, генератор работает
+    assert engine_running_from_voltage(28.09) is True
+    assert engine_running_from_voltage(28.0) is True
+
+
+def test_engine_running_from_voltage_12v():
+    """Борт 12 В: заглушен ~12.6 В, заведён ~14 В."""
+    assert engine_running_from_voltage(12.6) is False
+    assert engine_running_from_voltage(12.9) is False
+    assert engine_running_from_voltage(14.2) is True
+    assert engine_running_from_voltage(13.8) is True
+
+
+def test_engine_running_from_voltage_no_data():
+    """Нет достоверного напряжения → None (решает сырой бит зажигания)."""
+    assert engine_running_from_voltage(None) is None
+    assert engine_running_from_voltage(0) is None        # питание борта потеряно
+    assert engine_running_from_voltage(3.9) is None      # только АКБ терминала
+    assert engine_running_from_voltage("мусор") is None
 
 
 def _pt(minutes: float, ign):

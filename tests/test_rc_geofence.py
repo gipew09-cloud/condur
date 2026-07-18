@@ -198,6 +198,34 @@ def test_parse_nominatim_null_island_rejected():
     assert parse_nominatim_response([{"lat": "0.0", "lon": "0.0"}]) is None
 
 
+def test_downtime_started_at_clamps_to_current_stop():
+    """Фантомный простой (инцидент 18.07: «12 ч», а трекер стоял 13 мин).
+
+    Если сохранённый приезд на РЦ старше начала текущей непрерывной стоянки
+    (машина уезжала и вернулась, «отъезд» потерялся) — считаем от текущей
+    стоянки, а не от старого приезда."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.scheduler_jobs import _downtime_started_at
+
+    now = datetime(2026, 7, 18, 7, 0, tzinfo=timezone.utc)
+    stale_arrival = (now - timedelta(hours=12)).isoformat()   # приезд вчера вечером
+    fresh_stop = now - timedelta(minutes=13)                  # реально встал 13 мин назад
+
+    # приезд старый, но стоянка свежая → берём свежую (фикс фантома)
+    assert _downtime_started_at(stale_arrival, now, fresh_stop) == fresh_stop
+
+    # честный долгий простой: стоит непрерывно с приезда → берём приезд
+    long_arrival = now - timedelta(hours=15)
+    assert _downtime_started_at(long_arrival.isoformat(), now, long_arrival) == long_arrival
+
+    # нет motion_since_at → откат на сохранённый приезд
+    assert _downtime_started_at(long_arrival.isoformat(), now, None) == long_arrival
+
+    # naive motion_since_at из БД не роняет сравнение
+    assert _downtime_started_at(stale_arrival, now, fresh_stop.replace(tzinfo=None)) == fresh_stop
+
+
 def test_sum_engine_off_seconds():
     """Время с заглушенным двигателем: интервал приписывается состоянию первой
     точки; длинные дыры (трекер молчал) не считаются."""
