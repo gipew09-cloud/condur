@@ -148,11 +148,11 @@
 <script>
   const fmtRub = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
   const breakdown = {{ breakdown | tojson }};
-  const DONUT_COLORS = { 'Топливо':'#2563eb','Ремонт':'#e0a32e','Парковка':'#22a565','Штрафы':'#c5362b','Платные дороги':'#cbd2db','Прочее':'#5b6573' };
+  const DONUT_COLORS = { 'Топливо':'#1d4ed8','Ремонт':'#e0a32e','Парковка':'#22a565','Штрафы':'#c5362b','Платные дороги':'#cbd2db','Прочее':'#5b6573' };
   const expEl = document.getElementById('expenseChart');
   if (expEl && breakdown.length) {
     const total = breakdown.reduce((s, b) => s + b.amount, 0);
-    const colors = breakdown.map((b, i) => DONUT_COLORS[b.label] || ['#2563eb','#22a565','#e0a32e','#cbd2db','#c5362b','#5b6573'][i % 6]);
+    const colors = breakdown.map((b, i) => DONUT_COLORS[b.label] || ['#1d4ed8','#22a565','#e0a32e','#cbd2db','#c5362b','#5b6573'][i % 6]);
     new Chart(expEl, {
       type: 'doughnut',
       data: { labels: breakdown.map(b => b.label), datasets: [{ data: breakdown.map(b => b.amount), backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }] },

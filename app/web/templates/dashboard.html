@@ -13,7 +13,7 @@
   .sp-top h2 { font-size: 19px; font-weight: 800; margin: 0; }
   .sp-top .when { font-size: 12.5px; color: #8a93a3; font-weight: 500; margin: 2px 0 0; }
   .sp-top .right { display: flex; align-items: center; gap: 12px; }
-  .sp-btn { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 15px; border-radius: 9px; background: #2563eb; color: #fff !important; font-size: 13.5px; font-weight: 700; box-shadow: 0 3px 10px rgba(37,99,235,.28); text-decoration: none; border: 0; }
+  .sp-btn { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 15px; border-radius: 9px; background: var(--accent); color: #fff !important; font-size: 13.5px; font-weight: 700; box-shadow: 0 3px 10px rgba(37,99,235,.28); text-decoration: none; border: 0; }
   .sp-chip { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 13px; border-radius: 9px; background: #f1f4f9; font-size: 13.5px; font-weight: 600; color: #3a4453; }
   .sp-dot { width: 8px; height: 8px; border-radius: 50%; background: #22a565; box-shadow: 0 0 0 3px #d6f0e1; }
   .sp-ava { width: 36px; height: 36px; border-radius: 50%; background: #0f172a; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
@@ -62,7 +62,7 @@
   .sp-leg .line { width: 15px; height: 3px; border-radius: 2px; background: #1f9d57; }
   .sp-periods { display: inline-flex; gap: 2px; background: #f1f4f9; border-radius: 9px; padding: 3px; }
   .sp-periods .cp-btn { border: 0; cursor: pointer; font-size: 12px; font-weight: 600; color: #5b6573; background: transparent; border-radius: 7px; padding: 5px 11px; width: auto; margin: 0; }
-  .sp-periods .cp-btn.active { color: #fff; background: #2563eb; font-weight: 700; }
+  .sp-periods .cp-btn.active { color: #fff; background: var(--accent); font-weight: 700; }
 
   .sp-donut__body { display: flex; align-items: center; gap: 16px; padding: 4px 18px 16px; flex-wrap: wrap; }
   .sp-donut__wrap { position: relative; width: 132px; height: 132px; flex: none; }
@@ -81,14 +81,14 @@
   .sp-work__head, .sp-map__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; }
   .sp-work__head .ttl, .sp-map__head .ttl { font-weight: 800; font-size: 15px; }
   .sp-work__head .sub { font-size: 12.5px; color: #8a93a3; font-weight: 600; }
-  .sp-map__head a { font-size: 12.5px; color: #2563eb; font-weight: 700; text-decoration: none; }
+  .sp-map__head a { font-size: 12.5px; color: var(--accent); font-weight: 700; text-decoration: none; }
   .sp-work__row { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-top: 1px solid #f1f3f6; }
   .sp-plate { font-weight: 800; font-size: 12.5px; background: #f1f4f9; border: 1px solid #e4e8ef; border-radius: 6px; padding: 4px 7px; white-space: nowrap; }
   .sp-work__mid { flex: 1; min-width: 0; }
   .sp-work__mid .rt { font-size: 13.5px; font-weight: 700; }
   .sp-work__mid .rt .drv { color: #aab2bf; font-weight: 500; }
   .sp-track { height: 5px; border-radius: 3px; background: #eceef2; margin-top: 6px; overflow: hidden; }
-  .sp-track > i { display: block; height: 100%; background: #2563eb; border-radius: 3px; }
+  .sp-track > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
   .sp-temp { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 7px; font-size: 12px; font-weight: 700; background: #f1f4f9; color: #8a93a3; white-space: nowrap; }
   .sp-eta { font-size: 12.5px; color: #7b8494; font-weight: 600; width: 54px; text-align: right; }
   .sp-map__body { position: relative; height: 230px; background: #eef2f6; border-radius: 0 0 16px 16px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
@@ -333,11 +333,11 @@
   });
 
   // Пончик расходов
-  const DONUT_COLORS = { 'Топливо':'#2563eb', 'Зарплаты':'#22a565', 'Ремонт':'#e0a32e', 'Дороги':'#cbd2db', 'Парковка':'#22a565', 'Штрафы':'#c5362b', 'Прочее':'#5b6573' };
+  const DONUT_COLORS = { 'Топливо':'#1d4ed8', 'Зарплаты':'#22a565', 'Ремонт':'#e0a32e', 'Дороги':'#cbd2db', 'Парковка':'#22a565', 'Штрафы':'#c5362b', 'Прочее':'#5b6573' };
   const expEl = document.getElementById('expenseChart');
   if (expEl && breakdown.length) {
     const total = breakdown.reduce((s, b) => s + b.amount, 0);
-    const colors = breakdown.map((b, i) => DONUT_COLORS[b.label] || ['#2563eb','#22a565','#e0a32e','#cbd2db','#c5362b','#5b6573'][i % 6]);
+    const colors = breakdown.map((b, i) => DONUT_COLORS[b.label] || ['#1d4ed8','#22a565','#e0a32e','#cbd2db','#c5362b','#5b6573'][i % 6]);
     new Chart(expEl, {
       type: 'doughnut',
       data: { labels: breakdown.map(b => b.label), datasets: [{ data: breakdown.map(b => b.amount), backgroundColor: colors, borderWidth: 2, borderColor: '#fff' }] },

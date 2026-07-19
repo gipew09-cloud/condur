@@ -505,7 +505,7 @@
               </td>
               <td data-label="" style="white-space:nowrap;">
                 <a href="/stats/downtime/{{ r.event_id }}/edit?{{ request.query_params if request is defined else '' }}"
-                   style="color:#2563eb; margin-right:10px; font-size:.82rem;">✏️ Изменить</a>
+                   style="color:var(--accent); margin-right:10px; font-size:.82rem;">✏️ Изменить</a>
                 <form method="post" action="/stats/downtime/{{ r.event_id }}/hide?{{ request.query_params if request is defined else '' }}" style="display:inline; margin:0;"
                       onsubmit="var x=prompt('Скрыть ложную стоянку из статистики?\nМожно указать причину (необязательно):','машина стояла не на РЦ'); if(x===null){return false;} this.reason.value=x; return true;">
                   <input type="hidden" name="reason" value="">
@@ -541,7 +541,7 @@
               <td data-label="Причина">{{ r.reason or '—' }}</td>
               <td data-label="">
                 <form method="post" action="/stats/downtime/{{ r.event_id }}/unhide?{{ request.query_params if request is defined else '' }}" style="margin:0;">
-                  <button type="submit" style="width:auto; display:inline; background:none; border:none; box-shadow:none; color:#2563eb; cursor:pointer; padding:0; margin:0; font:inherit; font-size:.82rem;">↩︎ Вернуть</button>
+                  <button type="submit" style="width:auto; display:inline; background:none; border:none; box-shadow:none; color:var(--accent); cursor:pointer; padding:0; margin:0; font:inherit; font-size:.82rem;">↩︎ Вернуть</button>
                 </form>
               </td>
             </tr>

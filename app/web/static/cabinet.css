@@ -8,16 +8,22 @@
 */
 
 :root {
-  --accent: #2563eb;       /* blue-600 (бренд «Свежий путь») */
-  --accent-hover: #1d4ed8; /* blue-700 при наведении */
-  --accent-soft: #e8f0fe;
+  /* Глубокая синяя палитра: тёмно-синий navy для бренда/акцентов,
+     насыщенный blue-700 как основной, белые поверхности. */
+  --navy: #0b1f4d;         /* глубокий тёмно-синий — бренд, сильные акценты */
+  --navy-soft: #14306e;    /* чуть светлее navy для градиентов */
+  --accent: #1d4ed8;       /* насыщенный синий (blue-700) — основной */
+  --accent-hover: #1a3fac; /* глубже при наведении */
+  --accent-strong: #1e3a8a;/* blue-900 для градиентов бренда/кнопок */
+  --accent-soft: #e9f0ff;  /* мягкий синий тинт */
+  --accent-ring: rgba(29, 78, 216, .34); /* фокус-кольцо */
   --amber: #e0a32e;
   --amber-soft: #fdf0d3;
-  --bg: #eef1f5;           /* мягкий холодно-серый фон страниц */
+  --bg: #e9edf4;           /* холодный сине-серый фон страниц (чуть глубже) */
   --surface: #ffffff;
-  --border: #e6e9ef;
-  --text: #0f172a;
-  --text-muted: #647083;
+  --border: #e2e7f0;       /* граница с лёгким синим подтоном */
+  --text: #0e1b3a;         /* глубокий тёмно-синий текст (был почти-чёрный) */
+  --text-muted: #5c6884;   /* приглушённый сине-серый */
   --success-bg: #e7f6ec;
   --success-text: #147a3d;
   --danger-bg:  #fde8e6;
@@ -29,9 +35,14 @@
   --radius-md: 8px;
   --radius-lg: 12px;
 
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
-  --shadow-md: 0 1px 3px rgba(16, 24, 40, .06), 0 8px 24px -12px rgba(16, 24, 40, .18);
-  --shadow-lg: 0 1px 3px rgba(16, 24, 40, .06), 0 24px 60px -20px rgba(16, 24, 40, .20);
+  /* Тени с холодным сине-навигационным подтоном — «глубже», интереснее */
+  --shadow-sm: 0 1px 2px rgba(11, 31, 77, .06);
+  --shadow-md: 0 1px 3px rgba(11, 31, 77, .07), 0 8px 24px -12px rgba(11, 31, 77, .22);
+  --shadow-lg: 0 1px 3px rgba(11, 31, 77, .07), 0 24px 60px -20px rgba(11, 31, 77, .26);
+
+  /* Кривые движения (сильнее встроенных CSS-easing — из скилла Emil) */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);      /* вход/отклик — быстро стартует */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);  /* перемещение по экрану */
 }
 
 /* override Pico-переменных */
@@ -43,7 +54,7 @@
 
   --pico-primary:                 var(--accent);
   --pico-primary-hover:           var(--accent-hover);
-  --pico-primary-focus:           rgba(29, 78, 216, .22);
+  --pico-primary-focus:           var(--accent-ring);
   --pico-primary-inverse:         #ffffff;
   --pico-background-color:        var(--bg);
   --pico-card-background-color:   var(--surface);
@@ -119,12 +130,13 @@ nav.topbar .brand-lockup {
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  background: var(--accent);
+  /* глубокий тёмно-синий → синий: бренд смотрится насыщеннее плоской заливки */
+  background: linear-gradient(135deg, var(--navy) 0%, var(--accent) 100%);
   color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 3px 10px rgba(37, 99, 235, .28);
+  box-shadow: 0 4px 12px rgba(11, 31, 77, .32);
   flex: 0 0 auto;
 }
 .brand-mark i { font-size: 1.15rem; }
@@ -163,14 +175,15 @@ nav.topbar a {
   color: var(--text-muted);
   padding: .45rem .58rem;
   border-radius: var(--radius-sm);
-  transition: color .12s, background .12s;
+  transition: color .14s var(--ease-out), background .14s var(--ease-out);
   display: inline-flex;
   align-items: center;
   gap: .35rem;
   font-weight: 650;
   font-size: .92rem;
 }
-nav.topbar a:hover { color: var(--accent); }
+nav.topbar a:hover { color: var(--accent); background: var(--accent-soft); }
+nav.topbar a:active { transform: scale(.97); }
 nav.topbar a i { font-size: 1.05em; }
 nav.topbar a[aria-current="page"] {
   color: var(--accent);
@@ -192,15 +205,18 @@ nav.topbar .nav-icon-button {
   min-width: 38px;
   padding: 0;
   border-radius: 10px;
-  background: #f4f7fb;
-  color: #475569;
+  background: #eef2fb;
+  color: #3a4a6b;
   justify-content: center;
   position: relative;
+  transition: background .14s var(--ease-out), color .14s var(--ease-out),
+              transform .16s var(--ease-out);
 }
 nav.topbar .nav-icon-button:hover {
   background: var(--accent-soft);
   color: var(--accent);
 }
+nav.topbar .nav-icon-button:active { transform: scale(.94); }
 .nav-alert-dot {
   position: absolute;
   top: 7px;
@@ -261,9 +277,14 @@ main.container h3 {
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  transition: transform .15s, box-shadow .15s;
+  transition: transform .18s var(--ease-out), box-shadow .18s var(--ease-out);
 }
-.kpi:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+/* Лифт при наведении — только там, где есть настоящий курсор (не тач).
+   Появление карточек НЕ анимируем: дашборд открывают десятки раз в день,
+   мгновенная отрисовка важнее (принцип из скилла: часто-видимое не анимируем). */
+@media (hover: hover) and (pointer: fine) {
+  .kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+}
 .kpi small {
   font-size: .72rem;
   text-transform: uppercase;
@@ -367,17 +388,36 @@ form .grid {
 button[type="submit"],
 .button-primary,
 [role="button"]:not(.outline):not(.secondary):not(.contrast) {
-  background: var(--accent);
-  border-color: var(--accent);
+  /* насыщенный вертикальный градиент — «глубина», а не плоская заливка */
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-hover) 100%);
+  border-color: var(--accent-hover);
   color: #fff;
   font-weight: 600;
-  box-shadow: 0 3px 10px rgba(37, 99, 235, .28);
+  box-shadow: 0 4px 12px rgba(29, 78, 216, .30);
+  /* точные свойства + кастомная кривая (не transition: all) */
+  transition: box-shadow .16s var(--ease-out), transform .16s var(--ease-out),
+              filter .16s var(--ease-out);
 }
-button[type="submit"]:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  box-shadow: 0 4px 12px rgba(37, 99, 235, .35);
+button[type="submit"]:hover,
+.button-primary:hover,
+[role="button"]:not(.outline):not(.secondary):not(.contrast):hover {
+  filter: brightness(1.05);
+  box-shadow: 0 6px 16px rgba(29, 78, 216, .38);
 }
+/* Отклик на нажатие: кнопка «слышит» палец (из скилла Emil) */
+button[type="submit"]:active,
+.button-primary:active,
+[role="button"]:not(.outline):not(.secondary):not(.contrast):active {
+  transform: scale(.97);
+  box-shadow: 0 2px 8px rgba(29, 78, 216, .28);
+}
+[role="button"].secondary.outline,
+[role="button"].contrast.outline {
+  transition: background .16s var(--ease-out), color .16s var(--ease-out),
+              border-color .16s var(--ease-out), transform .16s var(--ease-out);
+}
+[role="button"].secondary.outline:active,
+[role="button"].contrast.outline:active { transform: scale(.97); }
 [role="button"].secondary.outline {
   border-color: var(--border);
   color: var(--text-muted);
@@ -398,14 +438,14 @@ button[type="submit"]:hover {
   border-radius: 7px;
   font-size: .76em;
   font-weight: 700;
-  background: #e8f0fe;
-  color: #2563eb;
+  background: var(--accent-soft);
+  color: var(--accent);
   white-space: nowrap;
 }
 .pill--success, .badge--success { background: #e7f6ec; color: #147a3d; }
 .pill--warn,    .badge--warning { background: #fdf0d3; color: #9a5b00; }
 .pill--danger,  .badge--danger  { background: #fde8e6; color: #c5362b; }
-.pill--info,    .badge--info    { background: #e8f0fe; color: #2563eb; }
+.pill--info,    .badge--info    { background: var(--accent-soft); color: var(--accent); }
 .pill--neutral, .badge--neutral { background: #f1f4f9; color: #5b6573; }
 .badge {
   display: inline-flex;
@@ -756,7 +796,7 @@ a:hover { color: var(--accent-hover); }
 .sp-stat .v.pos { color: #147a3d; }
 .sp-stat .v.neg { color: #c5362b; }
 .sp-vcard__foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #f1f3f6; padding-top: 11px; }
-.sp-vcard__foot a { font-size: 12.5px; color: #2563eb; font-weight: 700; text-decoration: none; }
+.sp-vcard__foot a { font-size: 12.5px; color: var(--accent); font-weight: 700; text-decoration: none; }
 
 /* Рейтинг с полосами (прибыльность направлений, топ водителей и т.п.) */
 .sp-rank { display: grid; gap: 11px; padding: 8px 18px 16px; }
@@ -766,7 +806,7 @@ a:hover { color: var(--accent-hover); }
 .sp-rank__val { font-size: 13px; font-weight: 800; white-space: nowrap; }
 .sp-rank__val.neg { color: #c5362b; }
 .sp-rank__bar { height: 7px; border-radius: 4px; background: #f1f3f6; overflow: hidden; }
-.sp-rank__bar > i { display: block; height: 100%; border-radius: 4px; background: #2563eb; }
+.sp-rank__bar > i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
 .sp-rank__bar > i.neg { background: #c5362b; }
 .sp-rank__meta { font-size: 11.5px; color: #8a93a3; font-weight: 600; }
 .sp-empty { padding: 4px 18px 18px; color: #8a93a3; font-size: 13px; }
@@ -782,3 +822,52 @@ a:hover { color: var(--accent-hover); }
 .sp-lg-row .nm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #3a4453; }
 .sp-lg-row .nm .sq { width: 9px; height: 9px; border-radius: 3px; }
 .sp-lg-row .pc { font-size: 13px; font-weight: 800; }
+
+/* ============ движение и доступность (крафт из скилла Emil) ============ */
+
+/* Видимое фокус-кольцо для клавиатуры — не мешает мыши (:focus-visible),
+   глубокий синий тон в тон бренду. */
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* Ссылки — плавный цвет по мягкой кривой */
+a { transition: color .14s var(--ease-out); }
+
+/* Отклик на нажатие для остальных кликабельных элементов (плашки-действия,
+   переключатели, summary): интерфейс «слышит» палец. Тексто-ссылки навигации
+   не трогаем, чтобы буквы не «прыгали». */
+summary[role="button"]:active,
+.add-toggle:active,
+.history-nav a:active,
+.stats-issue:active { transform: scale(.98); }
+
+/* Нижняя мобильная навигация — лёгкий отклик на тап */
+.bottom-nav a { transition: color .14s var(--ease-out), background .14s var(--ease-out); }
+.bottom-nav a:active { transform: scale(.94); }
+
+/* Уменьшенное движение: убираем перемещения/масштаб, оставляем мягкие
+   изменения цвета/прозрачности (доступность — из скилла). */
+@media (prefers-reduced-motion: reduce) {
+  .kpi { animation: none; }
+  .kpi:hover,
+  nav.topbar a:active,
+  nav.topbar .nav-icon-button:active,
+  button[type="submit"]:active,
+  .button-primary:active,
+  [role="button"]:active,
+  .bottom-nav a:active,
+  summary[role="button"]:active,
+  .add-toggle:active,
+  .history-nav a:active,
+  .stats-issue:active { transform: none; }
+  * { scroll-behavior: auto; }
+}
