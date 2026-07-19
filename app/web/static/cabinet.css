@@ -31,9 +31,9 @@
   --warn-bg: #fdf0d3;
   --warn-text: #9a5b00;
 
-  --radius-sm: 7px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
 
   /* Тени с холодным сине-навигационным подтоном — «глубже», интереснее */
   --shadow-sm: 0 1px 2px rgba(11, 31, 77, .06);
@@ -68,15 +68,22 @@
   --pico-muted-border-color:      var(--border);
   --pico-form-element-background-color: var(--surface);
   --pico-form-element-border-color:     var(--border);
+  /* Фокус полей — синий бренда через родные переменные Pico (надёжно, без
+     войны специфичности): активная граница синяя + мягкое кольцо в тон. */
+  --pico-form-element-active-border-color: var(--accent);
+  --pico-form-element-focus-color:         var(--accent-ring);
   --pico-table-border-color:      var(--border);
   --pico-table-row-stripped-background-color: #f8fafc;
   --pico-border-radius:           var(--radius-md);
 }
 
 body {
-  background: var(--bg);
+  /* Деликатная глубина: чуть светлее у верха, мягко уходит в фон.
+     Один длинный градиент — без швов, красится один раз, не влияет на скролл. */
+  background: linear-gradient(180deg, #eef2f9 0, var(--bg) 460px) no-repeat, var(--bg);
   font-family: 'Onest', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body > header.container,
@@ -368,11 +375,18 @@ table tbody td, table tbody th {
   vertical-align: middle;
 }
 table tbody tr:last-child td, table tbody tr:last-child th { border-bottom: 0; }
-table tbody tr { transition: background .12s; }
-table tbody tr:hover { background: #f6f7f9; }
+table tbody tr { transition: background .14s var(--ease-out); }
+table tbody tr:hover { background: #f5f7fb; }
 
 input, select, textarea {
   border-radius: var(--radius-md) !important;
+  transition: border-color .15s var(--ease-out), box-shadow .15s var(--ease-out);
+}
+/* Поле «оживает» при фокусе: синяя граница + мягкое кольцо в тон бренду.
+   Только цвет/тень — без сдвига размеров, поэтому ничего не «прыгает». */
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-ring) !important;
 }
 
 label {
@@ -583,10 +597,11 @@ article {
   padding: 13px 16px;
   color: var(--text);
   text-decoration: none;
+  transition: background .14s var(--ease-out);
 }
 .stats-issue:hover {
   color: var(--text);
-  background: #f8fafc;
+  background: #f5f7fb;
 }
 .stats-issue__icon {
   width: 34px;
@@ -666,9 +681,11 @@ a:hover { color: var(--accent-hover); }
   padding: .3rem .65rem;
   border-radius: var(--radius-sm);
   font-weight: 500;
-  transition: background .12s, color .12s;
+  transition: background .14s var(--ease-out), color .14s var(--ease-out),
+              transform .16s var(--ease-out);
 }
 .history-nav a:hover { color: var(--accent); background: var(--accent-soft); }
+.history-nav a:active { transform: scale(.97); }
 .history-nav a[aria-current="page"] {
   background: var(--accent-soft);
   color: var(--accent);
@@ -695,7 +712,7 @@ a:hover { color: var(--accent-hover); }
   padding: .8rem 1rem;
   user-select: none;
   border-radius: var(--radius-md);
-  transition: background .12s;
+  transition: background .14s var(--ease-out);
 }
 .add-toggle::-webkit-details-marker { display: none; }
 .add-toggle:hover { background: var(--accent-soft); }
@@ -854,11 +871,33 @@ summary[role="button"]:active,
 .bottom-nav a { transition: color .14s var(--ease-out), background .14s var(--ease-out); }
 .bottom-nav a:active { transform: scale(.94); }
 
+/* Фирменное выделение текста — синий тон вместо системного (незаметная деталь,
+   которая делает продукт «своим»). */
+::selection { background: rgba(29, 78, 216, .16); color: var(--text); }
+
+/* Карточки готовы к плавному наведению/фокусу (мягкая глубина, без «прыжков») */
+.card, .panel, article {
+  transition: box-shadow .18s var(--ease-out), border-color .18s var(--ease-out);
+}
+/* Карточка-ссылка мягко приподнимается — только под настоящим курсором */
+@media (hover: hover) and (pointer: fine) {
+  a.card:hover, a.panel:hover, a > article:hover {
+    box-shadow: var(--shadow-md);
+    border-color: #d3dcec;
+    transform: translateY(-2px);
+  }
+  a.card, a.panel, a > article {
+    transition: box-shadow .18s var(--ease-out), border-color .18s var(--ease-out),
+                transform .18s var(--ease-out);
+  }
+}
+
 /* Уменьшенное движение: убираем перемещения/масштаб, оставляем мягкие
    изменения цвета/прозрачности (доступность — из скилла). */
 @media (prefers-reduced-motion: reduce) {
   .kpi { animation: none; }
   .kpi:hover,
+  a.card:hover, a.panel:hover, a > article:hover,
   nav.topbar a:active,
   nav.topbar .nav-icon-button:active,
   button[type="submit"]:active,
