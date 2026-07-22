@@ -446,6 +446,88 @@ async def engine_off_minutes(
     return engine_off_minutes_from_points([(t, ign) for t, ign in rows])
 
 
+# =========================================================================
+# Длительность простоя на РЦ = НЕПРЕРЫВНОЕ пребывание в геозоне по GPS.
+# Считаем по факту (был ли трекер внутри радиуса), а НЕ по времени начала
+# текущей стоянки: в момент отъезда машина уже трогается, и «время текущей
+# стоянки» = пара минут — отсюда был баг «стоял 3 мин», хотя приехал час
+# назад. И не по старому событию «приезд»: если прошлый «отъезд» потерялся,
+# был фантомный «12 ч». Пребывание по точкам чинит оба случая сразу.
+# =========================================================================
+def rc_presence_start_from_points(
+    points: list[tuple[datetime, float | None]],
+    exit_radius_m: float,
+    tolerate_outside: int = 1,
+) -> datetime | None:
+    """Начало текущего непрерывного пребывания в геозоне РЦ.
+
+    points — [(observed_at, расстояние_до_центра_РЦ_м)] по возрастанию времени.
+    Идём от свежих точек к старым: сначала пропускаем «хвост снаружи» (машина
+    как раз выезжает или уже выехала), затем берём непрерывный отрезок «внутри»
+    и возвращаем его начало. Одиночные выбросы GPS наружу (не больше
+    tolerate_outside подряд) считаем шумом. Устойчивый выход наружу ДО этого
+    отрезка обрывает счёт — стоянка не склеивается с прошлым визитом.
+    None — точек внутри геозоны нет (тогда вызывающий берёт запасное время).
+    """
+    start: datetime | None = None
+    in_run = False
+    outside_streak = 0
+    for observed_at, dist in reversed(points):
+        inside = dist is not None and dist <= exit_radius_m
+        if not in_run:
+            if inside:
+                in_run = True
+                start = observed_at
+            continue  # ещё «хвост снаружи» — пропускаем
+        if inside:
+            start = observed_at
+            outside_streak = 0
+        else:
+            outside_streak += 1
+            if outside_streak > tolerate_outside:
+                break
+    return start
+
+
+async def rc_presence_started_at(
+    session: AsyncSession, *, vehicle_id: int, rc_lat, rc_lon,
+    exit_radius_m: float, now: datetime, fallback: datetime,
+    lookback_hours: int = 48,
+) -> datetime:
+    """Когда машина начала текущую непрерывную стоянку в геозоне РЦ (по GPS).
+    fallback — запасное время, если достоверных точек нет."""
+    from sqlalchemy import select
+
+    from app.models import VehicleTelemetryPoint
+    from app.services import rc_service
+
+    rows = (
+        await session.execute(
+            select(
+                VehicleTelemetryPoint.observed_at,
+                VehicleTelemetryPoint.latitude,
+                VehicleTelemetryPoint.longitude,
+            )
+            .where(
+                VehicleTelemetryPoint.vehicle_id == vehicle_id,
+                VehicleTelemetryPoint.is_valid.is_(True),
+                VehicleTelemetryPoint.observed_at.is_not(None),
+                VehicleTelemetryPoint.observed_at >= now - timedelta(hours=lookback_hours),
+                VehicleTelemetryPoint.observed_at <= now,
+                VehicleTelemetryPoint.latitude.is_not(None),
+                VehicleTelemetryPoint.longitude.is_not(None),
+            )
+            .order_by(VehicleTelemetryPoint.observed_at)
+            .limit(20000)
+        )
+    ).all()
+    points = [
+        (t, rc_service.haversine_m(lat, lon, rc_lat, rc_lon))
+        for t, lat, lon in rows
+    ]
+    return rc_presence_start_from_points(points, exit_radius_m) or fallback
+
+
 def format_mileage_comparison(odometer_km: int, gps_km: Decimal) -> str:
     """Строка для бота: одометр против GPS + пометка при большом расхождении."""
     diff = Decimal(odometer_km) - gps_km
