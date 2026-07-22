@@ -230,7 +230,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # no
 from sqlalchemy.ext.compiler import compiles  # noqa: E402
 
 from app.models import Base, Owner, Vehicle, VehicleTelemetryPoint  # noqa: E402
-from app.services.telemetry_service import shift_ignition_snapshot  # noqa: E402
+from app.services.telemetry_service import (  # noqa: E402
+    rc_presence_started_at,
+    shift_ignition_snapshot,
+)
 
 
 @compiles(JSONB, "sqlite")
@@ -278,6 +281,69 @@ def test_shift_ignition_snapshot_reads_points():
             assert await shift_ignition_snapshot(
                 session, vehicle_id=other.id, moment=_T0
             ) is None
+        await engine.dispose()
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+
+def test_rc_presence_started_at_reads_points():
+    """Сквозная проверка: async-обёртка читает точки из БД, считает
+    расстояние до РЦ и возвращает начало непрерывного пребывания —
+    приехал в 06:28, а не «пару минут назад» в момент отъезда."""
+    RC_LAT, RC_LON = 59.80, 30.40   # центр РЦ
+    t0 = datetime(2026, 7, 19, 6, 28, tzinfo=timezone.utc)
+
+    async def scenario():
+        engine = create_async_engine("sqlite+aiosqlite://")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessionmaker() as session:
+            owner = Owner(telegram_id=1, full_name="Владелец")
+            session.add(owner)
+            await session.flush()
+            veh = Vehicle(owner_id=owner.id, license_plate="Т557ОС178")
+            session.add(veh)
+            await session.flush()
+            # 70 минут внутри геозоны (почти в центре), затем выехал (далеко)
+            for m in range(0, 71, 5):
+                session.add(VehicleTelemetryPoint(
+                    owner_id=owner.id, vehicle_id=veh.id,
+                    observed_at=t0 + timedelta(minutes=m),
+                    latitude=Decimal("59.8001"), longitude=Decimal("30.4001"),
+                    speed_kmh=Decimal(0), is_valid=True,
+                ))
+            for m in range(72, 80, 2):
+                session.add(VehicleTelemetryPoint(
+                    owner_id=owner.id, vehicle_id=veh.id,
+                    observed_at=t0 + timedelta(minutes=m),
+                    latitude=Decimal("59.85"), longitude=Decimal("30.50"),  # ~7 км
+                    speed_kmh=Decimal(40), is_valid=True,
+                ))
+            await session.commit()
+
+            now = t0 + timedelta(minutes=80)
+            fb = now - timedelta(minutes=3)   # «запасное» время (было бы 3 мин)
+            start = await rc_presence_started_at(
+                session, vehicle_id=veh.id, rc_lat=RC_LAT, rc_lon=RC_LON,
+                exit_radius_m=600, now=now, fallback=fb,
+            )
+            # SQLite отдаёт наивную дату (в бою Postgres — с таймзоной); нормализуем
+            start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+            # начало пребывания — 06:28, а не запасные «3 минуты»
+            assert start == t0
+            assert (now - start).total_seconds() // 60 >= 70
+
+            # нет точек внутри → берём запасное время
+            far = await rc_presence_started_at(
+                session, vehicle_id=veh.id, rc_lat=10.0, rc_lon=10.0,
+                exit_radius_m=600, now=now, fallback=fb,
+            )
+            assert far == fb
         await engine.dispose()
 
     loop = asyncio.new_event_loop()

@@ -198,32 +198,46 @@ def test_parse_nominatim_null_island_rejected():
     assert parse_nominatim_response([{"lat": "0.0", "lon": "0.0"}]) is None
 
 
-def test_downtime_started_at_clamps_to_current_stop():
-    """Фантомный простой (инцидент 18.07: «12 ч», а трекер стоял 13 мин).
+def test_rc_presence_start_from_points():
+    """«Стоял там» = непрерывное пребывание в геозоне РЦ по GPS-точкам.
 
-    Если сохранённый приезд на РЦ старше начала текущей непрерывной стоянки
-    (машина уезжала и вернулась, «отъезд» потерялся) — считаем от текущей
-    стоянки, а не от старого приезда."""
+    Чинит сразу два бага:
+      - «стоял 3 мин», хотя приехал час назад (в момент отъезда машина уже
+        трогается — нельзя считать по «времени текущей стоянки»);
+      - фантомные «12 ч», если прошлый «отъезд» потерялся (стоянка не
+        склеивается с прошлым визитом — между ними есть точки снаружи)."""
     from datetime import datetime, timedelta, timezone
 
-    from app.services.scheduler_jobs import _downtime_started_at
+    from app.services.telemetry_service import rc_presence_start_from_points
 
-    now = datetime(2026, 7, 18, 7, 0, tzinfo=timezone.utc)
-    stale_arrival = (now - timedelta(hours=12)).isoformat()   # приезд вчера вечером
-    fresh_stop = now - timedelta(minutes=13)                  # реально встал 13 мин назад
+    t0 = datetime(2026, 7, 19, 6, 28, tzinfo=timezone.utc)
+    R = 600  # радиус выхода, м
+    pt = lambda minutes, dist: (t0 + timedelta(minutes=minutes), dist)  # noqa: E731
 
-    # приезд старый, но стоянка свежая → берём свежую (фикс фантома)
-    assert _downtime_started_at(stale_arrival, now, fresh_stop) == fresh_stop
+    # приехал в 06:28, стоял внутри ~70 мин (jitter 10–40 м), потом ВЫЕХАЛ
+    # (хвост точек снаружи, машина трогается) → начало = 06:28, а не «3 мин»
+    inside = [pt(m, 20 + (m % 3) * 10) for m in range(0, 71, 5)]
+    leaving = [pt(m, 900 + m) for m in range(72, 80, 2)]      # снаружи, уезжает
+    assert rc_presence_start_from_points(inside + leaving, R) == t0
 
-    # честный долгий простой: стоит непрерывно с приезда → берём приезд
-    long_arrival = now - timedelta(hours=15)
-    assert _downtime_started_at(long_arrival.isoformat(), now, long_arrival) == long_arrival
+    # ещё внутри прямо сейчас (без хвоста) → тоже начало = 06:28
+    assert rc_presence_start_from_points(inside, R) == t0
 
-    # нет motion_since_at → откат на сохранённый приезд
-    assert _downtime_started_at(long_arrival.isoformat(), now, None) == long_arrival
+    # фантом: был на РЦ вчера, УЕХАЛ (точки снаружи), вернулся сегодня —
+    # берём только сегодняшний визит, а не склеиваем со вчерашним
+    yesterday = [pt(m, 30) for m in range(-720, -700, 5)]     # ~12 ч назад, внутри
+    away = [pt(m, 5000) for m in range(-699, -30, 60)]        # далеко, ехал/был не там
+    today = [pt(m, 25) for m in range(0, 41, 5)]              # снова внутри с 06:28
+    start = rc_presence_start_from_points(yesterday + away + today, R)
+    assert start == t0                                        # не вчерашние 12 ч
 
-    # naive motion_since_at из БД не роняет сравнение
-    assert _downtime_started_at(stale_arrival, now, fresh_stop.replace(tzinfo=None)) == fresh_stop
+    # одиночный выброс GPS наружу посреди стоянки — шум, не обрывает счёт
+    glitchy = [pt(0, 20), pt(5, 20), pt(10, 1200), pt(15, 20), pt(20, 20)]
+    assert rc_presence_start_from_points(glitchy, R) == t0
+
+    # нет точек внутри геозоны → None (вызывающий возьмёт запасное время)
+    assert rc_presence_start_from_points([pt(0, 5000), pt(5, 4000)], R) is None
+    assert rc_presence_start_from_points([], R) is None
 
 
 def test_sum_engine_off_seconds():
