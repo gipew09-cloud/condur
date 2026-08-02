@@ -6,6 +6,11 @@
   <meta name="theme-color" content="#1d4ed8">
   <title>{% block title %}TMS{% endblock %} — кабинет</title>
 
+  <!-- Иконки бренда: вкладка браузера и «на экран Домой» на телефоне -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+
   <!-- Шрифты: Onest для интерфейса (дизайн «Свежий путь»), JetBrains Mono для цифр -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,7 +59,7 @@
   <nav class="topbar">
     <ul>
       <li class="brand-lockup">
-        <span class="brand-mark"><i class="ph ph-truck"></i></span>
+        <img class="brand-mark" src="/static/logo-mark.png" alt="Condur" width="36" height="36">
         <span class="brand-copy">
           <strong>Condur</strong>
           <small>{{ owner.company_name if owner else 'TMS' }}</small>

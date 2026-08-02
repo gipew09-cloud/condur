@@ -133,20 +133,15 @@ nav.topbar .brand-lockup {
   gap: .65rem;
   min-width: 0;
 }
+/* Логотип «орёл над дорогой» — знак стоит прямо на белой шапке, без подложки:
+   так сохраняются его родные цвета (тёмно-синий орёл + синяя дорога с разметкой). */
 .brand-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  /* глубокий тёмно-синий → синий: бренд смотрится насыщеннее плоской заливки */
-  background: linear-gradient(135deg, var(--navy) 0%, var(--accent) 100%);
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 12px rgba(11, 31, 77, .32);
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
   flex: 0 0 auto;
+  display: block;
 }
-.brand-mark i { font-size: 1.15rem; }
 .brand-copy {
   display: grid;
   line-height: 1.12;
