@@ -16,10 +16,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 
-  <!-- Pico + наши слои стилей -->
+  <!-- Pico + наши слои стилей.
+       ?v= — версия стилей. Браузер кэширует CSS надолго, и после обновления
+       дизайна человек мог видеть старое оформление с новой разметкой (значок
+       бренда лежал на старой синей подложке). Меняем номер версии при каждой
+       правке стилей — тогда браузер гарантированно берёт свежие. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="/static/cabinet.css">
-  <link rel="stylesheet" href="/static/mobile.css">
+  <link rel="stylesheet" href="/static/cabinet.css?v=3">
+  <link rel="stylesheet" href="/static/mobile.css?v=3">
 
   <!-- HTMX и Phosphor Icons -->
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -59,7 +63,7 @@
   <nav class="topbar">
     <ul>
       <li class="brand-lockup">
-        <img class="brand-mark" src="/static/logo-mark.png" alt="Condur" width="36" height="36">
+        <img class="brand-mark" src="/static/logo-mark.png" alt="Condur" width="55" height="44">
         <span class="brand-copy">
           <strong>Condur</strong>
           <small>{{ owner.company_name if owner else 'TMS' }}</small>
