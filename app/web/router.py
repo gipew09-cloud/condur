@@ -4572,19 +4572,60 @@ async def shifts_page(
     request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    driver_id: Annotated[str | None, Query()] = None,
+    date_from: Annotated[str | None, Query()] = None,
+    date_to: Annotated[str | None, Query()] = None,
 ):
+    """История смен. Порядок всегда по дате открытия, новые сверху.
+    Фильтры (водитель, период) — необязательные: пустые = показываем всё."""
+    # driver_id приходит строкой: пустое «— все —» не должно ронять запрос в 422
+    d_id = int(driver_id) if (driver_id or "").strip().isdigit() else None
+    conditions = [Shift.owner_id == owner.id]
+    if d_id:
+        conditions.append(Shift.driver_id == d_id)
+    if date_from:
+        try:
+            conditions.append(Shift.started_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            # «по дату» включительно: до конца выбранного дня
+            conditions.append(
+                Shift.started_at < datetime.fromisoformat(date_to) + timedelta(days=1)
+            )
+        except ValueError:
+            pass
+
     rows_res = await session.execute(
         select(Shift, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Shift.driver_id)
         .join(Vehicle, Vehicle.id == Shift.vehicle_id)
-        .where(Shift.owner_id == owner.id)
+        .where(*conditions)
         .order_by(desc(Shift.started_at))
         .limit(200)
     )
     rows = list(rows_res.all())
+    drivers = list(
+        (
+            await session.execute(
+                select(Driver)
+                .where(Driver.owner_id == owner.id)
+                .order_by(Driver.is_active.desc(), Driver.full_name)
+            )
+        ).scalars().all()
+    )
     return templates.TemplateResponse(
         "shifts.html",
-        {"request": request, "owner": owner, "rows": rows, "active_page": "trips"},
+        {
+            "request": request, "owner": owner, "rows": rows,
+            "drivers": drivers,
+            "filter_driver_id": d_id,
+            "filter_date_from": date_from or "",
+            "filter_date_to": date_to or "",
+            "filters_on": bool(d_id or date_from or date_to),
+            "active_page": "trips",
+        },
     )
 
 
