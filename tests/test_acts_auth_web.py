@@ -550,6 +550,56 @@ def test_trip_detail_shows_pending_driver_revenue_separately():
     assert "Удалить рейс" in html
 
 
+def test_shifts_page_filters_by_driver_and_dates():
+    """У смен появился фильтр (водитель + период). Порядок — всегда по дате
+    открытия, новые сверху; пустой фильтр показывает всё."""
+    import ast
+    src = open("app/web/router.py", encoding="utf-8").read()
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "shifts_page"
+    )
+    args = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    for p in ("driver_id", "date_from", "date_to"):
+        assert p in args, f"страница смен не принимает {p}"
+    body = ast.get_source_segment(src, fn)
+    assert "Shift.driver_id == d_id" in body
+    assert "Shift.started_at >=" in body and "Shift.started_at <" in body
+    # «по дату» включительно — до конца выбранного дня
+    assert "timedelta(days=1)" in body
+    # сортировка по дате, новые сверху — не сбита фильтром
+    assert "desc(Shift.started_at)" in body
+    # пустой driver_id не роняет страницу в 422
+    assert "isdigit()" in body
+
+
+@pytest.mark.parametrize("tpl", ["shifts.html", "trips.html"])
+def test_filter_is_behind_a_button_on_both_pages(tpl):
+    """Фильтр спрятан под кнопку «Фильтр» и раскрыт, когда он включён."""
+    src = open(f"app/web/templates/{tpl}", encoding="utf-8").read()
+    assert "Фильтр" in src
+    assert "{% if filters_on %}open{% endif %}" in src, "фильтр не раскрывается сам"
+    assert "Сбросить" in src, "нет сброса фильтра"
+    for field in ('name="driver_id"', 'name="date_from"', 'name="date_to"'):
+        assert field in src, f"{tpl}: нет поля {field}"
+
+
+def test_render_shifts_filter_states():
+    """Пустой фильтр — обычный список; включённый — раскрыт, есть сброс,
+    а пустая выдача объясняет, что дело в фильтре."""
+    shift = NS(id=1, started_at=datetime(2026, 8, 1, 6, 0, tzinfo=timezone.utc),
+               ended_at=None, distance_km=None, status="started", is_manual=False)
+    rows = [(shift, "Саломов", "Т557ОС178")]
+    base = dict(owner=OWNER, active_page="trips",
+                drivers=[NS(id=1, full_name="Саломов", is_active=True)],
+                filter_driver_id=None, filter_date_from="", filter_date_to="")
+    html = _render("shifts.html", rows=rows, filters_on=False, **base)
+    assert "Фильтр" in html and "Сбросить" not in html
+    html = _render("shifts.html", rows=[], filters_on=True, **base)
+    assert "По этому фильтру смен нет" in html
+    assert "Сбросить" in html
+
+
 def test_trip_route_edit_saves_and_logs_history():
     """Правка маршрута рейса (водитель промахнулся кнопкой: «5.17 → Новый рейс»).
 
