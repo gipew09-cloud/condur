@@ -870,6 +870,43 @@ summary[role="button"]:active,
 .bottom-nav a { transition: color .14s var(--ease-out), background .14s var(--ease-out); }
 .bottom-nav a:active { transform: scale(.94); }
 
+/* Строка «Применить» + переключатель сортировки под фильтром списков */
+.sort-row {
+  display: flex;
+  gap: .6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+/* Pico растягивает кнопки на всю ширину — в этой строке они рядом, не в столбик */
+.sort-row > button,
+.sort-row > .sort-toggle {
+  width: auto;
+  margin-bottom: 0;
+}
+.sort-toggle {
+  font-size: .88rem;
+  font-weight: 650;
+  padding: .5rem .9rem;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  margin-left: auto;   /* прижимаем вправо: это не главное действие */
+  transition: border-color .14s var(--ease-out), background .14s var(--ease-out),
+              transform .16s var(--ease-out);
+}
+.sort-toggle:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.sort-toggle:active { transform: scale(.97); }
+@media (max-width: 560px) {
+  .sort-toggle { margin-left: 0; }   /* на телефоне — в общий ряд, без прижатия */
+}
+
 /* Фирменное выделение текста — синий тон вместо системного (незаметная деталь,
    которая делает продукт «своим»). */
 ::selection { background: rgba(29, 78, 216, .16); color: var(--text); }

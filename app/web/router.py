@@ -872,6 +872,23 @@ async def _cashflow_chart(
 
 
 # =========================================================================
+# Сортировка списков рейсов и смен: два режима, переключаются одной кнопкой.
+#   "date"  — по обычной дате (когда работа выполнена). ПО УМОЛЧАНИЮ.
+#   "added" — по дате внесения в систему.
+# Различаются, когда прошлые рейсы/смены добавляют задним числом: по дате они
+# уедут вниз к своему числу, по дате добавления — окажутся сверху.
+# =========================================================================
+def _sort_choice(value: str | None) -> str:
+    return "added" if (value or "").strip() == "added" else "date"
+
+
+def _sort_toggle_url(request: Request, current: str) -> str:
+    """Та же страница с перевёрнутой сортировкой; фильтры сохраняются."""
+    other = "added" if current == "date" else "date"
+    return str(request.url.include_query_params(sort=other))
+
+
+# =========================================================================
 # /trips
 # =========================================================================
 @app.get("/trips", response_class=HTMLResponse)
@@ -883,6 +900,7 @@ async def trips_page(
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
     page: Annotated[int, Query()] = 1,
+    sort: Annotated[str | None, Query()] = None,
 ):
     # driver_id приходит строкой: пустое значение «— все —» не должно ронять
     # запрос в 422 (из-за этого «Применить» выглядел неработающим).
@@ -903,6 +921,14 @@ async def trips_page(
         except ValueError:
             pass
 
+    # Порядок: по обычной дате рейса (когда завершён) или по дате внесения.
+    # coalesce — незавершённый рейс не должен проваливаться в конец списка.
+    sort = _sort_choice(sort)
+    order_by = (
+        [desc(Trip.created_at), desc(Trip.id)] if sort == "added"
+        else [desc(func.coalesce(Trip.completed_at, Trip.created_at)), desc(Trip.id)]
+    )
+
     # Пагинация (Блок G5): по 50 на страницу, тянем +1 чтобы понять есть ли «дальше».
     page = max(1, page)
     page_size = 50
@@ -911,7 +937,7 @@ async def trips_page(
         .join(Driver, Driver.id == Trip.driver_id)
         .join(Vehicle, Vehicle.id == Trip.vehicle_id)
         .where(and_(*conditions))
-        .order_by(desc(Trip.created_at))
+        .order_by(*order_by)
         .limit(page_size + 1)
         .offset((page - 1) * page_size)
     )
@@ -962,6 +988,8 @@ async def trips_page(
         "page": page,
         "has_next": has_next,
         "totals": totals,
+        "sort": sort,
+        "sort_toggle_url": _sort_toggle_url(request, sort),
     }
     template = "_trips_table.html" if _is_htmx(request) else "trips.html"
     return templates.TemplateResponse(template, ctx)
@@ -4575,9 +4603,10 @@ async def shifts_page(
     driver_id: Annotated[str | None, Query()] = None,
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
+    sort: Annotated[str | None, Query()] = None,
 ):
-    """История смен. Порядок всегда по дате открытия, новые сверху.
-    Фильтры (водитель, период) — необязательные: пустые = показываем всё."""
+    """История смен, новые сверху. Порядок — по дате открытия смены (по
+    умолчанию) или по дате внесения в систему; фильтры необязательные."""
     # driver_id приходит строкой: пустое «— все —» не должно ронять запрос в 422
     d_id = int(driver_id) if (driver_id or "").strip().isdigit() else None
     conditions = [Shift.owner_id == owner.id]
@@ -4597,12 +4626,19 @@ async def shifts_page(
         except ValueError:
             pass
 
+    # Порядок: по дате открытия смены или по порядку внесения (id) — они
+    # расходятся, когда прошлые смены добавляют задним числом.
+    sort = _sort_choice(sort)
+    order_by = (
+        [desc(Shift.id)] if sort == "added"
+        else [desc(Shift.started_at), desc(Shift.id)]
+    )
     rows_res = await session.execute(
         select(Shift, Driver.full_name, Vehicle.license_plate)
         .join(Driver, Driver.id == Shift.driver_id)
         .join(Vehicle, Vehicle.id == Shift.vehicle_id)
         .where(*conditions)
-        .order_by(desc(Shift.started_at))
+        .order_by(*order_by)
         .limit(200)
     )
     rows = list(rows_res.all())
@@ -4624,6 +4660,8 @@ async def shifts_page(
             "filter_date_from": date_from or "",
             "filter_date_to": date_to or "",
             "filters_on": bool(d_id or date_from or date_to),
+            "sort": sort,
+            "sort_toggle_url": _sort_toggle_url(request, sort),
             "active_page": "trips",
         },
     )

@@ -14,35 +14,29 @@
 <p style="color:var(--pico-ins-color, green); font-weight:700;">Рейс удалён. Связанные расходы и события оставлены в истории.</p>
 {% endif %}
 
-{% set filters_on = filter_driver_id or filter_date_from or filter_date_to %}
-<details class="add-panel" {% if filters_on %}open{% endif %}>
-  <summary class="add-toggle">
-    🔎 Фильтр
-    {% if filters_on %}<span class="pill pill--info" style="margin-left:.4rem;">включён</span>{% endif %}
-  </summary>
-  <form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true"
-        class="add-form">
-    <div class="add-grid">
-      <label>
-        Водитель
-        <select name="driver_id">
-          <option value="">— все —</option>
-          {% for d in drivers %}
-            {# удалённые водители остаются в фильтре ради их старых рейсов,
-               но помечаются — иначе выглядят как загадочный дубль #}
-            <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}{% if not d.is_active %} (удалён){% endif %}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>С даты <input type="date" name="date_from" value="{{ filter_date_from }}"></label>
-      <label>По дату <input type="date" name="date_to" value="{{ filter_date_to }}"></label>
-    </div>
-    <div style="display:flex; gap:.5rem; flex-wrap:wrap;">
-      <button type="submit">Показать</button>
-      {% if filters_on %}<a role="button" class="secondary outline" href="/trips">Сбросить</a>{% endif %}
-    </div>
-  </form>
-</details>
+<form hx-get="/trips" hx-target="#trips-table" hx-trigger="change, submit" hx-push-url="true">
+  <div class="grid">
+    <label>
+      Водитель
+      <select name="driver_id">
+        <option value="">— все —</option>
+        {% for d in drivers %}
+          {# удалённые водители остаются в фильтре ради их старых рейсов,
+             но помечаются — иначе выглядят как загадочный дубль #}
+          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}{% if not d.is_active %} (удалён){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>С даты<input type="date" name="date_from" value="{{ filter_date_from }}"></label>
+    <label>По дату<input type="date" name="date_to" value="{{ filter_date_to }}"></label>
+  </div>
+  {# сортировка едет вместе с фильтром, иначе сбрасывалась бы при «Применить» #}
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <div class="sort-row">
+    <button type="submit">Применить</button>
+    {% include "_sort_toggle.html" %}
+  </div>
+</form>
 
 <details class="add-panel" id="add-trip" style="margin-top: 1rem;">
   <summary class="add-toggle">➕ Добавить рейс вручную</summary>

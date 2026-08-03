@@ -13,30 +13,27 @@
 <p style="color:var(--pico-ins-color, green); font-weight:700;">Смена удалена. Расходы и события оставлены в истории.</p>
 {% endif %}
 
-<details class="add-panel" {% if filters_on %}open{% endif %}>
-  <summary class="add-toggle">
-    🔎 Фильтр
-    {% if filters_on %}<span class="pill pill--info" style="margin-left:.4rem;">включён</span>{% endif %}
-  </summary>
-  <form action="/shifts" method="get" class="add-form">
-    <div class="add-grid">
-      <label>Водитель
-        <select name="driver_id">
-          <option value="">— все —</option>
-          {% for d in drivers | default([]) %}
-          <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}{% if not d.is_active %} (удалён){% endif %}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>С даты <input type="date" name="date_from" value="{{ filter_date_from }}"></label>
-      <label>По дату <input type="date" name="date_to" value="{{ filter_date_to }}"></label>
-    </div>
-    <div style="display:flex; gap:.5rem; flex-wrap:wrap;">
-      <button type="submit">Показать</button>
-      {% if filters_on %}<a role="button" class="secondary outline" href="/shifts">Сбросить</a>{% endif %}
-    </div>
-  </form>
-</details>
+<form action="/shifts" method="get">
+  <div class="grid">
+    <label>
+      Водитель
+      <select name="driver_id">
+        <option value="">— все —</option>
+        {% for d in drivers | default([]) %}
+        <option value="{{ d.id }}" {% if filter_driver_id == d.id %}selected{% endif %}>{{ d.full_name }}{% if not d.is_active %} (удалён){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>С даты<input type="date" name="date_from" value="{{ filter_date_from }}"></label>
+    <label>По дату<input type="date" name="date_to" value="{{ filter_date_to }}"></label>
+  </div>
+  {# сортировка едет вместе с фильтром, иначе сбрасывалась бы при «Применить» #}
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <div class="sort-row">
+    <button type="submit">Применить</button>
+    {% include "_sort_toggle.html" %}
+  </div>
+</form>
 
 {% if not rows %}
   {% if filters_on %}
@@ -45,6 +42,7 @@
   <p>Смен ещё не было.</p>
   {% endif %}
 {% else %}
+{# заголовок таблицы подсказывает, по какой колонке сейчас порядок #}
 <table>
   <thead>
     <tr>
