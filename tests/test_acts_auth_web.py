@@ -150,6 +150,71 @@ def test_act_uses_distribution_center_address_when_present():
     assert "РЦ Шушары" not in joined
 
 
+def test_act_row_description_uses_given_origin():
+    """Формат строки акта: «дата. Откуда- Куда, номер, водитель.»
+
+    В акт должен попадать ОФИЦИАЛЬНЫЙ адрес базы, который владелец вписывает
+    в поле «Пункт отправления для акта»: налоговая не понимает внутренних
+    обозначений складов («2.32», «5.18»), удобных водителю в боте."""
+    row = {
+        "date": date(2026, 6, 16),
+        "origin": "Агропарк Софийская 151",
+        "destination": "РЦ Дикси (Шушары)",
+        "destination_address": "г.Санкт-Петербург, п.Шушары, Московское шоссе д.70 корп.4",
+        "plate": "Т 772 НХ 178",
+        "driver": "Саломов Холбек",
+        "amount": Decimal("24000"),
+    }
+    s = A._row_description(row)
+    assert s.startswith("16.06.2026. Агропарк Софийская 151- ")
+    assert "Московское шоссе д.70 корп.4" in s
+    assert "Т 772 НХ 178, Саломов Холбек." in s
+    assert "5.18" not in s and "2.32" not in s
+
+
+def test_acts_export_substitutes_origin_override():
+    """Поле «Пункт отправления для акта» подменяет внутреннее обозначение склада,
+    а пустое поле оставляет то, что указал водитель (поведение как раньше)."""
+    import ast
+    src = open("app/web/router.py", encoding="utf-8").read()
+    tree = ast.parse(src)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "acts_export"
+    )
+    args = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    assert "origin_override" in args, "выгрузка акта не принимает пункт отправления"
+    body = ast.get_source_segment(src, fn)
+    # подстановка: заданный владельцем адрес имеет приоритет, иначе — от водителя
+    assert "origin_for_act or trip.origin" in body
+    # страница актов тоже помнит поле (чтобы не стиралось при «Показать рейсы»)
+    page = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "acts_page"
+    )
+    assert "origin_override" in {a.arg for a in page.args.args + page.args.kwonlyargs}
+
+
+def test_render_acts_has_origin_override_field():
+    """На странице актов есть поле ввода и оно показывает подстановку в списке."""
+    trips = [{"id": 11, "date": date(2026, 8, 2), "origin": "5.18", "destination": "РЦ Дикси",
+              "destination_address": "Московское шоссе д.70", "driver": "Саломов",
+              "plate": "Т772НХ178", "revenue": Decimal("24000")}]
+    ctx = dict(owner=OWNER, trips=trips, period_from="2026-08-01", period_to="2026-08-03",
+               customers=[], total_amount=Decimal("24000"), total_trips=1,
+               act_date="2026-08-03", act_title="Акт выполненных работ",
+               act_number_val="102", sel_customer_id="", requisites_ready=True,
+               active_page="finances")
+    # поле пустое → в списке остаётся то, что указал водитель
+    html = _render("acts.html", origin_override="", **ctx)
+    assert 'name="origin_override"' in html
+    assert "5.18" in html
+    # поле заполнено → в списке сразу видно, что попадёт в акт
+    html = _render("acts.html", origin_override="Агропарк Софийская 151", **ctx)
+    assert "Агропарк Софийская 151" in html
+    assert ">5.18" not in html
+
+
 # ------------------------------------------------------------------ JWT / доступ
 def test_jwt_roundtrip_owner_and_admin():
     assert AU.decode_jwt(AU.create_jwt(5, tid=123)) == (5, 123)   # админ вошёл в кабинет 5
