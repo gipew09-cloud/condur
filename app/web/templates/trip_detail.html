@@ -458,6 +458,31 @@
           Меняется только этот рейс. Если ошибка во всей смене — исправьте смену.
         </p>
       </details>
+
+      <details class="add-panel">
+        <summary class="add-toggle">Исправить маршрут</summary>
+        <form action="/trips/{{ trip.id }}/route" method="post" class="add-form">
+          <div class="add-grid">
+            <label>Откуда
+              <input name="origin" value="{{ trip.origin or '' }}" maxlength="500"
+                     placeholder="например: 5.18">
+            </label>
+            <label>Куда
+              <input name="destination" value="{{ trip.destination or '' }}" maxlength="500"
+                     placeholder="например: РЦ Лента">
+            </label>
+            <label>Груз
+              <input name="cargo_name" value="{{ trip.cargo_name or '' }}" maxlength="500"
+                     placeholder="можно оставить пустым">
+            </label>
+          </div>
+          <button type="submit">Сохранить маршрут</button>
+        </form>
+        <p style="margin:.4rem 1rem 0; color:var(--text-muted); font-size:.82rem;">
+          Для случая, когда водитель промахнулся кнопкой и рейс называется не так.
+          Правка запишется в хронологию рейса — будет видно, что менял владелец.
+        </p>
+      </details>
     </aside>
   </section>
 

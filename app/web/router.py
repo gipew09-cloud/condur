@@ -4237,6 +4237,16 @@ async def _trip_timeline(
                     f"факт: {payload.get('actual_rc_name') or '—'}"
                 ),
             ))
+        elif event_type == "trip_route_edited":
+            was, now_ = payload.get("old") or {}, payload.get("new") or {}
+            add(_timeline_item(
+                kind="info", order=96, at=created_at,
+                title="Владелец исправил маршрут",
+                subtitle=(
+                    f"было: {was.get('origin') or '—'} → {was.get('destination') or '—'} · "
+                    f"стало: {now_.get('origin') or '—'} → {now_.get('destination') or '—'}"
+                ),
+            ))
 
     # Окно GPS-событий = только время ЭТОГО рейса, иначе в карточку попадают
     # визиты на РЦ из других поездок за день (владелец видел «уехал в 17:30»
@@ -4963,6 +4973,50 @@ async def trip_reassign(
             "new": {"driver_id": driver.id, "vehicle_id": vehicle.id},
             "source": "web",
         },
+    )
+    await session.commit()
+    return RedirectResponse(f"/trips/{trip.id}?saved=1", status_code=303)
+
+
+@app.post("/trips/{trip_id}/route")
+async def trip_edit_route(
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    origin: Annotated[str, Form()] = "",
+    destination: Annotated[str, Form()] = "",
+    cargo_name: Annotated[str, Form()] = "",
+):
+    """Исправить маршрут рейса: откуда / куда / груз.
+
+    Нужно, когда водитель промахнулся кнопкой в боте и рейс получил чужое
+    название («5.17 → Новый рейс»). Меняем только текстовые поля — деньги,
+    водитель, машина и GPS-история не трогаются. Правка пишется в события,
+    чтобы в хронологии рейса было видно, что менял владелец.
+    """
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+
+    def _clean(value: str) -> str | None:
+        value = (value or "").strip()[:500]
+        return value or None
+
+    new = {
+        "origin": _clean(origin),
+        "destination": _clean(destination),
+        "cargo_name": _clean(cargo_name),
+    }
+    old = {field: getattr(trip, field) for field in new}
+    if old == new:
+        return RedirectResponse(f"/trips/{trip.id}", status_code=303)
+
+    for field, value in new.items():
+        setattr(trip, field, value)
+    await log_event(
+        session, owner_id=owner.id, driver_id=trip.driver_id, trip_id=trip.id,
+        event_type="trip_route_edited",
+        payload={"old": old, "new": new, "source": "web"},
     )
     await session.commit()
     return RedirectResponse(f"/trips/{trip.id}?saved=1", status_code=303)
