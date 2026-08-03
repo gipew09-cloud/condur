@@ -53,6 +53,16 @@
     <label>Дата акта <input type="date" name="act_date" value="{{ act_date }}"></label>
     <label>&nbsp;<button type="submit" formaction="/acts" class="secondary">Показать рейсы</button></label>
   </div>
+  <div class="grid">
+    <label>Пункт отправления для акта
+      <input name="origin_override" value="{{ origin_override }}"
+             placeholder="например: Агропарк Софийская 151">
+    </label>
+  </div>
+  <p style="color:var(--text-muted); font-size:.85rem; margin:-.4rem 0 .2rem;">
+    Подставится в акт вместо внутренних обозначений складов («2.32», «5.18») —
+    их не понимает налоговая. Оставите пустым — в акт пойдёт то, что указал водитель.
+  </p>
 
   {% if trips %}
   <div class="trip-list">
@@ -66,7 +76,7 @@
     <label class="trip-pick">
       <input type="checkbox" name="trip_ids" value="{{ t.id }}" data-sum="{{ t.revenue }}" checked>
       <span class="d">{{ t.date.strftime('%d.%m.%Y') if t.date else '—' }}</span>
-      <span class="r">{{ t.origin or '—' }} → {{ t.destination_address or t.destination or '—' }}</span>
+      <span class="r">{{ origin_override or t.origin or '—' }} → {{ t.destination_address or t.destination or '—' }}</span>
       <span class="m">{{ t.driver }} · {{ t.plate }}</span>
       <span class="s">{{ "{:,.0f}".format(t.revenue).replace(',', ' ') }} ₽</span>
     </label>

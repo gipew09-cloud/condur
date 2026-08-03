@@ -1867,6 +1867,7 @@ async def acts_page(
     title: Annotated[str | None, Query()] = None,
     act_number: Annotated[str | None, Query()] = None,
     act_date: Annotated[str | None, Query()] = None,
+    origin_override: Annotated[str | None, Query()] = None,
 ):
     df, dt = _parse_period(period_from, period_to)
     start, end = _acts_range(df, dt)
@@ -1924,6 +1925,7 @@ async def acts_page(
             "act_title": title or "Акт выполненных работ",
             "act_number_val": act_number or "",
             "sel_customer_id": customer_id or "",
+            "origin_override": (origin_override or "").strip(),
             "requisites_ready": requisites_ready,
             "active_page": "finances",
         },
@@ -1942,6 +1944,7 @@ async def acts_export(
     title: Annotated[str, Query()] = "Акт выполненных работ",
     trip_ids: Annotated[list[int], Query()] = [],
     selection_mode: Annotated[str, Query()] = "",
+    origin_override: Annotated[str, Query()] = "",
 ):
     """Акт (форма 101 РС): один лист с выбранными рейсами за период,
     с реквизитами Исполнителя/Заказчика, итогом и суммой прописью.
@@ -1986,10 +1989,15 @@ async def acts_export(
         trip_q = trip_q.where(Trip.id.in_([]))
     rows_res = await session.execute(trip_q.order_by(Trip.completed_at, Trip.id))
     rc_lookup = rc_service.distribution_center_lookup(await _active_distribution_centers(session, owner.id))
+    # Пункт отправления для акта: владелец вписывает официальный адрес базы
+    # («Агропарк Софийская 151») — налоговая не понимает внутренних обозначений
+    # складов («2.32», «5.18»), которые водителю удобны в боте. Поле пустое —
+    # в акт идёт то, что указал водитель (поведение как раньше).
+    origin_for_act = (origin_override or "").strip()
     rows = [
         {
             "date": trip.completed_at,
-            "origin": trip.origin,
+            "origin": origin_for_act or trip.origin,
             "destination": trip.destination,
             "destination_address": rc_service.canonical_rc_address(trip.destination, rc_lookup),
             "plate": plate,
