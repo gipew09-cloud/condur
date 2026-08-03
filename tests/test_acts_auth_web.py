@@ -550,6 +550,42 @@ def test_trip_detail_shows_pending_driver_revenue_separately():
     assert "Удалить рейс" in html
 
 
+def test_trip_route_edit_saves_and_logs_history():
+    """Правка маршрута рейса (водитель промахнулся кнопкой: «5.17 → Новый рейс»).
+
+    Меняются только текстовые поля; деньги, водитель, машина и GPS не трогаются,
+    а сама правка пишется в события — в хронологии видно, что менял владелец."""
+    import ast
+    src = open("app/web/router.py", encoding="utf-8").read()
+    tree = ast.parse(src)
+    fn = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.AsyncFunctionDef) and n.name == "trip_edit_route"),
+        None,
+    )
+    assert fn is not None, "нет обработчика правки маршрута"
+    body = ast.get_source_segment(src, fn)
+    # правятся ровно три текстовых поля
+    for field in ("origin", "destination", "cargo_name"):
+        assert f'"{field}"' in body, f"{field} не правится"
+    # деньги и привязки НЕ трогаются
+    for untouched in ("revenue_rub", "driver_id =", "vehicle_id =", "status ="):
+        assert untouched not in body, f"правка маршрута задевает {untouched}"
+    # чужой рейс не откроется, история пишется
+    assert "trip.owner_id != owner.id" in body
+    assert "trip_route_edited" in body
+    # хронология умеет показать эту правку
+    assert 'event_type == "trip_route_edited"' in src
+    assert "Владелец исправил маршрут" in src
+
+
+def test_render_trip_detail_has_route_edit_form():
+    src = open("app/web/templates/trip_detail.html", encoding="utf-8").read()
+    assert "/route" in src and "Исправить маршрут" in src
+    for field in ('name="origin"', 'name="destination"', 'name="cargo_name"'):
+        assert field in src
+
+
 def test_trip_and_shift_delete_routes_are_safe_detach_handlers():
     src = open("app/web/router.py", encoding="utf-8").read()
     assert '@app.post("/trips/{trip_id}/delete")' in src
