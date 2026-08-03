@@ -574,30 +574,78 @@ def test_shifts_page_filters_by_driver_and_dates():
 
 
 @pytest.mark.parametrize("tpl", ["shifts.html", "trips.html"])
-def test_filter_is_behind_a_button_on_both_pages(tpl):
-    """Фильтр спрятан под кнопку «Фильтр» и раскрыт, когда он включён."""
+def test_filter_form_is_plain_and_visible(tpl):
+    """Фильтр — обычная видимая форма (не спрятан под раскрывашку), и рядом с
+    «Применить» стоит переключатель сортировки."""
     src = open(f"app/web/templates/{tpl}", encoding="utf-8").read()
-    assert "Фильтр" in src
-    assert "{% if filters_on %}open{% endif %}" in src, "фильтр не раскрывается сам"
-    assert "Сбросить" in src, "нет сброса фильтра"
     for field in ('name="driver_id"', 'name="date_from"', 'name="date_to"'):
         assert field in src, f"{tpl}: нет поля {field}"
+    assert "Применить" in src
+    assert "_sort_toggle.html" in src, f"{tpl}: нет переключателя сортировки"
+    # сортировка не должна теряться при «Применить»
+    assert 'name="sort"' in src
 
 
-def test_render_shifts_filter_states():
-    """Пустой фильтр — обычный список; включённый — раскрыт, есть сброс,
-    а пустая выдача объясняет, что дело в фильтре."""
-    shift = NS(id=1, started_at=datetime(2026, 8, 1, 6, 0, tzinfo=timezone.utc),
-               ended_at=None, distance_km=None, status="started", is_manual=False)
-    rows = [(shift, "Саломов", "Т557ОС178")]
-    base = dict(owner=OWNER, active_page="trips",
+def test_sort_choice_defaults_to_date():
+    """По умолчанию всегда обычная дата; «по дате добавления» — только явно."""
+    from app.web.router import _sort_choice
+    assert _sort_choice(None) == "date"
+    assert _sort_choice("") == "date"
+    assert _sort_choice("мусор") == "date"
+    assert _sort_choice("date") == "date"
+    assert _sort_choice("added") == "added"
+    assert _sort_choice(" added ") == "added"
+
+
+def test_sort_toggle_flips_and_keeps_filters():
+    """Кнопка переключает режим и сохраняет выбранные фильтры."""
+    from starlette.datastructures import URL
+    from app.web.router import _sort_toggle_url
+    req = NS(url=URL("https://x/trips?driver_id=3&date_from=2026-08-01&sort=date"))
+    nxt = _sort_toggle_url(req, "date")
+    assert "sort=added" in nxt
+    assert "driver_id=3" in nxt and "date_from=2026-08-01" in nxt
+    back = _sort_toggle_url(NS(url=URL(nxt)), "added")
+    assert "sort=date" in back and "sort=added" not in back
+
+
+@pytest.mark.parametrize("page_fn,model,by_date,by_added", [
+    ("trips_page", "Trip", "Trip.completed_at", "desc(Trip.created_at)"),
+    ("shifts_page", "Shift", "desc(Shift.started_at)", "desc(Shift.id)"),
+])
+def test_list_pages_support_both_sort_orders(page_fn, model, by_date, by_added):
+    """Обе страницы умеют оба порядка и принимают параметр sort."""
+    import ast
+    src = open("app/web/router.py", encoding="utf-8").read()
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == page_fn
+    )
+    assert "sort" in {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    body = ast.get_source_segment(src, fn)
+    assert "_sort_choice(sort)" in body, f"{page_fn}: sort не нормализуется"
+    assert by_date in body, f"{page_fn}: нет порядка по обычной дате"
+    assert by_added in body, f"{page_fn}: нет порядка по дате добавления"
+
+
+def test_render_sort_toggle_shows_current_mode():
+    """Кнопка подписана текущим режимом — видно, что включено сейчас."""
+    html = _render("_sort_toggle.html", sort="date", sort_toggle_url="/trips?sort=added")
+    assert "По дате" in html and "добавления" not in html
+    html = _render("_sort_toggle.html", sort="added", sort_toggle_url="/trips?sort=date")
+    assert "По дате добавления" in html
+
+
+def test_render_shifts_empty_with_filter_explains_why():
+    """Пустая выдача под фильтром объясняет, что дело в фильтре."""
+    base = dict(owner=OWNER, active_page="trips", sort="date",
+                sort_toggle_url="/shifts?sort=added",
                 drivers=[NS(id=1, full_name="Саломов", is_active=True)],
                 filter_driver_id=None, filter_date_from="", filter_date_to="")
-    html = _render("shifts.html", rows=rows, filters_on=False, **base)
-    assert "Фильтр" in html and "Сбросить" not in html
     html = _render("shifts.html", rows=[], filters_on=True, **base)
     assert "По этому фильтру смен нет" in html
-    assert "Сбросить" in html
+    html = _render("shifts.html", rows=[], filters_on=False, **base)
+    assert "Смен ещё не было" in html
 
 
 def test_trip_route_edit_saves_and_logs_history():
