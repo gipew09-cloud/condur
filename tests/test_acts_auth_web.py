@@ -39,6 +39,11 @@ _ENV.filters["tstatus"] = lambda c: _TS.get(c or "", c or "—")
 _ENV.filters["pillclass"] = lambda s: _PILL.get((s or "").lower(), "pill--neutral")
 _ENV.filters["statusru"] = lambda s: s or "—"
 _ENV.filters["localdt"] = lambda dt, tz=None, fmt="%d.%m.%Y %H:%M": fmt_dt(dt, tz, fmt)
+# «внесён задним числом» — берём НАСТОЯЩУЮ функцию из роутера, а не заглушку:
+# именно её поведение и проверяем в тестах рендера.
+from app.web.router import _backdated as _backdated_filter  # noqa: E402
+
+_ENV.filters["backdated"] = _backdated_filter
 
 
 # ---------------------------------------------------------------- сумма прописью
@@ -584,6 +589,68 @@ def test_filter_form_is_plain_and_visible(tpl):
     assert "_sort_toggle.html" in src, f"{tpl}: нет переключателя сортировки"
     # сортировка не должна теряться при «Применить»
     assert 'name="sort"' in src
+
+
+def test_backdated_detects_entries_added_after_the_fact():
+    """Рейс внесли задним числом: завершён 01.07, а запись создана 04.08.
+    Раньше это выглядело так, будто рейс завершился раньше, чем начался."""
+    from app.web.router import _backdated
+    d = lambda m, day: datetime(2026, m, day, 12, 0, tzinfo=timezone.utc)  # noqa: E731
+
+    assert _backdated(NS(created_at=d(8, 4), completed_at=d(7, 1))) is True
+    # обычный рейс: создан, потом завершён
+    assert _backdated(NS(created_at=d(7, 1), completed_at=d(7, 2))) is False
+    # незавершённый рейс — не «задним числом», просто ещё едет
+    assert _backdated(NS(created_at=d(7, 1), completed_at=None)) is False
+    # у смен поле называется ended_at — работает и для них
+    assert _backdated(NS(created_at=d(8, 4), ended_at=d(7, 1))) is True
+    # наивные даты из SQLite не роняют сравнение
+    assert _backdated(NS(created_at=d(8, 4).replace(tzinfo=None), completed_at=d(7, 1))) is True
+
+
+def test_backdated_trip_has_no_meaningless_duration():
+    """У рейса задним числом «в пути» не считаем: конец раньше начала давал
+    «0 мин», что выглядело багом."""
+    import ast
+    src = open("app/web/router.py", encoding="utf-8").read()
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "trip_detail"
+    )
+    body = ast.get_source_segment(src, fn)
+    assert "None if _backdated(trip)" in body, "длительность считается даже задним числом"
+
+
+def test_render_backdated_trip_shows_real_date_first():
+    """В карточке и в списке главная дата — когда рейс реально был,
+    а дата внесения уходит в подпись «внесён …»."""
+    trip = NS(id=84, shift_id=76, driver_id=1, vehicle_id=1,
+              created_at=datetime(2026, 8, 4, 10, 33, tzinfo=timezone.utc),
+              completed_at=datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc),
+              origin="Агропарк Софийская 151", destination="Магнит Шушары",
+              is_manual=True, status="completed", cargo_name=None,
+              revenue_rub=Decimal("24000"), driver_revenue_pending_rub=None,
+              fuel_cost_rub=Decimal("0"), other_costs_rub=Decimal("0"),
+              profit_rub=Decimal("24000"), waybill_photo_url=None)
+    html = _render("trip_detail.html", owner=OWNER, active_page="trips", trip=trip,
+                   driver=NS(full_name="Саломов Холбек"), vehicle=NS(license_plate="Т772НХ178"),
+                   travel=None, documents=[], expenses=[], waybill_uploaded_at=None,
+                   timeline=[], trip_duration_label=None,
+                   all_drivers=[], all_vehicles=[])
+    # время показывается в поясе владельца, поэтому сверяем даты, не часы
+    assert "рейс 01.07.2026" in html            # главная дата — настоящая
+    assert "внесён 04.08.2026" in html          # дата внесения — подписью
+    assert "создан 04.08" not in html
+    assert "в пути" not in html                 # бессмысленная длительность убрана
+
+    row = _render("_trips_table.html", owner=OWNER,
+                  rows=[(trip, "Саломов Холбек", "Т772НХ178")],
+                  page=1, has_next=False,
+                  totals={"count": 1, "revenue": Decimal("24000"),
+                          "expenses": Decimal("0"), "profit": Decimal("24000")})
+    assert "внесён 04.08" in row
+    # в списке жирным — дата рейса, а не дата внесения
+    assert row.index("01.07") < row.index("внесён 04.08")
 
 
 def test_sort_choice_defaults_to_date():
