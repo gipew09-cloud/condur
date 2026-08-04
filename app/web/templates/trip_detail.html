@@ -38,6 +38,8 @@
     color: #64748b;
     font-weight: 700;
   }
+  /* «внесён …» у рейсов задним числом — служебная дата, тише основной */
+  .trip-hero__added { color: #94a3b8; font-weight: 600; }
   .trip-chip {
     display: inline-flex;
     align-items: center;
@@ -304,11 +306,20 @@
     <div>
       <h1>{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</h1>
       <div class="trip-hero__meta">
-        <span>создан {{ trip.created_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</span>
-        <span>·</span>
-        <span>{% if trip.completed_at %}завершён {{ trip.completed_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}{% else %}рейс открыт{% endif %}</span>
-        <span>·</span>
-        <span>в пути {{ trip_duration_label | default('—') }}</span>
+        {% if trip | backdated %}
+          {# Рейс внесли задним числом: главная дата — когда он реально был,
+             а дата внесения уходит в подпись. Иначе выглядело так, будто рейс
+             завершился раньше, чем его создали. #}
+          <span>рейс {{ trip.completed_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</span>
+          <span>·</span>
+          <span class="trip-hero__added">внесён {{ trip.created_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</span>
+        {% else %}
+          <span>создан {{ trip.created_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</span>
+          <span>·</span>
+          <span>{% if trip.completed_at %}завершён {{ trip.completed_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}{% else %}рейс открыт{% endif %}</span>
+          <span>·</span>
+          <span>в пути {{ trip_duration_label or '—' }}</span>
+        {% endif %}
       </div>
     </div>
     <div class="trip-hero__actions">

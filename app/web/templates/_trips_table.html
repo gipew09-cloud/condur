@@ -49,14 +49,20 @@
         <td data-label="Машина"><b>{{ plate }}</b></td>
         <td data-label="Водитель">{{ driver_name }}</td>
         <td data-label="Время">
-          <b>{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</b>
-          <span class="sp-trip-sub">
-            {% if trip.completed_at %}
-              завершён {{ trip.completed_at | localdt(owner.timezone, '%d.%m %H:%M') }}
-            {% else %}
-              рейс открыт
-            {% endif %}
-          </span>
+          {% if trip | backdated %}
+            {# внесён задним числом: главная дата — когда рейс реально был #}
+            <b>{{ trip.completed_at | localdt(owner.timezone, '%d.%m %H:%M') }}</b>
+            <span class="sp-trip-sub">внесён {{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</span>
+          {% else %}
+            <b>{{ trip.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</b>
+            <span class="sp-trip-sub">
+              {% if trip.completed_at %}
+                завершён {{ trip.completed_at | localdt(owner.timezone, '%d.%m %H:%M') }}
+              {% else %}
+                рейс открыт
+              {% endif %}
+            </span>
+          {% endif %}
         </td>
         <td data-label="Выручка" class="num">
           <span class="sp-money {% if revenue == 0 %}zero{% endif %}">{{ "{:,.0f}".format(revenue).replace(',', ' ') }}</span>

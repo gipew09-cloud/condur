@@ -121,11 +121,31 @@ def _local_dt(value: datetime | None, timezone_name: str | None = None, fmt: str
     return fmt_dt(value, timezone_name, fmt)
 
 
+def _backdated(obj) -> bool:
+    """Запись внесли ЗАДНИМ ЧИСЛОМ: работа завершена раньше, чем запись
+    появилась в системе (владелец добавил прошлый рейс/смену вручную).
+
+    Для таких записей «создан» — это дата внесения, а не дата работы, и
+    показывать её главной нельзя: выглядит, будто рейс завершился за месяц
+    до того, как начался. Длительность «в пути» у них тоже бессмысленна.
+    """
+    start = getattr(obj, "created_at", None)
+    end = getattr(obj, "completed_at", None) or getattr(obj, "ended_at", None)
+    if start is None or end is None:
+        return False
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    return end < start
+
+
 templates.env.filters["vtype"] = _vehicle_type_label
 templates.env.filters["tstatus"] = _trip_status_label
 templates.env.filters["pillclass"] = _pill_class
 templates.env.filters["statusru"] = _status_ru
 templates.env.filters["localdt"] = _local_dt
+templates.env.filters["backdated"] = _backdated
 
 app = FastAPI(title="TMS Cabinet")
 
@@ -4509,7 +4529,9 @@ async def trip_detail(
     timeline = await _trip_timeline(
         session, owner, trip, shift, driver, vehicle, waybill_uploaded_at, documents
     )
-    trip_duration_label = _minutes_label(
+    # «В пути» считаем только у нормальных рейсов. У внесённых задним числом
+    # конец раньше начала — раньше это обрезалось в «0 мин» и выглядело багом.
+    trip_duration_label = None if _backdated(trip) else _minutes_label(
         _minutes_between(trip.created_at, trip.completed_at or datetime.now(timezone.utc))
     )
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
