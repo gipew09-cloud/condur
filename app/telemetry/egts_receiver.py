@@ -491,6 +491,22 @@ async def _store_wialon_points(
             )
 
 
+def _wialon_login_ok(password: str | None) -> bool:
+    """Пускать ли трекер: пароль из пакета логина против TELEMETRY_PASSWORD.
+
+    Пароль не настроен в окружении — пускаем всех (обратная совместимость с уже
+    работающими ретрансляциями). Настроен — сверяем сравнением постоянного
+    времени, чтобы пароль нельзя было подобрать по времени ответа.
+    """
+    import os
+    import secrets as _secrets
+
+    expected = (os.getenv("TELEMETRY_PASSWORD") or "").strip()
+    if not expected:
+        return True
+    return _secrets.compare_digest(expected, (password or "").strip())
+
+
 async def _handle_wialon(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -522,6 +538,18 @@ async def _handle_wialon(
                 )
                 return processed
             if message.kind == "L":
+                # Порт приёма открыт в интернет: без проверки пароля любой, кто
+                # знает адрес и Stavtrack-ID машины, мог бы слать фальшивые
+                # координаты, зажигание и пробег. Пароль задаётся переменной
+                # TELEMETRY_PASSWORD и должен совпадать с настройкой ретрансляции.
+                # Переменная не задана — работаем как раньше (чтобы не оборвать
+                # уже настроенные трекеры), но пишем предупреждение в лог.
+                if not _wialon_login_ok(message.password):
+                    logger.warning(
+                        "Wialon: НЕВЕРНЫЙ ПАРОЛЬ от %s (terminal=%s) — соединение закрыто",
+                        peer_label, message.terminal_id,
+                    )
+                    return processed
                 terminal_id = message.terminal_id
                 logger.info("Wialon login от %s: terminal=%s", peer_label, terminal_id)
             elif message.points:

@@ -30,10 +30,18 @@ JWT_TTL = timedelta(days=7)
 JWT_ALGO = "HS256"
 
 
+# Сколько неверных попыток допускаем на один код. Без этого 6-значный код
+# (миллион вариантов) можно было подобрать перебором: Telegram ID не секрет,
+# а неверная попытка раньше ничего не стоила. После лимита код сгорает —
+# нужно заново просить /login у бота.
+MAX_CODE_ATTEMPTS = 5
+
+
 @dataclass
 class CodeEntry:
     code: str
     expires_at: datetime
+    attempts_left: int = MAX_CODE_ATTEMPTS
 
 
 # telegram_id -> CodeEntry
@@ -50,14 +58,22 @@ def issue_code(telegram_id: int) -> str:
 
 
 def consume_code(telegram_id: int, code: str) -> bool:
-    """Проверить код. На успехе удалить, чтобы был одноразовым."""
+    """Проверить код. На успехе удалить, чтобы был одноразовым.
+
+    Неверная попытка расходует лимит; когда попытки кончились — код сгорает.
+    Сравнение постоянного времени: чтобы по скорости ответа нельзя было
+    подбирать код посимвольно.
+    """
     entry = _login_codes.get(telegram_id)
     if entry is None:
         return False
     if entry.expires_at < datetime.now(timezone.utc):
         _login_codes.pop(telegram_id, None)
         return False
-    if entry.code != code.strip():
+    if not secrets.compare_digest(entry.code, code.strip()):
+        entry.attempts_left -= 1
+        if entry.attempts_left <= 0:
+            _login_codes.pop(telegram_id, None)
         return False
     _login_codes.pop(telegram_id, None)
     return True

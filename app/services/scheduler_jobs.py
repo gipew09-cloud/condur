@@ -917,6 +917,31 @@ async def _remind_drivers_to_start_shift(
     if not drivers:
         return False
 
+    # За одной машиной может быть закреплено несколько водителей (например,
+    # тестовый аккаунт владельца). Напоминание уходит ОДНО на машину, поэтому
+    # выбираем осмысленно: того, кто последним реально ездил на ней. Иначе
+    # адресат зависел от порядка строк в БД и мог попасть не тому.
+    last_driver_by_vehicle: dict[int, int] = {}
+    if drivers:
+        last_rows = await session.execute(
+            select(Shift.vehicle_id, Shift.driver_id, func.max(Shift.started_at))
+            .where(
+                Shift.owner_id == owner.id,
+                Shift.vehicle_id.in_(steady_vids),
+            )
+            .group_by(Shift.vehicle_id, Shift.driver_id)
+            .order_by(Shift.vehicle_id, func.max(Shift.started_at).desc())
+        )
+        for vehicle_id, driver_id, _last in last_rows.all():
+            last_driver_by_vehicle.setdefault(vehicle_id, driver_id)
+
+    def _priority(row) -> tuple[int, int]:
+        driver_id, _tg, vehicle_id, _plate = row
+        # 0 — последний водитель этой машины, 1 — остальные; далее по id
+        return (0 if last_driver_by_vehicle.get(vehicle_id) == driver_id else 1, driver_id)
+
+    drivers = sorted(drivers, key=_priority)
+
     reminded_recently = {
         (row[0] or {}).get("vehicle_id")
         for row in (

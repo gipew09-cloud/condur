@@ -53,6 +53,7 @@ class WialonMessage:
     kind: str                 # "L" | "P" | "D" | "SD" | "B" | "?"
     terminal_id: str | None = None
     points: list[WialonPoint] = field(default_factory=list)
+    password: str | None = None   # из пакета логина, для проверки «свой ли трекер»
 
 
 def _num(value: str) -> float | None:
@@ -168,9 +169,19 @@ def parse_message(line: str) -> WialonMessage:
     if kind == "L":
         parts = payload.split(";")
         # 1.1: terminal;password    2.0: 2.0;terminal;password;crc
-        terminal = parts[1] if parts and parts[0] == "2.0" and len(parts) > 1 else parts[0]
-        terminal = terminal.strip()
-        return WialonMessage(kind="L", terminal_id=terminal or None)
+        if parts and parts[0] == "2.0":
+            terminal = parts[1] if len(parts) > 1 else ""
+            password = parts[2] if len(parts) > 2 else ""
+        else:
+            terminal = parts[0] if parts else ""
+            password = parts[1] if len(parts) > 1 else ""
+        terminal, password = terminal.strip(), password.strip()
+        # «NA» в протоколе означает «пароль не задан» — трактуем как пустой
+        if password.upper() == "NA":
+            password = ""
+        return WialonMessage(
+            kind="L", terminal_id=terminal or None, password=password or None
+        )
     if kind == "P":
         return WialonMessage(kind="P")
     if kind in ("SD", "D"):

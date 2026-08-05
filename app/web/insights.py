@@ -9,10 +9,22 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from markupsafe import escape
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Driver, Shift, Trip, Vehicle
+
+
+def _safe(value) -> str:
+    """Экранировать то, что ввёл человек (госномер, ФИО), перед вставкой в HTML.
+
+    Замечания выводятся на дашборде без экранирования (нужны теги <b>), поэтому
+    сами значения обязаны быть безопасны. Иначе админ кабинета мог бы вписать
+    в госномер скрипт, и тот выполнился бы в браузере владельца.
+    """
+    return str(escape("" if value is None else value))
+
 
 WINDOW_DAYS = 30
 FUEL_OVERUSE_THRESHOLD = Decimal("1.10")  # >10% выше нормы
@@ -54,7 +66,7 @@ async def _fuel_overuse(session: AsyncSession, owner_id: int, since) -> list[str
         if actual_per_100 > Decimal(norm) * FUEL_OVERUSE_THRESHOLD:
             pct = ((actual_per_100 / Decimal(norm)) - Decimal(1)) * Decimal(100)
             insights.append(
-                f"⛽️ Машина <b>{plate}</b> расходует топлива на "
+                f"⛽️ Машина <b>{_safe(plate)}</b> расходует топлива на "
                 f"<b>{pct:.0f}%</b> больше нормы ({actual_per_100:.1f} vs {norm} л/100км)."
             )
     return insights
@@ -106,10 +118,10 @@ async def _idle_vehicles(session: AsyncSession, owner_id: int) -> list[str]:
         if vid in working_ids:
             continue  # машина в смене — не простаивает
         if last_at is None:
-            insights.append(f"⏸ Машина <b>{plate}</b> ещё ни разу не выезжала.")
+            insights.append(f"⏸ Машина <b>{_safe(plate)}</b> ещё ни разу не выезжала.")
         elif last_at < cutoff:
             days = (datetime.now(timezone.utc) - last_at).days
-            insights.append(f"⏸ Машина <b>{plate}</b> простаивает {days} дней.")
+            insights.append(f"⏸ Машина <b>{_safe(plate)}</b> простаивает {days} дней.")
     return insights
 
 
@@ -138,7 +150,7 @@ async def _low_revenue_per_km(session: AsyncSession, owner_id: int, since) -> li
         per_km = Decimal(revenue) / Decimal(distance)
         if per_km < Decimal("10"):
             insights.append(
-                f"📉 Водитель <b>{name}</b> приносит "
+                f"📉 Водитель <b>{_safe(name)}</b> приносит "
                 f"<b>{per_km:.1f} ₽/км</b> — это мало."
             )
     return insights
