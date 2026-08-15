@@ -79,6 +79,13 @@
   </article>
   {% endif %}
 
+  {% if renamed %}
+  <article class="add-banner">
+    РЦ переименован. Обновлено маршрутов у водителя: <b>{{ renamed }}</b>.
+    Прошлые рейсы не тронуты — в них осталось прежнее название.
+  </article>
+  {% endif %}
+
   {% if request is defined and request.query_params.get('geo_none') %}
   <article class="add-banner">
     У всех РЦ координаты уже проставлены — автопоиску нечего делать.
@@ -225,10 +232,27 @@
     {% for t in tmpls %}
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--surface);">
       <span>🏬 {{ t.destination }}{% if t.default_cargo %} <span style="color:var(--text-muted);">· {{ t.default_cargo }}</span>{% endif %}</span>
-      <form method="post" action="/routes/template/{{ t.id }}/delete" style="margin:0;"
-            onsubmit="return confirm('Удалить маршрут {{ origin }} → {{ t.destination }}?')">
-        <button type="submit" style="width:auto; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; font-size:.82rem;">🗑 Удалить</button>
-      </form>
+      <span style="display:flex; align-items:center; gap:2px; flex-shrink:0;">
+        {# Порядок: водитель в боте видит маршруты так же, как расставлено здесь #}
+        <form method="post" action="/routes/template/{{ t.id }}/move" style="margin:0;">
+          <input type="hidden" name="direction" value="up">
+          <button type="submit" title="Поднять выше" aria-label="Поднять выше"
+                  {% if loop.first %}disabled{% endif %}
+                  class="row-move">▲</button>
+        </form>
+        <form method="post" action="/routes/template/{{ t.id }}/move" style="margin:0;">
+          <input type="hidden" name="direction" value="down">
+          <button type="submit" title="Опустить ниже" aria-label="Опустить ниже"
+                  {% if loop.last %}disabled{% endif %}
+                  class="row-move">▼</button>
+        </form>
+        <form method="post" action="/routes/template/{{ t.id }}/delete" style="margin:0 0 0 6px;"
+              data-confirm="Удалить маршрут?"
+              data-confirm-detail="{{ origin }} → {{ t.destination }}"
+              data-confirm-ok="Удалить">
+          <button type="submit" style="width:auto; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; font-size:.82rem;">🗑 Удалить</button>
+        </form>
+      </span>
     </div>
     {% endfor %}
   </div>

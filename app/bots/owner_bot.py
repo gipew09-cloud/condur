@@ -79,6 +79,7 @@ from app.services import (
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
+from app.services.textsanitize import clean_user_text
 
 logger = logging.getLogger(__name__)
 owner_router = Router()
@@ -137,7 +138,7 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) 
 
 @owner_router.message(OwnerRegistration.waiting_for_company)
 async def reg_company(message: Message, state: FSMContext) -> None:
-    company = (message.text or "").strip()
+    company = clean_user_text(message.text)
     if not company:
         await message.answer("Название не может быть пустым. Введите название компании.")
         return
@@ -156,7 +157,7 @@ async def reg_phone(message: Message, state: FSMContext, session: AsyncSession) 
     data = await state.get_data()
     owner = Owner(
         telegram_id=message.from_user.id,
-        full_name=message.from_user.full_name,
+        full_name=clean_user_text(message.from_user.full_name),
         company_name=data["company_name"],
         phone=phone,
     )
@@ -184,7 +185,7 @@ async def reg_phone(message: Message, state: FSMContext, session: AsyncSession) 
 # =========================================================================
 @owner_router.message(Onboarding.company)
 async def onb_company(message: Message, state: FSMContext) -> None:
-    company = (message.text or "").strip()
+    company = clean_user_text(message.text)
     if len(company) < 2:
         await message.answer("Слишком короткое название. Попробуйте ещё раз.")
         return
@@ -233,7 +234,7 @@ async def onb_vehicle_brand(message: Message, state: FSMContext) -> None:
 
 @owner_router.message(Onboarding.driver_name)
 async def onb_driver_name(message: Message, state: FSMContext) -> None:
-    name = (message.text or "").strip()
+    name = clean_user_text(message.text)
     if len(name) < 2:
         await message.answer("Слишком коротко. Введите ФИО водителя.")
         return
@@ -305,7 +306,7 @@ async def _onboarding_complete(
     # 1. Owner
     owner = Owner(
         telegram_id=reply_target.chat.id,
-        full_name=reply_target.chat.full_name,
+        full_name=clean_user_text(reply_target.chat.full_name),
         company_name=data["company"],
         phone=data["phone"],
     )
@@ -521,7 +522,7 @@ async def cb_add_driver(call: CallbackQuery, state: FSMContext, session: AsyncSe
 
 @owner_router.message(AddDriver.waiting_for_name)
 async def add_driver_name(message: Message, state: FSMContext) -> None:
-    name = (message.text or "").strip()
+    name = clean_user_text(message.text)
     if len(name) < 2:
         await message.answer("Имя слишком короткое. Введите ФИО водителя.")
         return
@@ -1215,7 +1216,7 @@ async def cb_route_add_neworig(call: CallbackQuery, state: FSMContext) -> None:
 
 @owner_router.message(AddRouteTemplate.waiting_for_origin)
 async def route_add_origin_typed(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    origin = (message.text or "").strip()
+    origin = clean_user_text(message.text)
     if not origin:
         await message.answer("Введите название склада:")
         return

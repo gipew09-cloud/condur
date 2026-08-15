@@ -504,7 +504,7 @@
       <div style="display:flex; gap:10px; align-items:center;">
         {% if waybill_uploaded_at %}<small>загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>{% endif %}
         <form action="/trips/{{ trip.id }}/waybill/delete" method="post" style="margin:0;"
-              data-confirm="Удалить фото ТТН?" >
+              onsubmit="return confirm('Удалить фото ТТН?')">
           <button type="submit" title="Удалить" style="width:auto; display:inline; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; margin:0; font:inherit; font-size:.82rem;">🗑 Удалить</button>
         </form>
       </div>
@@ -531,7 +531,7 @@
           <a href="/api/trip-doc/{{ doc.id }}" target="_blank"><b>{{ doc.filename or 'документ' }}</b></a>
           <small>загружено {{ doc.uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>
           <form action="/trip-doc/{{ doc.id }}/delete" method="post" style="margin:.3rem 0 0;"
-                data-confirm="Удалить этот документ?" >
+                onsubmit="return confirm('Удалить этот документ?')">
             <button type="submit" class="secondary outline" style="margin:0; padding:3px 9px; font-size:.78rem;">🗑 Удалить</button>
           </form>
         </div>
@@ -586,7 +586,7 @@
       <p style="margin-top:0; color:#991b1b; font-weight:750;">
         Удаляйте только дубль или ошибочный тестовый рейс. Расходы и события не пропадут, но будут отвязаны от этого рейса.
       </p>
-      <form action="/trips/{{ trip.id }}/delete" method="post" data-confirm="Удалить рейс?" data-confirm-detail="Действие нельзя отменить.">
+      <form action="/trips/{{ trip.id }}/delete" method="post" onsubmit="return confirm('Удалить рейс? Это действие нельзя отменить.');">
         <button type="submit" class="danger-action">Удалить рейс</button>
       </form>
     </div>

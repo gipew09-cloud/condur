@@ -116,6 +116,79 @@
   <a href="/logout"><i class="ph ph-sign-out bn-icon"></i>Выйти</a>
 </nav>
 
+{# ================= Своё окно подтверждения =================
+   Заменяет серое браузерное confirm(). Любая форма с атрибутом
+   data-confirm="Вопрос?" перехватывается. Необязательные атрибуты:
+   data-confirm-detail — вторая строка (что именно удаляем),
+   data-confirm-ok     — надпись на опасной кнопке (по умолчанию «Удалить»).
+   Фокус по умолчанию на «Отмена» — случайный Enter ничего не удалит. #}
+<dialog id="confirmDialog" class="confirm-dlg">
+  <form method="dialog">
+    <h3 id="confirmTitle">Подтвердите действие</h3>
+    <p id="confirmDetail" class="confirm-detail"></p>
+    <div class="confirm-actions">
+      <button value="cancel" class="confirm-cancel" autofocus>Отмена</button>
+      <button value="ok" class="confirm-ok" id="confirmOk">Удалить</button>
+    </div>
+  </form>
+</dialog>
+<style>
+  .confirm-dlg{border:none;border-radius:16px;padding:0;max-width:400px;width:calc(100% - 32px);
+    box-shadow:0 18px 50px rgba(15,23,42,.28);}
+  .confirm-dlg::backdrop{background:rgba(15,23,42,.45);}
+  .confirm-dlg form{padding:22px 22px 18px;margin:0;}
+  .confirm-dlg h3{margin:0 0 6px;font-size:1.05rem;font-weight:800;color:var(--text,#0f172a);}
+  .confirm-detail{margin:0 0 18px;color:var(--text-muted,#5b6573);font-size:.9rem;line-height:1.4;
+    word-break:break-word;}
+  .confirm-detail:empty{display:none;margin-bottom:12px;}
+  .confirm-actions{display:flex;gap:10px;justify-content:flex-end;}
+  .confirm-actions button{width:auto;min-width:104px;padding:9px 16px;border-radius:10px;
+    font-weight:700;font-size:.9rem;cursor:pointer;box-shadow:none;}
+  .confirm-cancel{background:#fff;color:var(--text,#0f172a);border:1px solid var(--border,#e2e6ec);}
+  .confirm-cancel:hover{background:#f6f7f9;}
+  .confirm-ok{background:#c5362b;color:#fff;border:1px solid #c5362b;}
+  .confirm-ok:hover{background:#a92c22;}
+  .row-move{width:auto;background:none;border:1px solid var(--border,#e2e6ec);box-shadow:none;
+    color:var(--text-muted,#5b6573);cursor:pointer;padding:1px 7px;font-size:.72rem;
+    line-height:1.4;border-radius:6px;}
+  .row-move:hover:not(:disabled){background:#f6f7f9;color:var(--text,#0f172a);}
+  .row-move:disabled{opacity:.3;cursor:default;}
+</style>
+<script>
+(function () {
+  var dlg = document.getElementById('confirmDialog');
+  if (!dlg || typeof dlg.showModal !== 'function') return;  // старый браузер — останется обычная отправка
+  var pending = null, pendingBtn = null;
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (form.dataset.confirmed === '1') return;
+    // Подтверждение может висеть либо на форме, либо на конкретной кнопке
+    // (кнопки с formaction внутри общей формы — например «Удалить расход»
+    // рядом с «Сохранить»: спрашивать надо только у опасной).
+    var btn = e.submitter && e.submitter.hasAttribute('data-confirm') ? e.submitter : null;
+    var src = btn || (form.hasAttribute('data-confirm') ? form : null);
+    if (!src) return;
+    e.preventDefault();
+    pending = form;
+    pendingBtn = btn;
+    document.getElementById('confirmTitle').textContent = src.getAttribute('data-confirm');
+    document.getElementById('confirmDetail').textContent = src.getAttribute('data-confirm-detail') || '';
+    document.getElementById('confirmOk').textContent = src.getAttribute('data-confirm-ok') || 'Удалить';
+    dlg.showModal();
+  }, true);
+  dlg.addEventListener('close', function () {
+    if (dlg.returnValue === 'ok' && pending) {
+      pending.dataset.confirmed = '1';
+      // Нажали кнопку с formaction — повторяем именно её нажатие, иначе
+      // form.submit() отправит форму на её собственный action.
+      if (pendingBtn) pendingBtn.click(); else pending.submit();
+    }
+    pending = null;
+    pendingBtn = null;
+  });
+})();
+</script>
+
 {% block scripts %}{% endblock %}
 </body>
 </html>

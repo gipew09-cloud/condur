@@ -55,6 +55,7 @@ from app.services import (
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
+from app.services.textsanitize import clean_user_text
 from app.services.timeutil import fmt_time, owner_tz
 
 logger = logging.getLogger(__name__)
@@ -575,6 +576,7 @@ async def shift_start_odometer_photo(
     message: Message, state: FSMContext, session: AsyncSession, owner_bot: Bot, bot: Bot
 ) -> None:
     # Водитель шлёт ТОЛЬКО фото (Правка 1) — число км впишет владелец.
+    # Если OCR одометра включён — пробуем прочитать цифры автоматически.
     file_id = _pick_photo_file_id(message)
     driver = await _driver_by_telegram(session, message.from_user.id)
     if driver is None:
@@ -587,9 +589,26 @@ async def shift_start_odometer_photo(
         await state.clear()
         await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
         return
+
+    # OCR одометра: если читаем успешно — показываем водителю и сохраняем
+    # значение (владелец всё равно получит фото и сможет поправить).
+    ocr_km: int | None = None
+    if receipt_ocr.is_enabled() and file_id is not None:
+        try:
+            buf = await bot.download(file_id)
+            reading = await receipt_ocr.recognize_odometer(buf.read())
+            if reading and reading.km:
+                ocr_km = reading.km
+                await message.answer(
+                    f"🤖 Распознал одометр: <b>{ocr_km:,} км</b> — передаю владельцу."
+                    .replace(",", " ")
+                )
+        except Exception as exc:
+            logger.debug("Odometer OCR skipped: %s", exc)
+
     await _do_start_shift(
         message, state, session, owner_bot, driver, vehicle,
-        odometer_start=None, photo_file_id=file_id, source_bot=bot,
+        odometer_start=ocr_km, photo_file_id=file_id, source_bot=bot,
     )
 
 
@@ -921,7 +940,9 @@ async def _templates_for_origin(session: AsyncSession, owner_id: int, origin: st
             RouteTemplate.is_active.is_(True),
             RouteTemplate.origin == origin,
         )
-        .order_by(RouteTemplate.destination, RouteTemplate.name)
+        # Порядок задаёт владелец на сайте (sort_order) — водитель видит
+        # частые маршруты сверху. Алфавит остаётся запасным.
+        .order_by(RouteTemplate.sort_order, RouteTemplate.destination, RouteTemplate.name)
     )
     return list(res.scalars().all())
 
@@ -1085,7 +1106,7 @@ async def trip_origin(message: Message, state: FSMContext) -> None:
     if not text:
         await message.answer(msg.TRIP_ASK_ORIGIN)
         return
-    await state.update_data(origin=text)
+    await state.update_data(origin=clean_user_text(text))
     await state.set_state(NewTrip.waiting_for_destination)
     await message.answer(msg.TRIP_ASK_DESTINATION)
 
@@ -1098,7 +1119,7 @@ async def trip_destination(
     if not text:
         await message.answer(msg.TRIP_ASK_DESTINATION)
         return
-    await state.update_data(destination=text)
+    await state.update_data(destination=clean_user_text(text))
 
     # Без вопроса «что везёте» (FEATURE_TRIP_CARGO выключен) — создаём рейс сразу.
     if not settings.feature_trip_cargo:
@@ -1728,6 +1749,15 @@ async def btn_expense(message: Message, state: FSMContext, session: AsyncSession
         await message.answer(msg.DRIVER_LINK_EXPECTED)
         return
     # Расход можно вносить в любой момент — смена НЕ обязательна (Правка 3).
+    # Защита от спама: если уже есть MAX_PENDING расходов, ждём решения владельца.
+    pending = await expense_service.count_pending_expenses(session, driver.id)
+    if pending >= expense_service.MAX_PENDING_PER_DRIVER:
+        await _refresh_ui(
+            message, session, driver,
+            f"⚠️ У тебя уже {pending} расходов ожидают проверки владельцем.\n"
+            "Подожди, пока он их рассмотрит, и попробуй снова."
+        )
+        return
     await state.set_state(NewExpense.selecting_category)
     await message.answer(msg.EXPENSE_PICK_CATEGORY, reply_markup=kb.expense_category_keyboard())
 
@@ -1784,7 +1814,7 @@ async def expense_description(message: Message, state: FSMContext) -> None:
     if not text:
         await message.answer(msg.EXPENSE_ASK_DESCRIPTION)
         return
-    await state.update_data(description=text)
+    await state.update_data(description=clean_user_text(text))
     await state.set_state(NewExpense.waiting_for_receipt)
     await message.answer(
         msg.EXPENSE_ASK_RECEIPT, reply_markup=kb.expense_receipt_skip_keyboard()
@@ -1808,6 +1838,18 @@ async def _finalize_expense(
     amount = Decimal(data["amount"])
     category = data["category"]
     description = data.get("description")
+
+    # Защита от двойного нажатия: если за последнюю минуту уже создан точно
+    # такой же расход (та же сумма + категория) — скорее всего лаг сети.
+    if await expense_service.is_duplicate_expense(session, driver_id=driver.id, category=category, amount_rub=amount):
+        await state.clear()
+        await _refresh_ui(
+            reply_target, session, driver,
+            f"⚠️ Расход {expense_service.CATEGORY_LABELS[category]} {amount:.0f} ₽ "
+            "уже был добавлен только что.\n"
+            "Если это другой расход — подожди минуту и попробуй снова."
+        )
+        return
 
     expense = await expense_service.create_expense(
         session,
@@ -2323,7 +2365,7 @@ async def _manual_trip_ask_route(
     templates_res = await session.execute(
         select(RouteTemplate)
         .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
-        .order_by(RouteTemplate.name)
+        .order_by(RouteTemplate.origin, RouteTemplate.sort_order, RouteTemplate.name)
     )
     templates = list(templates_res.scalars().all())
     if templates:
@@ -2416,7 +2458,7 @@ async def manual_trip_origin(message: Message, state: FSMContext) -> None:
     if not text:
         await message.answer(msg.TRIP_ASK_ORIGIN)
         return
-    await state.update_data(origin=text)
+    await state.update_data(origin=clean_user_text(text))
     await state.set_state(AddManualTrip.waiting_for_destination)
     await message.answer(msg.TRIP_ASK_DESTINATION)
 
@@ -2427,7 +2469,7 @@ async def manual_trip_destination(message: Message, state: FSMContext) -> None:
     if not text:
         await message.answer(msg.TRIP_ASK_DESTINATION)
         return
-    await state.update_data(destination=text)
+    await state.update_data(destination=clean_user_text(text))
     await state.set_state(AddManualTrip.waiting_for_date)
     await message.answer(msg.MANUAL_ASK_DATE)
 

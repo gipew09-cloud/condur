@@ -320,6 +320,9 @@ class RouteTemplate(Base):
     origin: Mapped[str] = mapped_column(Text)
     destination: Mapped[str] = mapped_column(Text)
     default_cargo: Mapped[str | None] = mapped_column(Text)
+    # Порядок внутри склада: владелец расставляет на сайте, водитель в боте
+    # видит в том же порядке. Шаг 10 — чтобы вставлять между без пересчёта.
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

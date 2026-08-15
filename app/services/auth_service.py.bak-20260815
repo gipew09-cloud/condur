@@ -19,11 +19,15 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import jwt
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 CODE_TTL = timedelta(minutes=5)
+JWT_TTL = timedelta(days=7)
+JWT_ALGO = "HS256"
 
 
 # Сколько неверных попыток допускаем на один код. Без этого 6-значный код
@@ -75,10 +79,30 @@ def consume_code(telegram_id: int, code: str) -> bool:
     return True
 
 
-# JWT-вход убран (аудит безопасности): он подписывался JWT_SECRET, а дефолт
-# секрета «change-me-in-production» лежал в .env.example на GitHub. Кто знал
-# секрет — мог подделать cookie и войти под любым владельцем. Теперь вход
-# только по постоянной сессии (web_sessions) ниже.
+def create_jwt(owner_id: int, tid: int | None = None) -> str:
+    """JWT для доступа к кабинету owner_id. tid — telegram_id того, кто вошёл
+    (владелец или админ); нужен, чтобы уметь мгновенно отзывать доступ админа."""
+    payload = {
+        "sub": str(owner_id),
+        "iat": datetime.now(timezone.utc),
+        "exp": datetime.now(timezone.utc) + JWT_TTL,
+    }
+    if tid is not None:
+        payload["tid"] = int(tid)
+    return jwt.encode(payload, settings.jwt_secret, algorithm=JWT_ALGO)
+
+
+def decode_jwt(token: str) -> tuple[int, int | None] | None:
+    """Вернуть (owner_id, tid) или None при ошибке/истечении.
+    tid = None для старых токенов (до ввода админов) — трактуем как владельца."""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[JWT_ALGO])
+        owner_id = int(payload["sub"])
+        raw_tid = payload.get("tid")
+        return owner_id, (int(raw_tid) if raw_tid is not None else None)
+    except (jwt.PyJWTError, KeyError, ValueError) as exc:
+        logger.debug("JWT decode failed: %s", exc)
+        return None
 
 
 # =====================================================================

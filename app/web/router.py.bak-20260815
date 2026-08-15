@@ -54,7 +54,6 @@ from app.models import (
 from app.config import settings
 from app.services import act_service, auth_service, billing, geocode_service, rc_service, telemetry_service
 from app.services.event_service import log_event
-from app.services.textsanitize import clean_user_text
 from app.services.timeutil import (
     RU_MONTHS_SHORT,
     add_months,
@@ -150,52 +149,6 @@ templates.env.filters["backdated"] = _backdated
 
 app = FastAPI(title="TMS Cabinet")
 
-
-# --------- безопасность: заголовки + троттлинг входа ----------
-# In-memory лимитер POST /login: не больше N попыток с одного IP за окно.
-# Процесс один (см. run.py), словарь переживает запросы, чистится лениво.
-# Не защита от распределённой атаки (для этого нужен слой перед приложением),
-# а барьер против перебора кода входа с одного адреса.
-import time as _time
-from collections import deque as _deque
-
-_LOGIN_HITS: dict[str, _deque] = {}
-_LOGIN_WINDOW_SEC = 300
-_LOGIN_MAX_PER_WINDOW = 20
-
-
-def _login_rate_ok(ip: str) -> bool:
-    now = _time.monotonic()
-    dq = _LOGIN_HITS.setdefault(ip, _deque())
-    while dq and now - dq[0] > _LOGIN_WINDOW_SEC:
-        dq.popleft()
-    if len(dq) >= _LOGIN_MAX_PER_WINDOW:
-        return False
-    dq.append(now)
-    return True
-
-
-@app.middleware("http")
-async def _security_middleware(request: Request, call_next):
-    # Троттлинг только на POST /login (перебор кода). Остальное не трогаем.
-    if request.method == "POST" and request.url.path == "/login":
-        ip = (request.client.host if request.client else "?") or "?"
-        if not _login_rate_ok(ip):
-            return Response("Слишком много попыток входа. Подождите 5 минут.", status_code=429)
-    response = await call_next(request)
-    # Заголовки безопасности. CSP намеренно НЕ ставим здесь: страницы грузят
-    # внешние CSS/шрифты/карты (jsdelivr, google fonts, yandex), неверный CSP
-    # молча сломает вид — это отдельная задача с проверкой каждой страницы.
-    response.headers.setdefault("X-Frame-Options", "DENY")            # кликджекинг
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")  # подмена типа
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    if settings.cookie_secure:  # только на HTTPS (проде)
-        response.headers.setdefault(
-            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
-        )
-    return response
-
-
 # static (минимум — favicon/css)
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(exist_ok=True)
@@ -236,10 +189,16 @@ async def _session_from_request(
 
 
 async def _viewer_telegram_id(request: Request, session: AsyncSession) -> int | None:
-    """Telegram ID того, кто сейчас смотрит кабинет (по постоянной сессии)."""
+    """Telegram ID того, кто сейчас смотрит кабинет (сессия или старый JWT).
+    None — старый владельческий JWT без tid; трактуем как владельца."""
     ws = await _session_from_request(request, session)
     if ws is not None:
         return ws.telegram_id
+    token = request.cookies.get("auth")
+    if token:
+        decoded = auth_service.decode_jwt(token)
+        if decoded is not None:
+            return decoded[1]
     return None
 
 
@@ -247,15 +206,20 @@ async def current_owner(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Owner:
-    # Единственный путь — постоянная сессia (таблица web_sessions, в cookie
-    # только случайный токен, в БД — его SHA-256). Прежний запасной вход по
-    # 7-дневному JWT убран: он подписывался JWT_SECRET, а дефолт секрета лежал
-    # в .env.example на GitHub — знающий его мог подделать вход. Все живые
-    # входы давно на сессиях, JWT всё равно истёк (жил 7 дней).
+    # 1) Постоянная сессия (основной путь).
     ws = await _session_from_request(request, session)
-    if ws is None:
-        raise _LOGIN_REDIRECT
-    owner_id, tid = ws.owner_id, ws.telegram_id
+    if ws is not None:
+        owner_id, tid = ws.owner_id, ws.telegram_id
+    else:
+        # 2) Переходный fallback: старый 7-дневный JWT (чтобы никого не
+        # разлогинило при деплое). Истечёт сам — дальше вход уже постоянный.
+        token = request.cookies.get("auth")
+        if not token:
+            raise _LOGIN_REDIRECT
+        decoded = auth_service.decode_jwt(token)
+        if decoded is None:
+            raise _LOGIN_REDIRECT
+        owner_id, tid = decoded
 
     owner = await session.get(Owner, owner_id)
     if owner is None:
@@ -1255,7 +1219,7 @@ async def update_driver(
             raise HTTPException(status_code=400, detail="Bad default_vehicle_id")
         driver.default_vehicle_id = dv_id
 
-    driver.full_name = clean_user_text(full_name)
+    driver.full_name = full_name.strip()
     driver.phone = phone.strip() or None
     driver.salary_type = salary_type
     driver.salary_rate = rate
@@ -2278,7 +2242,6 @@ async def customers_delete(
 
 @app.post("/admins/add")
 async def admins_add(
-    request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     telegram_id: Annotated[str, Form()],
@@ -2292,33 +2255,12 @@ async def admins_add(
     # нельзя добавить самого владельца или уже существующего админа
     if tid == owner.telegram_id:
         raise HTTPException(status_code=400, detail="Это Telegram ID владельца")
-
-    # Лимит: не более 5 администраторов на один кабинет
-    admin_count = (
-        await session.execute(
-            select(func.count(Admin.id)).where(Admin.owner_id == owner.id)
-        )
-    ).scalar_one() or 0
-    if admin_count >= 5:
-        raise HTTPException(status_code=400, detail="Максимум 5 администраторов на кабинет")
-
-    # Проверяем в рамках ЭТОГО кабинета (не глобально — один человек
-    # может быть админом у разных владельцев, это нормально)
     exists = (
-        await session.execute(
-            select(Admin).where(Admin.telegram_id == tid, Admin.owner_id == owner.id)
-        )
+        await session.execute(select(Admin).where(Admin.telegram_id == tid))
     ).scalar_one_or_none()
     if exists is None:
-        session.add(Admin(owner_id=owner.id, telegram_id=tid, name=clean_user_text(name)))
+        session.add(Admin(owner_id=owner.id, telegram_id=tid, name=_norm(name)))
         try:
-            # Аудит: кто и когда выдал доступ. Без этого утечка доступа не
-            # оставляет следов (см. историю со взломом соседнего бота).
-            actor = await _viewer_telegram_id(request, session)
-            await log_event(
-                session, owner_id=owner.id, event_type="admin_added",
-                payload={"admin_telegram_id": tid, "by_telegram_id": actor},
-            )
             await session.commit()
         except IntegrityError:
             await session.rollback()
@@ -2343,7 +2285,6 @@ async def admins_toggle_notifications(
 @app.post("/admins/{admin_id}/delete")
 async def admins_delete(
     admin_id: int,
-    request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
@@ -2359,12 +2300,6 @@ async def admins_delete(
             WebSession.revoked_at.is_(None),
         )
         .values(revoked_at=datetime.now(timezone.utc))
-    )
-    # Аудит отзыва доступа.
-    actor = await _viewer_telegram_id(request, session)
-    await log_event(
-        session, owner_id=owner.id, event_type="admin_removed",
-        payload={"admin_telegram_id": admin.telegram_id, "by_telegram_id": actor},
     )
     await session.delete(admin)
     await session.commit()
@@ -2664,7 +2599,6 @@ async def routes_page(
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     rc_imported: Annotated[int | None, Query()] = None,
-    renamed: Annotated[int | None, Query()] = None,
 ):
     # Один запрос: GROUP BY origin, destination для completed рейсов с заполненной выручкой
     rows_res = await session.execute(
@@ -2709,13 +2643,7 @@ async def routes_page(
         await session.execute(
             select(RouteTemplate)
             .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
-            # Порядок задаёт владелец (sort_order). Алфавит — только запасной,
-            # чтобы новые маршруты с одинаковым порядком не прыгали.
-            .order_by(
-                RouteTemplate.origin,
-                RouteTemplate.sort_order,
-                RouteTemplate.destination,
-            )
+            .order_by(RouteTemplate.origin, RouteTemplate.destination)
         )
     ).scalars().all()
     templates_by_origin: dict[str, list] = {}
@@ -2731,7 +2659,6 @@ async def routes_page(
             "templates_by_origin": templates_by_origin,
             "origins_list": sorted(templates_by_origin.keys()),
             "rc_imported": rc_imported,
-            "renamed": renamed,
             "yandex_maps_api_key": settings.yandex_maps_api_key,
             "active_page": "routes",
         },
@@ -2748,8 +2675,8 @@ async def routes_template_add(
 ):
     """Быстро добавить маршрут склад→РЦ (шаблон для бота водителя).
     Название генерируем сами; РЦ выбирается из справочника (текст его имени)."""
-    origin = clean_user_text(origin)
-    destination = clean_user_text(destination)
+    origin = (origin or "").strip()
+    destination = (destination or "").strip()
     if not origin or not destination:
         raise HTTPException(status_code=400, detail="Укажите склад и РЦ")
     # не плодим дубли: тот же склад+РЦ обновляем/оставляем
@@ -2786,53 +2713,6 @@ async def routes_template_delete(
     if tmpl is None or tmpl.owner_id != owner.id:
         raise HTTPException(status_code=404)
     tmpl.is_active = False
-    await session.commit()
-    return RedirectResponse("/routes", status_code=303)
-
-
-@app.post("/routes/template/{template_id}/move")
-async def routes_template_move(
-    template_id: int,
-    owner: Annotated[Owner, Depends(current_owner)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    direction: Annotated[str, Form()],
-):
-    """Поднять/опустить маршрут внутри своего склада.
-
-    Водитель в боте видит маршруты в том же порядке, что здесь. Частые
-    маршруты владелец поднимает наверх — редкие уходят вниз и не мозолят глаза.
-    Меняемся местами с соседом: берём соседний по порядку маршрут ТОГО ЖЕ
-    склада и обмениваемся значениями sort_order.
-    """
-    tmpl = await session.get(RouteTemplate, template_id)
-    if tmpl is None or tmpl.owner_id != owner.id:
-        raise HTTPException(status_code=404)
-    up = direction == "up"
-
-    siblings = list((
-        await session.execute(
-            select(RouteTemplate)
-            .where(
-                RouteTemplate.owner_id == owner.id,
-                RouteTemplate.origin == tmpl.origin,
-                RouteTemplate.is_active.is_(True),
-            )
-            .order_by(RouteTemplate.sort_order, RouteTemplate.destination)
-        )
-    ).scalars().all())
-
-    idx = next((i for i, s in enumerate(siblings) if s.id == tmpl.id), None)
-    if idx is None:
-        return RedirectResponse("/routes", status_code=303)
-    neighbour_idx = idx - 1 if up else idx + 1
-    if not (0 <= neighbour_idx < len(siblings)):
-        return RedirectResponse("/routes", status_code=303)  # уже с краю
-
-    # Пересобираем порядок целиком с шагом 10: надёжнее обмена значениями,
-    # если у части маршрутов sort_order одинаковый (например все нули).
-    siblings[idx], siblings[neighbour_idx] = siblings[neighbour_idx], siblings[idx]
-    for position, item in enumerate(siblings, start=1):
-        item.sort_order = position * 10
     await session.commit()
     return RedirectResponse("/routes", status_code=303)
 
@@ -2966,40 +2846,17 @@ async def routes_rc_edit(
         raise HTTPException(status_code=404)
     if not name.strip() or not address.strip():
         raise HTTPException(status_code=400, detail="Укажите название и адрес РЦ")
-    old_name = (center.name or "").strip()
     _apply_distribution_center_form(center, {
         "name": name, "address": address, "aliases": aliases,
         "latitude": latitude, "longitude": longitude,
         "geofence_radius_m": geofence_radius_m,
     })
-    new_name = (center.name or "").strip()
-
-    # Переименовали РЦ — тянем новое имя в ШАБЛОНЫ маршрутов. Иначе водитель
-    # в боте продолжает видеть старое название («Магнит (Гранд-Трейд)» вместо
-    # «Магнит Шушары 179») и путает три склада одной сети.
-    # РЕЙСЫ НЕ ТРОГАЕМ НИКОГДА: это исторические факты, по ним печатаются акты
-    # для налоговой — задним числом менять их нельзя.
-    renamed = 0
-    if old_name and new_name and old_name != new_name:
-        for field in (RouteTemplate.destination, RouteTemplate.origin):
-            res = await session.execute(
-                update(RouteTemplate)
-                .where(RouteTemplate.owner_id == owner.id, field == old_name)
-                .values({field.key: new_name})
-            )
-            renamed += res.rowcount or 0
-        # Название шаблона генерируется как «откуда → куда» — обновляем и его.
-        await session.execute(
-            update(RouteTemplate)
-            .where(RouteTemplate.owner_id == owner.id)
-            .values(name=func.concat(RouteTemplate.origin, " → ", RouteTemplate.destination))
-        )
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=400, detail="РЦ с таким названием уже есть") from exc
-    return RedirectResponse(f"/routes?renamed={renamed}", status_code=303)
+    return RedirectResponse("/routes", status_code=303)
 
 
 @app.post("/routes/rc/{center_id}/delete")
@@ -4102,7 +3959,7 @@ async def create_trip_manual(
     await session.flush()
     trip = Trip(
         owner_id=owner.id, shift_id=shift.id, driver_id=d_id, vehicle_id=v_id,
-        status="completed", origin=clean_user_text(origin), destination=clean_user_text(destination),
+        status="completed", origin=origin.strip(), destination=destination.strip(),
         completed_at=dt, is_manual=True,
         revenue_rub=(revenue.quantize(Decimal("0.01")) if revenue is not None else None),
     )
@@ -5243,7 +5100,7 @@ async def trip_edit_route(
         raise HTTPException(status_code=404)
 
     def _clean(value: str) -> str | None:
-        value = clean_user_text(value)[:500]
+        value = (value or "").strip()[:500]
         return value or None
 
     new = {

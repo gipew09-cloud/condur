@@ -692,10 +692,33 @@ async def handle_client(
         )
 
 
+# Порт приёма открыт в интернет (пароль TELEMETRY_PASSWORD задаётся отдельно).
+# Без предела на число одновременных соединений посторонний мог бы открыть
+# тысячи и исчерпать память/файловые дескрипторы (DoS). Трёх машин хватает
+# с огромным запасом — лимит отсекает только флуд.
+MAX_CONCURRENT_CONNECTIONS = 200
+_conn_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CONNECTIONS)
+
+
+async def _guarded_client(reader, writer, cfg: ReceiverConfig) -> None:
+    if _conn_semaphore.locked():
+        # достигнут потолок — вежливо закрываем лишнее соединение
+        peer_host, peer_port = _peer_parts(writer.get_extra_info("peername"))
+        logger.warning("Отклонено соединение (лимит %s): %s:%s",
+                       MAX_CONCURRENT_CONNECTIONS, peer_host, peer_port)
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    async with _conn_semaphore:
+        await handle_client(reader, writer, cfg)
+
+
 async def serve(config: ReceiverConfig | None = None) -> None:
     cfg = config or ReceiverConfig.from_env()
     server = await asyncio.start_server(
-        lambda reader, writer: handle_client(reader, writer, cfg),
+        lambda reader, writer: _guarded_client(reader, writer, cfg),
         host=cfg.host,
         port=cfg.port,
     )
