@@ -220,18 +220,9 @@ def test_render_acts_has_origin_override_field():
     assert ">5.18" not in html
 
 
-# ------------------------------------------------------------------ JWT / доступ
-def test_jwt_roundtrip_owner_and_admin():
-    assert AU.decode_jwt(AU.create_jwt(5, tid=123)) == (5, 123)   # админ вошёл в кабинет 5
-    assert AU.decode_jwt(AU.create_jwt(5, tid=999)) == (5, 999)   # владелец
-    assert AU.decode_jwt(AU.create_jwt(5)) == (5, None)           # старый токен (совместимость)
-
-
-def test_jwt_invalid_returns_none():
-    assert AU.decode_jwt("not-a-token") is None
-    assert AU.decode_jwt("") is None
-
-
+# ------------------------------------------------------------------ доступ
+# JWT-вход удалён при аудите безопасности (секрет по умолчанию утекал в
+# .env.example). Тесты create_jwt/decode_jwt убраны вместе с функциями.
 def test_login_code_is_one_time_and_checked():
     code = AU.issue_code(777)
     assert AU.consume_code(777, "000000") is False   # неверный код
