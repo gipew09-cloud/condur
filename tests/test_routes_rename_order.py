@@ -37,10 +37,14 @@ def test_route_template_has_sort_order_field():
 
 
 def test_templates_ordered_by_sort_order():
+    """И сайт, и бот показывают маршруты в порядке, заданном владельцем."""
     src = _source("app/web/router.py")
-    start = src.index("async def routes_page")
-    body = src[start:start + 4000]
+    start = src.index("async def _route_templates_view")
+    body = src[start:start + 2500]
     assert "RouteTemplate.sort_order" in body, "список должен сортироваться по порядку владельца"
+    # бот обязан сортировать так же, иначе порядок не доедет до водителя
+    bot = _source("app/bots/driver_bot.py")
+    assert bot.count("RouteTemplate.sort_order") >= 2, "обе выборки в боте должны учитывать порядок"
 
 
 def test_no_browser_confirm_left_in_templates():
@@ -48,3 +52,24 @@ def test_no_browser_confirm_left_in_templates():
     for path in Path("app/web/templates").glob("*.html"):
         text = path.read_text(encoding="utf-8")
         assert "return confirm(" not in text, f"{path.name}: остался браузерный confirm()"
+
+
+def test_move_returns_partial_not_redirect():
+    """Перестановка ▲▼ обновляет только список (HTMX), без перезагрузки страницы."""
+    src = _source("app/web/router.py")
+    start = src.index("async def routes_template_move")
+    end = src.index('@app.post("/routes/rc/add")')
+    body = src[start:end]
+    assert "_route_templates.html" in body, "должен отдаваться кусок списка"
+    assert "_is_htmx" in body
+    # прямых редиректов на /routes в теле остаться не должно
+    assert 'RedirectResponse("/routes", status_code=303)' in body, "фоллбэк без htmx нужен"
+    assert body.count("RedirectResponse") == 1, "остальные ответы — партиал"
+
+
+def test_partial_uses_htmx_and_marks_stale():
+    tpl = _source("app/web/templates/_route_templates.html")
+    assert 'id="route-templates"' in tpl
+    assert 'hx-target="#route-templates"' in tpl
+    assert "stale_destinations" in tpl, "устаревшие названия РЦ должны подсвечиваться"
+

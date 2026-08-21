@@ -270,7 +270,9 @@ def test_mobile_navigation_has_requisites_logout_and_scroll():
     mobile_css = open("app/web/static/mobile.css", encoding="utf-8").read()
     cabinet_css = open("app/web/static/cabinet.css", encoding="utf-8").read()
     assert "overflow-x: auto" in mobile_css
-    assert "flex: 0 0 76px" in mobile_css
+    # ширина пункта — по содержимому, но не уже 76px (иначе «Мониторинг» налезал
+    # на соседний пункт: у ссылок нет overflow: hidden)
+    assert "min-width: 76px" in mobile_css
     assert "grid-template-columns: auto minmax(0, 1fr)" in cabinet_css
 
 
@@ -763,8 +765,31 @@ def test_map_template_uses_yandex_not_leaflet():
     html = _render("map.html", owner=OWNER, active_page="map",
                    yandex_maps_api_key="test-key-123")
     assert "api-maps.yandex.ru/2.1/?apikey=test-key-123" in html
-    assert "vehicle-marker" in html and "visibilitychange" in html
-    assert "removeMissing(vehicleMarkers" in html and "removeMissing(driverMarkers" in html
+    # метка машины и авто-обновление при возврате на вкладку
+    assert "mon-pin" in html and "visibilitychange" in html
+    # пропавшие метки снимаются с карты — и машины, и водители
+    assert "geoObjects.remove(pins[id].pm)" in html
+    assert "geoObjects.remove(drivers[key])" in html
+    # состояние живёт в обводке метки — все пять состояний из легенды на месте
+    for state in ("moving", "idle", "off", "unknown", "stale", "invalid"):
+        assert f"{state}:" in html, f"нет состояния {state}"
+
+
+def test_monitoring_keeps_gps_honesty_note():
+    """Приписка про ненадёжность GPS — дословная, её нельзя терять при редизайне."""
+    html = _render("map.html", owner=OWNER, active_page="map",
+                   yandex_maps_api_key="test-key-123")
+    assert (
+        "GPS может ошибаться. Если сигнал глушится или давно не обновлялся, "
+        "метку используем как подсказку, а не как окончательное доказательство."
+    ) in html.replace("<b>", "").replace("</b>", "")
+
+
+def test_nav_renamed_map_to_monitoring():
+    """Раздел карты называется «Мониторинг» — и в верхнем меню, и в нижнем."""
+    html = _render("base.html", owner=OWNER, active_page="map")
+    assert html.count("Мониторинг") >= 2
+    assert ">Карта<" not in html and " Карта<" not in html
 
 
 def test_map_template_without_key_shows_hint():
