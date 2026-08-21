@@ -692,15 +692,22 @@ async def handle_client(
         )
 
 
-# Порт приёма открыт в интернет (пароль TELEMETRY_PASSWORD задаётся отдельно).
-# Без предела на число одновременных соединений посторонний мог бы открыть
-# тысячи и исчерпать память/файловые дескрипторы (DoS). Трёх машин хватает
-# с огромным запасом — лимит отсекает только флуд.
-MAX_CONCURRENT_CONNECTIONS = 200
-_conn_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CONNECTIONS)
+# Предел одновременных соединений. По умолчанию 0 = БЕЗ ОГРАНИЧЕНИЙ — так
+# просил владелец: приём сигналов от трекеров ничем не режется.
+# Порт открыт в интернет, поэтому возможность включить потолок оставлена:
+# задайте EGTS_MAX_CONNECTIONS (например 200), если понадобится отсечь флуд.
+MAX_CONCURRENT_CONNECTIONS = _env_int("EGTS_MAX_CONNECTIONS", 0, minimum=0)
+_conn_semaphore = (
+    asyncio.Semaphore(MAX_CONCURRENT_CONNECTIONS)
+    if MAX_CONCURRENT_CONNECTIONS > 0
+    else None
+)
 
 
 async def _guarded_client(reader, writer, cfg: ReceiverConfig) -> None:
+    if _conn_semaphore is None:          # лимит выключен — принимаем всё
+        await handle_client(reader, writer, cfg)
+        return
     if _conn_semaphore.locked():
         # достигнут потолок — вежливо закрываем лишнее соединение
         peer_host, peer_port = _peer_parts(writer.get_extra_info("peername"))

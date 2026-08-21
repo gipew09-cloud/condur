@@ -89,6 +89,16 @@ def _vehicle_type_label(code: str | None) -> str:
     return _VEHICLE_TYPE_LABELS.get(code or "", code or "—")
 
 
+def _short_person_name(full_name: str | None) -> str | None:
+    """«Иванов Иван Иванович» → «Иванов И.» — для узких подписей на карте."""
+    if not full_name:
+        return None
+    parts = full_name.split()
+    if len(parts) >= 2:
+        return f"{parts[0]} {parts[1][0]}."
+    return full_name
+
+
 def _trip_status_label(code: str | None) -> str:
     return _TRIP_STATUS_LABELS.get(code or "", code or "—")
 
@@ -2658,6 +2668,43 @@ def _apply_distribution_center_form(center: DistributionCenter, form: dict) -> N
         center.geofence_radius_m = radius
 
 
+async def _route_templates_view(
+    session: AsyncSession, owner_id: int, centers: list
+) -> tuple[dict[str, list], set[str]]:
+    """Маршруты-шаблоны, сгруппированные по складу, + набор «устаревших» РЦ.
+
+    Устаревшее название — это пункт назначения шаблона, которого больше нет в
+    справочнике РЦ. Так бывает, если РЦ переименовали до того, как появилось
+    авто-обновление шаблонов: водитель в боте видит «Магнит (Гранд-Трейд)»,
+    хотя РЦ давно называется иначе. Помечаем, чтобы владелец увидел и починил.
+    """
+    rows = (
+        await session.execute(
+            select(RouteTemplate)
+            .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
+            # Порядок задаёт владелец (sort_order). Алфавит — только запасной,
+            # чтобы новые маршруты с одинаковым порядком не прыгали.
+            .order_by(
+                RouteTemplate.origin,
+                RouteTemplate.sort_order,
+                RouteTemplate.destination,
+            )
+        )
+    ).scalars().all()
+
+    by_origin: dict[str, list] = {}
+    for t in rows:
+        by_origin.setdefault((t.origin or "—").strip(), []).append(t)
+
+    known = {(c.name or "").strip() for c in centers if (c.name or "").strip()}
+    stale = {
+        (t.destination or "").strip()
+        for t in rows
+        if (t.destination or "").strip() and (t.destination or "").strip() not in known
+    }
+    return by_origin, stale
+
+
 @app.get("/routes", response_class=HTMLResponse)
 async def routes_page(
     request: Request,
@@ -2705,22 +2752,9 @@ async def routes_page(
     centers = await _active_distribution_centers(session, owner.id)
     # Маршруты-шаблоны (склад → РЦ) для водителя, сгруппированы по складу —
     # чтобы владелец быстро добавлял/видел, а водитель выбирал папками в боте.
-    tmpl_rows = (
-        await session.execute(
-            select(RouteTemplate)
-            .where(RouteTemplate.owner_id == owner.id, RouteTemplate.is_active.is_(True))
-            # Порядок задаёт владелец (sort_order). Алфавит — только запасной,
-            # чтобы новые маршруты с одинаковым порядком не прыгали.
-            .order_by(
-                RouteTemplate.origin,
-                RouteTemplate.sort_order,
-                RouteTemplate.destination,
-            )
-        )
-    ).scalars().all()
-    templates_by_origin: dict[str, list] = {}
-    for t in tmpl_rows:
-        templates_by_origin.setdefault((t.origin or "—").strip(), []).append(t)
+    templates_by_origin, stale_destinations = await _route_templates_view(
+        session, owner.id, centers
+    )
     return templates.TemplateResponse(
         "routes.html",
         {
@@ -2729,6 +2763,7 @@ async def routes_page(
             "rows": rows,
             "centers": centers,
             "templates_by_origin": templates_by_origin,
+            "stale_destinations": stale_destinations,
             "origins_list": sorted(templates_by_origin.keys()),
             "rc_imported": rc_imported,
             "renamed": renamed,
@@ -2793,6 +2828,7 @@ async def routes_template_delete(
 @app.post("/routes/template/{template_id}/move")
 async def routes_template_move(
     template_id: int,
+    request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     direction: Annotated[str, Form()],
@@ -2804,6 +2840,21 @@ async def routes_template_move(
     Меняемся местами с соседом: берём соседний по порядку маршрут ТОГО ЖЕ
     склада и обмениваемся значениями sort_order.
     """
+    async def _render_list():
+        """Отдать обновлённый кусок списка (HTMX) или вернуться на страницу."""
+        if not _is_htmx(request):
+            return RedirectResponse("/routes", status_code=303)
+        centers = await _active_distribution_centers(session, owner.id)
+        by_origin, stale = await _route_templates_view(session, owner.id, centers)
+        return templates.TemplateResponse(
+            "_route_templates.html",
+            {
+                "request": request,
+                "templates_by_origin": by_origin,
+                "stale_destinations": stale,
+            },
+        )
+
     tmpl = await session.get(RouteTemplate, template_id)
     if tmpl is None or tmpl.owner_id != owner.id:
         raise HTTPException(status_code=404)
@@ -2823,10 +2874,10 @@ async def routes_template_move(
 
     idx = next((i for i, s in enumerate(siblings) if s.id == tmpl.id), None)
     if idx is None:
-        return RedirectResponse("/routes", status_code=303)
+        return await _render_list()
     neighbour_idx = idx - 1 if up else idx + 1
     if not (0 <= neighbour_idx < len(siblings)):
-        return RedirectResponse("/routes", status_code=303)  # уже с краю
+        return await _render_list()  # уже с краю
 
     # Пересобираем порядок целиком с шагом 10: надёжнее обмена значениями,
     # если у части маршрутов sort_order одинаковый (например все нули).
@@ -2834,7 +2885,7 @@ async def routes_template_move(
     for position, item in enumerate(siblings, start=1):
         item.sort_order = position * 10
     await session.commit()
-    return RedirectResponse("/routes", status_code=303)
+    return await _render_list()
 
 
 @app.post("/routes/rc/add")
@@ -3923,7 +3974,7 @@ async def api_drivers_locations(
 ):
     """Для карты: ручные координаты водителей + GPS машин (Stavtrack)."""
     vehicles_res = await session.execute(
-        select(VehicleState, Vehicle.license_plate)
+        select(VehicleState, Vehicle.license_plate, Vehicle.type)
         .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
         .where(
             Vehicle.owner_id == owner.id,
@@ -3932,13 +3983,18 @@ async def api_drivers_locations(
             VehicleState.longitude.is_not(None),
         )
     )
-    # машины с открытой сменой — для балуна «в смене / без смены»
+    # машины с открытой сменой — для карточки «в смене / без смены».
+    # Заодно тянем имя водителя: в карточке машины на мониторинге подпись
+    # «рефрижератор · Иванов И.» берётся отсюда, отдельного запроса не нужно.
     busy_res = await session.execute(
-        select(Shift.vehicle_id).where(
-            Shift.owner_id == owner.id, Shift.status == "started"
-        )
+        select(Shift.vehicle_id, Driver.full_name)
+        .join(Driver, Driver.id == Shift.driver_id)
+        .where(Shift.owner_id == owner.id, Shift.status == "started")
     )
-    busy_vehicle_ids = {row[0] for row in busy_res.all()}
+    driver_by_vehicle = {
+        vehicle_id: _short_person_name(name) for vehicle_id, name in busy_res.all()
+    }
+    busy_vehicle_ids = set(driver_by_vehicle)
     # машины с активным рейсом — балун показывает конкретнее: «в рейсе»
     trips_res = await session.execute(
         select(Trip.vehicle_id).where(
@@ -3951,6 +4007,10 @@ async def api_drivers_locations(
         {
             "vehicle_id": st.vehicle_id,
             "plate": plate,
+            # тип кузова — на мониторинге он задаёт иконку метки
+            "type": vtype,
+            "type_label": _vehicle_type_label(vtype),
+            "driver": driver_by_vehicle.get(st.vehicle_id),
             "lat": float(st.latitude),
             "lon": float(st.longitude),
             "speed_kmh": float(st.speed_kmh or 0),
@@ -3968,7 +4028,7 @@ async def api_drivers_locations(
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
             "updated_label": fmt_dt(st.last_seen_at, owner.timezone, "%d.%m, %H:%M"),
         }
-        for st, plate in vehicles_res.all()
+        for st, plate, vtype in vehicles_res.all()
         # «нулевой остров» (потеря GPS у трекера) на карту не выносим
         if abs(float(st.latitude)) > 0.001 or abs(float(st.longitude)) > 0.001
     ]

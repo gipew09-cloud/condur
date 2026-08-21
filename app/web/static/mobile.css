@@ -90,12 +90,15 @@
   }
   .bottom-nav::-webkit-scrollbar { display: none; }
   .bottom-nav a {
-    flex: 0 0 76px;
+    /* ширина по содержимому: «Мониторинг» длиннее 76px и раньше налезал
+       на соседний пункт (у ссылок нет overflow: hidden) */
+    flex: 0 0 auto;
+    min-width: 76px;
     text-align: center;
     text-decoration: none;
     color: var(--pico-muted-color);
     font-size: 0.68rem;
-    padding: 0.45rem 0.25rem;
+    padding: 0.45rem 0.55rem;
     min-height: 56px;
     white-space: nowrap;
   }

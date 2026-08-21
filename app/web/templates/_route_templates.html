@@ -1,0 +1,45 @@
+{# Список маршрутов-шаблонов. Отдельным файлом, потому что HTMX подменяет
+   только его — при перестановке ▲▼ страница НЕ перезагружается и не прыгает
+   к началу. Тот же кусок отдаётся из POST /routes/template/{id}/move. #}
+<div id="route-templates">
+  {% if templates_by_origin %}
+  {% for origin, tmpls in templates_by_origin.items() %}
+  <div style="margin-top:.75rem;">
+    <div style="font-weight:800; margin-bottom:.3rem;">🏭 {{ origin }} <span style="color:var(--text-muted); font-weight:600;">({{ tmpls|length }})</span></div>
+    {% for t in tmpls %}
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--surface);">
+      <span>
+        🏬 {{ t.destination }}{% if t.default_cargo %} <span style="color:var(--text-muted);">· {{ t.default_cargo }}</span>{% endif %}
+        {% if t.destination in stale_destinations %}
+        {# Название не совпадает ни с одним РЦ справочника — скорее всего РЦ
+           переименовали раньше, чем появилось авто-обновление шаблонов. #}
+        <br><span class="stale-hint">⚠️ старое название — в справочнике такого РЦ нет</span>
+        {% endif %}
+      </span>
+      <span style="display:flex; align-items:center; gap:2px; flex-shrink:0;">
+        {# Порядок: водитель в боте видит маршруты так же, как расставлено здесь #}
+        <button type="button" class="row-move" title="Поднять выше" aria-label="Поднять выше"
+                {% if loop.first %}disabled{% endif %}
+                hx-post="/routes/template/{{ t.id }}/move"
+                hx-vals='{"direction": "up"}'
+                hx-target="#route-templates" hx-swap="outerHTML">▲</button>
+        <button type="button" class="row-move" title="Опустить ниже" aria-label="Опустить ниже"
+                {% if loop.last %}disabled{% endif %}
+                hx-post="/routes/template/{{ t.id }}/move"
+                hx-vals='{"direction": "down"}'
+                hx-target="#route-templates" hx-swap="outerHTML">▼</button>
+        <form method="post" action="/routes/template/{{ t.id }}/delete" style="margin:0 0 0 6px;"
+              data-confirm="Удалить маршрут?"
+              data-confirm-detail="{{ origin }} → {{ t.destination }}"
+              data-confirm-ok="Удалить">
+          <button type="submit" style="width:auto; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; font-size:.82rem;">🗑 Удалить</button>
+        </form>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <p style="color:var(--text-muted);">Маршрутов пока нет. Добавь первый — склад и РЦ выше.</p>
+  {% endif %}
+</div>

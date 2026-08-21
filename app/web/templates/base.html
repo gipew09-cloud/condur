@@ -57,7 +57,7 @@
     .htmx-request.htmx-indicator { opacity: 1; }
   </style>
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 {% set nav_alert_count = nav_alert_count | default(0) %}
 <header class="container">
   <nav class="topbar">
@@ -76,7 +76,7 @@
       <li><a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users"></i> Водители</a></li>
       <li><a href="/vehicles" {% if active_page == 'vehicles' %}aria-current="page"{% endif %}><i class="ph ph-van"></i> Машины</a></li>
       <li><a href="/routes" {% if active_page == 'routes' %}aria-current="page"{% endif %}><i class="ph ph-arrows-left-right"></i> Направления</a></li>
-      <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin"></i> Карта</a></li>
+      <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin"></i> Мониторинг</a></li>
       <li><a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar"></i> Статистика</a></li>
       <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet"></i> Финансы</a></li>
       <li><a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card"></i> Реквизиты</a></li>
@@ -109,7 +109,7 @@
   <a href="/" {% if active_page == 'dashboard' %}aria-current="page"{% endif %}><i class="ph ph-house bn-icon"></i>Главная</a>
   <a href="/trips" {% if active_page == 'trips' %}aria-current="page"{% endif %}><i class="ph ph-truck bn-icon"></i>Рейсы</a>
   <a href="/drivers" {% if active_page == 'drivers' %}aria-current="page"{% endif %}><i class="ph ph-users bn-icon"></i>Люди</a>
-  <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin bn-icon"></i>Карта</a>
+  <a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin bn-icon"></i>Мониторинг</a>
   <a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar bn-icon"></i>Статистика</a>
   <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet bn-icon"></i>Деньги</a>
   <a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card bn-icon"></i>Реквизиты</a>
@@ -153,6 +153,10 @@
     line-height:1.4;border-radius:6px;}
   .row-move:hover:not(:disabled){background:#f6f7f9;color:var(--text,#0f172a);}
   .row-move:disabled{opacity:.3;cursor:default;}
+  .stale-hint{font-size:.76rem;color:#9a5b00;background:#fdf0d3;border-radius:6px;
+    padding:1px 7px;display:inline-block;margin-top:3px;}
+  .origin-dot{width:11px;height:11px;border-radius:50%;display:inline-block;flex-shrink:0;
+    box-shadow:0 0 0 3px rgba(0,0,0,.05);}
 </style>
 <script>
 (function () {
