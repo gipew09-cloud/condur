@@ -5,13 +5,13 @@
 {% block head %}
 <style>
 /* =====================================================================
-   МОНИТОРИНГ — светлая раскладка (макет 2b, «Редизайн системы мониторинга»)
+   МОНИТОРИНГ — светлая раскладка (макет 2b «Редизайн системы мониторинга»)
 
-   Карта здесь не карточка внутри контента, а фон всей рабочей области:
-   панели плавают НАД ней. Поэтому страница ломает обычный .container.
+   Карта — фон всей рабочей области, панели плавают НАД ней, поэтому
+   страница ломает обычный .container.
 
-   Цвета вынесены в переменные на .mon. Тёмная тема добавляется одним
-   блоком .mon[data-mode="dark"] — разметку и JS трогать не придётся.
+   Цвета в переменных на .mon: тёмная тема добавляется одним блоком
+   .mon[data-mode="dark"], разметку и JS трогать не придётся.
    ===================================================================== */
 body.page-mon > main.container {
   width: 100%;
@@ -35,17 +35,26 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   --mon-accent: #1d4ed8;
   --mon-panel-shadow: 0 18px 44px -22px rgba(11, 31, 77, .4);
   --mon-pin-bg: #fff;
-  --mon-pin-shadow: 0 10px 24px -10px rgba(11, 31, 77, .6);
   --mon-pin-ink: #0e1b3a;
+  /* размер метки: задаётся скриптом по зуму — на общем плане квадраты
+     не должны закрывать пол-города */
+  --pin: 34px;
 
   position: relative;
-  height: 620px;                 /* до замера скриптом — не даём странице прыгать */
+  height: 620px;
   min-height: 420px;
   overflow: hidden;
   background: #f2f3ef;
   border-top: 1px solid var(--mon-border);
 }
-.mon__canvas { position: absolute; inset: 0; }
+.mon__canvas {
+  position: absolute; inset: 0;
+  /* Своё дно для слоёв карты. Яндекс раскладывает метки по панам с большими
+     z-index; без собственного контекста наложения метка вылезала ПОВЕРХ
+     карточки машины и закрывала её цифры. */
+  z-index: 0;
+  isolation: isolate;
+}
 
 /* ---------- плавающие панели ---------- */
 .mon-panel {
@@ -66,8 +75,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-panel--card {
   right: 16px; top: 16px;
   width: 350px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
 }
-.mon-panel--card[hidden] { display: none; }
+.mon-panel[hidden] { display: none; }
 
 /* ---------- шапка списка ---------- */
 .mon-head {
@@ -91,7 +102,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-search input[type="search"] {
   all: unset;
   /* Pico рисует у [type=search] свою лупу и отступ слева — гасим явно,
-     иначе иконок две (`all: unset` его правило по специфичности не перебивает) */
+     иначе иконок две (`all: unset` его правило по специфичности не бьёт) */
   background: none; padding: 0; margin: 0; border: 0; box-shadow: none;
   flex: 1; min-width: 0; height: 36px;
   font-family: inherit; font-size: 13px; font-weight: 600;
@@ -125,12 +136,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-row:hover { background: #f7f9fc; }
 .mon-row.is-sel { background: var(--mon-sel); }
 .mon-tile {
-  width: 42px; height: 42px; border-radius: 12px;
+  width: 48px; height: 38px; border-radius: 11px;
   background: var(--mon-fill);
   box-shadow: 0 0 0 2px #94a3b8;
   display: inline-flex; align-items: center; justify-content: center;
-  color: #3a4a6b; font-size: 19px;
+  color: #3a4a6b; font-size: 19px; overflow: hidden;
   transition: box-shadow .7s ease;
+}
+.mon-tile__img {
+  display: block; width: 92%; height: 92%;
+  background-repeat: no-repeat; background-position: center;
+  background-size: contain;
 }
 .mon-row__name { min-width: 0; }
 .mon-row__name b {
@@ -159,7 +175,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-fresh.is-bad  { background: #fde8e6; color: #c5362b; }
 .mon-empty { padding: 22px 16px; color: var(--mon-text-3); font-size: 13px; line-height: 1.45; }
 
-/* ---------- легенда и честная приписка про GPS ---------- */
+/* ---------- легенда и честные приписки ---------- */
 .mon-foot { border-top: 1px solid var(--mon-divider); }
 .mon-legend { display: grid; gap: 7px; padding: 12px 14px 10px; }
 .mon-legend__ttl {
@@ -175,9 +191,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-legend__row span { font-size: 12px; font-weight: 600; color: #3a4453; }
 .mon-note {
-  margin: 0 12px 12px; padding: 10px 12px;
+  margin: 0 12px 6px; padding: 10px 12px;
   border-radius: 11px; background: #fff8eb; border: 1px solid #f9d18b;
   color: #9a5b00; font-size: 11.5px; line-height: 1.4;
+}
+.mon-lag {
+  margin: 0 12px 12px; font-size: 11px; line-height: 1.4;
+  color: var(--mon-text-4);
 }
 
 /* ---------- карточка выбранной машины ---------- */
@@ -185,7 +205,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   padding: 15px 15px 13px; border-bottom: 1px solid #eef1f5;
   display: flex; align-items: center; gap: 10px;
 }
-.mon-card__head .mon-tile { width: 46px; height: 46px; border-radius: 13px; font-size: 21px; }
+.mon-card__head .mon-tile { width: 56px; height: 44px; border-radius: 12px; font-size: 21px; }
 .mon-card__id { min-width: 0; }
 .mon-card__id strong {
   display: block; font-size: 16px; font-weight: 800;
@@ -210,11 +230,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   display: inline-flex; align-items: center; justify-content: center;
   cursor: pointer; font-size: 13px; box-shadow: none;
 }
+/* картинка машины — как в Ставтрэке, чтобы владелец узнавал экран */
+.mon-card__photo {
+  display: block; width: 100%; height: auto;
+  border-bottom: 1px solid #eef1f5; background: #fff;
+}
 .mon-metrics {
   display: grid; grid-template-columns: 1fr 1fr;
   gap: 1px; background: #eef1f5;
 }
-.mon-metric { background: var(--mon-surface); padding: 11px 16px; min-width: 0; }
+.mon-metric { background: var(--mon-surface); padding: 11px 15px; min-width: 0; }
 .mon-metric__k {
   font-size: 10.5px; font-weight: 800; color: var(--mon-text-4);
   text-transform: uppercase; letter-spacing: .05em;
@@ -225,17 +250,30 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   color: var(--mon-text); font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.mon-metric__v span { display: inline-block; }
 .mon-metric__v.is-ok   { color: #147a3d; }
 .mon-metric__v.is-warn { color: #9a5b00; }
 .mon-metric__v.is-bad  { color: #c5362b; }
 .mon-metric__v.is-text { font-family: inherit; font-size: 14px; }
-.mon-metric__v span { display: inline-block; }
+/* адрес длинный — занимает обе колонки и может переноситься */
+.mon-metric--wide { grid-column: 1 / -1; }
+.mon-metric__v.is-wrap {
+  white-space: normal; overflow: visible; line-height: 1.25; font-size: 13px;
+}
+.mon-metric--wide .mon-metric__v {
+  font-family: inherit; font-size: 13px; font-weight: 700;
+  white-space: normal; overflow: visible; line-height: 1.35;
+}
+.mon-metric--wide .mon-metric__v small {
+  display: block; font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 500; color: var(--mon-text-4); margin-top: 2px;
+}
 .mon-card__alert {
   margin: 12px 15px 0; padding: 10px 12px; border-radius: 11px;
   background: #fde8e6; border: 1px solid #f6c3bd; color: #c5362b;
   font-size: 11.5px; font-weight: 650; line-height: 1.4;
 }
-.mon-card__foot { padding: 13px 17px 15px; }
+.mon-card__foot { padding: 13px 15px 15px; display: grid; gap: 8px; }
 .mon-btn {
   width: 100%; height: 40px; border: 0; border-radius: 11px;
   background: linear-gradient(180deg, #1d4ed8, #1a3fac);
@@ -245,15 +283,88 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   cursor: pointer; text-decoration: none;
 }
 .mon-btn:hover { background: linear-gradient(180deg, #1a3fac, #17368f); color: #fff; }
+.mon-btn--ghost {
+  background: #fff; color: #3a4a6b; border: 1px solid #dfe4ec;
+  box-shadow: none; font-weight: 700;
+}
+.mon-btn--ghost:hover { background: #f6f8fc; color: var(--mon-accent); }
+.mon-btn[disabled] { opacity: .55; cursor: default; }
+
+/* ---------- панель трека над картой ---------- */
+.mon-track {
+  position: absolute; z-index: 21;
+  left: 50%; top: 16px; transform: translateX(-50%);
+  width: min(520px, calc(100% - 420px));
+  display: grid; gap: 8px;
+  padding: 11px 13px; border-radius: 14px;
+  background: rgba(255, 255, 255, .96);
+  border: 1px solid #c7d9fb;
+  box-shadow: 0 10px 28px -14px rgba(11, 31, 77, .4);
+}
+.mon-track[hidden] { display: none; }
+.mon-track__top { display: flex; align-items: center; gap: 9px; }
+.mon-track__top b { font-size: 12.5px; font-weight: 800; color: var(--mon-text); }
+.mon-track__x {
+  margin-left: auto; width: 24px; height: 24px; min-height: 24px;
+  border: 0; border-radius: 7px; padding: 0;
+  background: var(--mon-fill); color: #3a4a6b; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; box-shadow: none;
+}
+.mon-track__periods { display: flex; gap: 5px; }
+.mon-track__periods button {
+  flex: 1; height: 30px; min-height: 30px; border: 0; border-radius: 9px;
+  font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+  background: var(--mon-fill); color: #3a4a6b; box-shadow: none; padding: 0;
+}
+.mon-track__periods button.is-on { background: var(--mon-accent); color: #fff; }
+.mon-track__facts {
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  font-size: 11.5px; font-weight: 700; color: var(--mon-text-2);
+}
+.mon-track__facts b { font-family: 'JetBrains Mono', monospace; color: var(--mon-text); }
+.mon-track__facts .bad { color: #c5362b; }
+.mon-track__legend {
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  font-size: 11px; font-weight: 600; color: var(--mon-text-3);
+}
+.mon-track__legend i {
+  display: inline-block; width: 16px; height: 0;
+  border-top: 3px solid #1d4ed8; vertical-align: middle;
+  margin-right: 5px; border-radius: 2px;
+}
+.mon-track__legend .gap i { border-top-style: dashed; border-top-color: #c5362b; }
+.mon-track__legend .stop i {
+  width: 9px; height: 9px; border: 2px solid #1d4ed8; border-radius: 999px;
+  background: #fff;
+}
+
+/* «камера едет за машиной» */
+.mon-follow {
+  position: absolute; z-index: 21; left: 388px; bottom: 18px;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 8px 0 12px; border-radius: 999px;
+  background: var(--mon-accent); color: #fff;
+  font-size: 12px; font-weight: 700;
+  box-shadow: 0 10px 24px -10px rgba(29, 78, 216, .8);
+}
+.mon-follow[hidden] { display: none; }
+.mon-follow button {
+  width: 22px; height: 22px; min-height: 22px; padding: 0;
+  border: 0; border-radius: 999px; cursor: pointer; box-shadow: none;
+  background: rgba(255, 255, 255, .22); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px;
+}
 
 /* ---------- метка машины ----------
-   Квадрат-контейнер с overflow:hidden — сюда позже встанет рисунок машины.
-   Состояние живёт ТОЛЬКО в обводке, цвет плитки его не кодирует. */
+   Размер живёт в --pin: на общем плане меньше, при приближении больше.
+   Состояние — только в обводке; цвет плитки его не кодирует. */
 .mon-pin { position: relative; width: 0; height: 0; }
 .mon-pin__pulse {
   position: absolute; left: 0; top: 0;
-  width: 46px; height: 46px; margin: -23px 0 0 -23px;
-  border-radius: 14px; background: #16a34a; opacity: 0;
+  width: calc(var(--pin) * 1.3); height: var(--pin);
+  margin: calc(var(--pin) / -2) 0 0 calc(var(--pin) * -0.65);
+  border-radius: calc(var(--pin) / 3.4); background: #16a34a; opacity: 0;
 }
 /* анимацию вешаем ТОЛЬКО на едущую: пока она играет, её кадры перебивают
    базовый opacity: 0, и «дышали» бы все метки подряд */
@@ -262,14 +373,31 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-pin__tile {
   position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
-  width: 46px; height: 46px; border-radius: 13px; overflow: hidden;
+  width: calc(var(--pin) * 1.3); height: var(--pin);
+  border-radius: calc(var(--pin) / 3.6); overflow: hidden;
   background: var(--mon-pin-bg, #fff); color: var(--mon-pin-ink, #0e1b3a);
-  display: flex; align-items: center; justify-content: center; font-size: 21px;
-  box-shadow: 0 0 0 2.5px #94a3b8, 0 10px 24px -10px rgba(11, 31, 77, .6);
-  transition: box-shadow .7s ease;
+  display: flex; align-items: center; justify-content: center;
+  font-size: calc(var(--pin) * .46);
+  box-shadow: 0 0 0 2.5px #94a3b8, 0 8px 20px -9px rgba(11, 31, 77, .6);
+  transition: box-shadow .7s ease, width .2s ease, height .2s ease;
+}
+/* Рисунок машины внутри квадрата. Картинка одна, цвет перекрашивается
+   в canvas и подставляется фоном — отдельного файла на каждый цвет нет. */
+.mon-pin__img {
+  display: block; width: 92%; height: 92%;
+  background-repeat: no-repeat; background-position: center;
+  background-size: contain;
+}
+.mon-photo {
+  display: block; width: 100%; height: 124px;
+  padding: 8px 14px; box-sizing: border-box;
+  background-repeat: no-repeat; background-position: center;
+  /* contain, а не «86% auto»: на узком экране картинка иначе обрезалась */
+  background-size: contain; background-origin: content-box;
+  border-bottom: 1px solid #eef1f5;
 }
 .mon-pin__ring {
-  position: absolute; inset: 0; border-radius: 13px;
+  position: absolute; inset: 0; border-radius: inherit;
   border: 2px solid #94a3b8;
   transition: border-color .7s ease;
   animation: monBlink 2.4s ease-in-out infinite;
@@ -277,7 +405,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-pin:not([data-state="moving"]) .mon-pin__ring { animation: none; opacity: 1; }
 .mon-pin[data-state="invalid"] .mon-pin__ring { border-style: dashed; }
 .mon-pin__plate {
-  position: absolute; left: 0; top: 0; margin-top: 30px;
+  position: absolute; left: 0; top: 0;
+  margin-top: calc(var(--pin) * .62);
   transform: translateX(-50%); white-space: nowrap; display: none;
   padding: 3px 8px; border-radius: 7px;
   background: #1d4ed8; color: #fff; font-size: 11.5px; font-weight: 800;
@@ -285,13 +414,29 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-pin.is-sel .mon-pin__plate { display: block; }
 .mon-pin__age {
-  position: absolute; left: 0; top: 0; margin-top: 30px;
+  position: absolute; left: 0; top: 0;
+  margin-top: calc(var(--pin) * .62);
   transform: translateX(-50%); white-space: nowrap; display: none;
   font-style: normal; font-size: 11px; font-weight: 700; color: #c5362b;
   text-shadow: 0 1px 0 #fff, 0 0 4px #fff;
 }
 .mon-pin.is-late .mon-pin__age { display: block; }
-.mon-pin.is-late.is-sel .mon-pin__age { margin-top: 52px; }
+.mon-pin.is-late.is-sel .mon-pin__age { margin-top: calc(var(--pin) * .62 + 22px); }
+
+/* точка стоянки на треке */
+.mon-stop { position: relative; width: 0; height: 0; }
+.mon-stop__dot {
+  position: absolute; left: -6px; top: -6px;
+  width: 12px; height: 12px; border-radius: 999px;
+  background: #fff; border: 3px solid #1d4ed8;
+  box-shadow: 0 2px 8px -2px rgba(11, 31, 77, .5);
+}
+.mon-stop__label {
+  position: absolute; left: 10px; top: -9px; white-space: nowrap;
+  padding: 2px 6px; border-radius: 6px;
+  background: rgba(255, 255, 255, .94); border: 1px solid #dfe4ec;
+  font-size: 10.5px; font-weight: 800; color: #3a4a6b;
+}
 
 /* РЦ — статичная точка с подписью */
 .mon-rc { position: relative; width: 0; height: 0; }
@@ -308,16 +453,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
 /* водитель — ручная геопозиция из бота */
 .mon-driver {
-  width: 34px; height: 34px; border-radius: 50%;
+  width: 32px; height: 32px; border-radius: 50%;
   border: 3px solid #fff;
   box-shadow: 0 6px 16px -6px rgba(11, 31, 77, .6);
   display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 800; font-size: .78rem;
+  color: #fff; font-weight: 800; font-size: .74rem;
   background: #64748b; cursor: pointer; user-select: none;
 }
 .mon-driver.is-on { background: linear-gradient(135deg, #16a34a, #0f7a37); }
 
-/* цифра меняется — коротко въезжает, чтобы глаз заметил */
 @keyframes monTickIn { from { transform: translateY(-6px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes monPulse  { from { transform: scale(1); opacity: .5; } to { transform: scale(2.3); opacity: 0; } }
 @keyframes monBlink  { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
@@ -325,7 +469,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
    display: none у подписи свежести под меткой */
 .mon-tick { animation: monTickIn .26s cubic-bezier(.16, 1, .3, 1); }
 
-/* балуны Яндекса */
 .mon-balloon h4 { margin: 0 0 6px; font-size: .95rem; font-weight: 800; }
 .mon-balloon .meta { color: #5c6884; font-size: .82rem; margin-top: 3px; }
 
@@ -333,6 +476,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   margin: 40px auto; max-width: 620px;
   padding: 22px; border: 1px dashed var(--mon-border); border-radius: 14px;
   color: var(--mon-text-2); background: #fff; line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mon-pin__pulse { display: none; }
+  .mon-pin__ring, .mon-tick { animation: none !important; }
 }
 
 /* ---------- телефон: список превращается в нижнюю шторку ---------- */
@@ -353,8 +501,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   }
   .mon-panel--card {
     left: 0; right: 0; top: auto; bottom: 0; width: auto;
+    max-height: 56%;
     border-radius: 20px 20px 0 0;
   }
+  /* на телефоне картинку оставляем, но ниже: карточка и так делит экран
+     с картой, а пока смотрят трек — карточка скрыта целиком */
+  .mon-photo { height: 84px; }
+  .mon-panel--card { max-height: 62%; }
+  .mon-track__legend { display: none; }
+  .mon-track { left: 8px; right: 8px; top: 8px; transform: none; width: auto; }
+  .mon-follow { left: 12px; bottom: auto; top: 12px; }
   .mon-row { padding: 12px 14px; min-height: 44px; }
   /* 16px — иначе iOS зумит страницу при фокусе на поле */
   .mon-search input { font-size: 16px; }
@@ -363,7 +519,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   .mon-head { padding: 8px 14px 9px; cursor: pointer; }
   /* шторку можно поднять повыше — тапом по её шапке */
   .mon-panel--list.is-tall { max-height: 88%; }
-  .mon-note { margin: 0 10px 10px; padding: 8px 10px; font-size: 11px; }
+  .mon-note { margin: 0 10px 6px; padding: 8px 10px; font-size: 11px; }
+  .mon-lag { margin: 0 10px 10px; }
   .mon-sheet-hide { display: none !important; }
 }
 </style>
@@ -403,12 +560,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       <div class="mon-note">
         <b>GPS может ошибаться.</b> Если сигнал глушится или давно не обновлялся, метку используем как подсказку, а не как окончательное доказательство.
       </div>
+      <div class="mon-lag">
+        Ставтрэк отдаёт точки пачками с задержкой около 40 секунд — это его ретрансляция,
+        не наш кабинет. Метка не может быть свежее этого.
+      </div>
     </div>
   </aside>
 
   <aside class="mon-panel mon-panel--card" id="mon-card" aria-label="Карточка машины" hidden>
     <div class="mon-card__head">
-      <i class="mon-tile" id="mon-card-tile"><i class="ph ph-truck" id="mon-card-icon"></i></i>
+      <i class="mon-tile" id="mon-card-tile"><i class="mon-tile__img" id="mon-card-icon"></i></i>
       <div class="mon-card__id">
         <strong id="mon-card-plate">—</strong>
         <small id="mon-card-sub">—</small>
@@ -416,12 +577,40 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       <span class="mon-chip" id="mon-card-chip"><i></i><span>—</span></span>
       <button type="button" class="mon-card__close" id="mon-card-close" title="Закрыть" aria-label="Закрыть карточку"><i class="ph ph-x"></i></button>
     </div>
+    <i class="mon-photo mon-card__photo" id="mon-card-photo" aria-hidden="true"></i>
     <div class="mon-metrics" id="mon-card-metrics"></div>
     <div class="mon-card__alert" id="mon-card-alert" hidden></div>
     <div class="mon-card__foot">
-      <a class="mon-btn" id="mon-card-link" href="#"><i class="ph ph-chart-bar"></i>Открыть карточку машины</a>
+      <button type="button" class="mon-btn" id="mon-card-track"><i class="ph ph-path"></i>Показать трек</button>
+      <a class="mon-btn mon-btn--ghost" id="mon-card-link" href="#"><i class="ph ph-chart-bar"></i>Карточка машины за месяц</a>
     </div>
   </aside>
+
+  <div class="mon-track" id="mon-track" hidden>
+    <div class="mon-track__top">
+      <i class="ph ph-path" style="color: #1d4ed8;"></i>
+      <b id="mon-track-title">Трек</b>
+      <button type="button" class="mon-track__x" id="mon-track-close" title="Скрыть трек" aria-label="Скрыть трек"><i class="ph ph-x"></i></button>
+    </div>
+    <div class="mon-track__periods" id="mon-track-periods">
+      <button type="button" data-hours="3">3 часа</button>
+      <button type="button" data-hours="12" class="is-on">12 часов</button>
+      <button type="button" data-hours="24">Сутки</button>
+      <button type="button" data-hours="72">3 дня</button>
+    </div>
+    <div class="mon-track__facts" id="mon-track-facts">Загружаю…</div>
+    <div class="mon-track__legend">
+      <span><i></i>ехал</span>
+      <span class="stop"><i></i>стоянка</span>
+      <span class="gap"><i></i>нет связи — линия не значит, что машина там ехала</span>
+    </div>
+  </div>
+
+  <div class="mon-follow" id="mon-follow" hidden>
+    <i class="ph ph-crosshair"></i>
+    <span id="mon-follow-plate">—</span>
+    <button type="button" id="mon-follow-off" title="Перестать следить" aria-label="Перестать следить"><i class="ph ph-x"></i></button>
+  </div>
 </div>
 {% else %}
 <div class="mon-nokey">
@@ -442,8 +631,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   var mon = document.getElementById('mon');
   if (!mon) return;
 
-  // Карта занимает весь остаток экрана: считаем высоту от низа шапки до низа
-  // окна, вычитая мобильное нижнее меню (оно фиксированное и лежит поверх).
   var ymap = null;
   function fit() {
     var top = mon.getBoundingClientRect().top;
@@ -458,10 +645,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
   var REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var STALE_MS = 10 * 60 * 1000;   // «свежая» точка — не старше 10 минут
+  var POLL_MS = 15000;             // Ставтрэк отдаёт пачки ~раз в 30-60 с
 
-  // Состояние машины. Приоритет: недостоверный GPS → протухший GPS → движение.
-  // label — как в легенде, полностью; short — в чипе карточки, где место
-  // делится с маркой и водителем (полный текст всё равно виден ниже, в метриках)
+  // label — как в легенде; short — в чипе карточки, где место делится
+  // с маркой и водителем (полный текст всё равно ниже, в метриках)
   var STATES = {
     moving:  { label: 'едет по маршруту',             short: 'едет',      color: '#16a34a', rank: 3 },
     idle:    { label: 'стоит, двигатель работает',    short: 'мотор',     color: '#e0a32e', rank: 2 },
@@ -471,7 +658,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     invalid: { label: 'GPS недостоверный',            short: 'GPS сбой',  color: '#e0a32e', rank: 0 }
   };
   var ICONS = { refrigerator: 'ph-truck-trailer', truck: 'ph-truck', gazelle: 'ph-van' };
-
   function iconFor(type) { return ICONS[type] || 'ph-truck'; }
 
   function ageMs(v) {
@@ -490,8 +676,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     return 'unknown';
   }
 
-  // Свежесть точки — одно значение на машину. Оно показывается и в строке
-  // списка, и под меткой: считаем один раз, иначе цифры разъезжаются.
+  // Свежесть точки — одно значение на машину: показывается и в строке списка,
+  // и под меткой. Два независимых счётчика разъехались бы на глазах.
   function freshText(ms) {
     if (!isFinite(ms)) return 'нет точки';
     var sec = Math.max(0, Math.round(ms / 1000));
@@ -526,6 +712,101 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     el.classList.add('mon-tick');
   }
 
+  // ================= перекраска рисунка машины =================
+  // Исходник один — чёрный грузовик с прозрачным фоном. Цвет каждой машины
+  // владелец выбирает вручную на /vehicles; здесь картинка перекрашивается
+  // в canvas и раздаётся классами, чтобы data:URL лежал в стилях один раз,
+  // а не в разметке каждой метки.
+  var TRUCK_TINTS = {
+    black:  [42, 45, 52],
+    white:  [246, 248, 250],
+    yellow: [245, 190, 40],
+    orange: [242, 130, 40],
+    red:    [214, 62, 48],
+    blue:   [41, 105, 240],
+    green:  [25, 160, 95]
+  };
+  // Порог «это кузов»: всё темнее — резина, рама, стёкла, решётка холодильной
+  // установки. Их НЕ красим, иначе машина выходит одноцветной кляксой:
+  // синий грузовик с синими колёсами и синей тенью.
+  var TRUCK_BODY_MIN_LUM = 0.62;
+  // Рисунки по типу кузова. Сейчас один рендер на все типы; когда владелец
+  // пришлёт тентованный и тягач — добавляется строка с новым key и файлом.
+  // Исходник обязан быть СВЕТЛЫМ: перекраска трогает только светлый кузов,
+  // тёмные детали (резина, рама, стёкла) остаются как нарисованы.
+  var TRUCK_ART = {
+    refrigerator: { key: 'reefer', src: '/static/truck-reefer.png' },
+    truck:        { key: 'reefer', src: '/static/truck-reefer.png' },
+    gazelle:      { key: 'reefer', src: '/static/truck-reefer.png' }
+  };
+  var TRUCK_ART_DEFAULT = TRUCK_ART.refrigerator;
+
+  var tintStyle = document.createElement('style');
+  document.head.appendChild(tintStyle);
+  var tintRules = {};
+
+  // Один рисунок × семь цветов → семь классов с готовой картинкой в фоне.
+  // Считается один раз при загрузке страницы, потом метки просто меняют класс.
+  function buildTintsFor(art, key) {
+    var img = new Image();
+    img.onload = function () {
+      var canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      var ctx = canvas.getContext('2d');
+      var made = [];
+      Object.keys(TRUCK_TINTS).forEach(function (name) {
+        var rgb = TRUCK_TINTS[name];
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        var data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        var px = data.data;
+        for (var i = 0; i < px.length; i += 4) {
+          if (!px[i + 3]) continue;
+          var lum = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255;
+          // тёмные детали оставляем как нарисованы
+          if (lum < TRUCK_BODY_MIN_LUM) continue;
+          // светотень кузова сохраняем множителем к выбранному цвету
+          var k = Math.min(1.35, 0.60 + lum * 0.48);
+          px[i]     = Math.min(255, rgb[0] * k);
+          px[i + 1] = Math.min(255, rgb[1] * k);
+          px[i + 2] = Math.min(255, rgb[2] * k);
+        }
+        ctx.putImageData(data, 0, 0);
+        made.push('.mon-truck--' + key + '-' + name +
+                  '{background-image:url(' + canvas.toDataURL('image/png') + ')}');
+      });
+      tintRules[key] = made.join('\n');
+      tintStyle.textContent = Object.keys(tintRules).map(function (k) {
+        return tintRules[k];
+      }).join('\n');
+    };
+    img.onerror = function () {
+      // картинка не загрузилась — метка останется пустой плиткой с обводкой,
+      // состояние машины при этом видно по-прежнему
+      console.warn('Не загрузился рисунок машины: ' + art);
+    };
+    img.src = art;
+  }
+  function artFor(type) {
+    return TRUCK_ART[type] || TRUCK_ART_DEFAULT;
+  }
+
+  // по одному разу на КАЖДЫЙ рисунок (сейчас он один на все типы кузова)
+  Object.keys(TRUCK_ART).reduce(function (seen, type) {
+    var art = TRUCK_ART[type];
+    if (seen.indexOf(art.key) < 0) {
+      seen.push(art.key);
+      buildTintsFor(art.src, art.key);
+    }
+    return seen;
+  }, []);
+
+  function truckClass(v) {
+    var color = TRUCK_TINTS[v.color] ? v.color : 'black';
+    return artFor(v.type).key + '-' + color;
+  }
+
   ymaps.ready(function () {
     ymap = new ymaps.Map('map', {
       center: [59.93, 30.33],   // Петербург и область, пока нет ни одной точки
@@ -533,8 +814,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       controls: ['zoomControl', 'typeSelector', 'fullscreenControl']
     }, { suppressMapOpenBlock: true });
 
-    // Панели плавают слева и справа — сдвигаем родные контролы Яндекса, чтобы
-    // они не оказались под ними.
     if (window.innerWidth > 768) {
       try {
         ymap.controls.get('zoomControl').options.set({ position: { right: 382, top: 90 } });
@@ -542,16 +821,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         ymap.controls.get('fullscreenControl').options.set({ position: { right: 382, top: 52 } });
       } catch (e) { /* набор контролов мог смениться — не критично */ }
     }
-
     fit();
 
     // Метка машины. Класс состояния НЕ передаём через properties: любое
     // properties.set пересобирает разметку, и переход цвета/пульс срываются.
-    // Поэтому после создания метку красим напрямую по DOM.
+    // Поэтому после создания красим метку напрямую по DOM.
     var PinLayout = ymaps.templateLayoutFactory.createClass(
       '<div class="mon-pin" data-vid="$[properties.vid]">' +
         '<i class="mon-pin__pulse"></i>' +
-        '<span class="mon-pin__tile"><i class="ph $[properties.icon]"></i><i class="mon-pin__ring"></i></span>' +
+        '<span class="mon-pin__tile"><i class="mon-pin__img"></i><i class="mon-pin__ring"></i></span>' +
         '<b class="mon-pin__plate">$[properties.plate]</b>' +
         '<i class="mon-pin__age"></i>' +
       '</div>'
@@ -562,13 +840,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var DriverLayout = ymaps.templateLayoutFactory.createClass(
       '<div class="mon-driver $[properties.cls]">$[properties.initials]</div>'
     );
+    var StopLayout = ymaps.templateLayoutFactory.createClass(
+      '<div class="mon-stop"><i class="mon-stop__dot"></i><b class="mon-stop__label">$[properties.label]</b></div>'
+    );
 
     var vehicles = [];               // последние данные с сервера
     var pins = {};                   // vehicle_id → { pm, anim, lat, lon }
     var drivers = {};
     var rcsAdded = false;
     var selected = null;             // vehicle_id выбранной машины
-    var sortMode = 'state';          // state | plate
+    var follow = null;               // за какой машиной едет камера
+    var sortMode = 'state';
     var query = '';
     var didFit = false;
 
@@ -576,13 +858,33 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var countEl = document.getElementById('mon-count');
     var cardEl = document.getElementById('mon-card');
     var listPanel = document.getElementById('mon-list-panel');
+    var followEl = document.getElementById('mon-follow');
+    var trackEl = document.getElementById('mon-track');
 
-    function byId(id) { 
+    function byId(id) {
       for (var i = 0; i < vehicles.length; i++) if (vehicles[i].vehicle_id === id) return vehicles[i];
       return null;
     }
 
-    // ---------- список машин ----------
+    // ================= размер метки по зуму =================
+    // На общем плане города квадрат 46px закрывает несколько кварталов —
+    // делаем метку меньше, при приближении возвращаем.
+    function pinSizeForZoom(z) {
+      if (z <= 10) return 24;
+      if (z <= 12) return 28;
+      if (z <= 14) return 32;
+      if (z <= 16) return 38;
+      return 44;
+    }
+    function applyPinSize() {
+      mon.style.setProperty('--pin', pinSizeForZoom(ymap.getZoom()) + 'px');
+    }
+    applyPinSize();
+    ymap.events.add('boundschange', function (e) {
+      if (e.get('newZoom') !== e.get('oldZoom')) applyPinSize();
+    });
+
+    // ================= список машин =================
     function visibleVehicles() {
       var q = query.trim().toLowerCase();
       var out = vehicles.filter(function (v) {
@@ -612,12 +914,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var ms = ageMs(v);
         var speed = (v.motion_status === 'moving' || v.speed_kmh > 3)
           ? Math.round(v.speed_kmh || 0) + ' км/ч' : '—';
+        var sub = v.power_cut ? 'обесточена · трекер на батарее'
+                              : (v.zone ? st.label + ' · ' + v.zone : st.label);
         return '<button type="button" class="mon-row' + (v.vehicle_id === selected ? ' is-sel' : '') +
             '" data-vid="' + v.vehicle_id + '">' +
           '<i class="mon-tile" style="box-shadow: 0 0 0 2px ' + st.color + ';">' +
-            '<i class="ph ' + iconFor(v.type) + '"></i></i>' +
+            '<i class="mon-tile__img mon-truck--' + truckClass(v) + '"></i></i>' +
           '<span class="mon-row__name"><b>' + esc(v.plate) + '</b>' +
-            '<small>' + esc(st.label) + '</small></span>' +
+            '<small>' + esc(sub) + '</small></span>' +
           '<span class="mon-row__right">' +
             '<b class="mon-speed">' + speed + '</b>' +
             '<small class="mon-fresh ' + freshClass(ms) + '" data-fresh="' + v.vehicle_id + '">' +
@@ -633,7 +937,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       select(parseInt(row.dataset.vid, 10), true);
     });
 
-    // Телефон: тап по шапке шторки поднимает её на весь экран и обратно.
     document.querySelector('#mon-list-panel .mon-head').addEventListener('click', function () {
       if (window.innerWidth > 768) return;
       listPanel.classList.toggle('is-tall');
@@ -650,15 +953,59 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       renderList();
     });
 
-    // ---------- карточка машины ----------
+    // ================= карточка машины =================
+    // Адрес метки. Считает геокодер Яндекса — тот же, что рисует карту,
+    // отдельный ключ не нужен. Спрашиваем только для ОТКРЫТОЙ карточки и
+    // только когда машина реально сместилась (~10 м), иначе на каждом опросе
+    // уходил бы лишний запрос.
+    var addrCache = {};
+    function addressFor(v) {
+      var key = v.lat.toFixed(4) + ',' + v.lon.toFixed(4);
+      var hit = addrCache[v.vehicle_id];
+      if (hit && hit.key === key) return hit.text;
+      if (hit && hit.pending === key) return hit.text;
+      addrCache[v.vehicle_id] = { key: null, pending: key, text: hit ? hit.text : null };
+      ymaps.geocode([v.lat, v.lon], { results: 1 }).then(function (res) {
+        var obj = res.geoObjects.get(0);
+        var text = obj ? String(obj.getAddressLine() || '').replace(/^Россия,\s*/, '') : null;
+        addrCache[v.vehicle_id] = { key: key, text: text || null };
+        if (selected === v.vehicle_id) renderCard();
+      }, function () {
+        // геокодер недоступен — покажем координаты, врать не будем
+        addrCache[v.vehicle_id] = { key: key, text: null };
+      });
+      return addrCache[v.vehicle_id].text;
+    }
+
     function metric(k, v, cls) {
       return '<div class="mon-metric"><div class="mon-metric__k">' + k + '</div>' +
              '<div class="mon-metric__v ' + (cls || '') + '">' + v + '</div></div>';
     }
 
+    function shiftLabel(v) {
+      if (v.has_active_trip) return 'в рейсе';
+      if (v.has_active_shift) return 'в смене';
+      return 'без смены';
+    }
+
+    function addressMetric(v) {
+      var addr = addressFor(v);
+      var zone = v.zone ? ' · ' + esc(v.zone) : '';
+      var body = addr
+        ? esc(addr) + zone
+        : '<span style="color:#8a93a3">определяю адрес…</span>' + zone;
+      return '<div class="mon-metric mon-metric--wide"><div class="mon-metric__k">Адрес</div>' +
+        '<div class="mon-metric__v">' + body +
+        '<small>' + v.lat.toFixed(6) + ', ' + v.lon.toFixed(6) + '</small></div></div>';
+    }
+
     function renderCard() {
       var v = selected === null ? null : byId(selected);
-      if (!v) { cardEl.hidden = true; if (listPanel) listPanel.classList.remove('mon-sheet-hide'); return; }
+      if (!v) {
+        cardEl.hidden = true;
+        if (listPanel) listPanel.classList.remove('mon-sheet-hide');
+        return;
+      }
       cardEl.hidden = false;
       // На телефоне карточка и список делят одно место внизу экрана.
       if (listPanel && window.innerWidth <= 768) listPanel.classList.add('mon-sheet-hide');
@@ -666,10 +1013,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var key = stateKey(v);
       var st = STATES[key];
       var ms = ageMs(v);
-      var tone = (key === 'moving') ? 'is-ok' : (key === 'stale' ? 'is-bad' : (key === 'off' || key === 'unknown' ? '' : 'is-warn'));
+      var tone = (key === 'moving') ? 'is-ok'
+               : (key === 'stale' ? 'is-bad'
+               : ((key === 'off' || key === 'unknown') ? '' : 'is-warn'));
 
       document.getElementById('mon-card-tile').style.boxShadow = '0 0 0 2.5px ' + st.color;
-      document.getElementById('mon-card-icon').className = 'ph ' + iconFor(v.type);
+      document.getElementById('mon-card-icon').className = 'mon-tile__img mon-truck--' + truckClass(v);
+      document.getElementById('mon-card-photo').className =
+        'mon-photo mon-card__photo mon-truck--' + truckClass(v);
       document.getElementById('mon-card-plate').textContent = v.plate;
       document.getElementById('mon-card-sub').textContent =
         [v.type_label && v.type_label !== '—' ? v.type_label : null, v.driver || 'водитель не в смене']
@@ -678,23 +1029,38 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var chip = document.getElementById('mon-card-chip');
       chip.querySelector('span').textContent = st.short;
       chip.title = st.label;
-      chip.style.background = key === 'moving' ? '#e6f6ec' : (key === 'stale' ? '#fde8e6' : (key === 'idle' || key === 'invalid' ? '#fdf0d3' : '#f1f4f9'));
-      chip.style.color = key === 'moving' ? '#147a3d' : (key === 'stale' ? '#c5362b' : (key === 'idle' || key === 'invalid' ? '#9a5b00' : '#5c6884'));
+      chip.style.background = key === 'moving' ? '#e6f6ec'
+        : (key === 'stale' ? '#fde8e6' : ((key === 'idle' || key === 'invalid') ? '#fdf0d3' : '#f1f4f9'));
+      chip.style.color = key === 'moving' ? '#147a3d'
+        : (key === 'stale' ? '#c5362b' : ((key === 'idle' || key === 'invalid') ? '#9a5b00' : '#5c6884'));
 
-      var speed = Math.round(v.speed_kmh || 0) + ' км/ч';
+      // Напряжение бортсети — то же значение, что показывает Ставтрэк.
+      // Ниже 5 В — массу выключили, трекер живёт на своей батарее.
+      var volt = (v.voltage === null || v.voltage === undefined)
+        ? '—' : v.voltage.toFixed(1) + ' В';
+      var voltCls = (v.voltage === null || v.voltage === undefined) ? ''
+        : (v.power_cut ? 'is-bad' : (v.voltage >= 26 || (v.voltage >= 13 && v.voltage < 18) ? 'is-ok' : 'is-warn'));
+
       document.getElementById('mon-card-metrics').innerHTML =
-        metric('Состояние', esc(st.label), tone + ' is-text') +
-        metric('Скорость', speed, key === 'moving' ? 'is-ok' : '') +
-        metric('В этом состоянии', esc(v.motion_duration_label || '—'), '') +
+        metric('Состояние', esc(st.label), tone + ' is-text is-wrap') +
+        metric('Скорость', Math.round(v.speed_kmh || 0) + ' км/ч', key === 'moving' ? 'is-ok' : '') +
+        metric('Напряжение', volt, voltCls) +
         metric('Свежесть GPS', '<span data-fresh="' + v.vehicle_id + '">' + freshText(ms) + '</span>',
                ms >= STALE_MS ? 'is-bad' : 'is-ok') +
-        metric('Смена', v.has_active_shift ? 'открыта' : 'нет', (v.has_active_shift ? 'is-ok' : '') + ' is-text') +
-        metric('Рейс', v.has_active_trip ? 'активен' : 'нет', (v.has_active_trip ? 'is-ok' : '') + ' is-text');
+        addressMetric(v) +
+        metric('В этом состоянии', esc(v.motion_duration_label || '—'), '') +
+        metric('Смена и рейс', shiftLabel(v), (v.has_active_shift ? 'is-ok' : '') + ' is-text');
 
       var alert = document.getElementById('mon-card-alert');
       var msgs = [];
+      if (v.power_cut) {
+        msgs.push('Машина обесточена: бортсеть ' + (v.voltage || 0).toFixed(1) +
+          ' В, трекер работает от своей батареи' +
+          (v.battery_voltage ? ' (' + v.battery_voltage.toFixed(2) + ' В)' : '') +
+          '. Так машины и пропадают с карты.');
+      }
       if (v.is_valid === false) msgs.push('GPS прислал недостоверные координаты — метка стоит на последнем надёжном месте.');
-      if (ms >= STALE_MS) msgs.push('Сигнала нет ' + freshText(ms) + '. Возможно, у машины выключена масса и трекер живёт на своей батарее.');
+      if (ms >= STALE_MS) msgs.push('Сигнала нет ' + freshText(ms) + '.');
       alert.hidden = !msgs.length;
       alert.innerHTML = msgs.map(esc).join('<br>');
 
@@ -705,23 +1071,48 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       select(null, false);
     });
 
-    // ---------- выбор машины ----------
+    // ================= выбор машины и камера =================
+    function setFollow(id) {
+      follow = id;
+      if (id === null) { followEl.hidden = true; return; }
+      var v = byId(id);
+      followEl.hidden = false;
+      document.getElementById('mon-follow-plate').textContent = v ? v.plate : '';
+    }
+    document.getElementById('mon-follow-off').addEventListener('click', function () { setFollow(null); });
+    // Владелец сам потащил карту — перестаём её у него отбирать.
+    ['mousedown', 'touchstart', 'wheel'].forEach(function (evt) {
+      document.getElementById('map').addEventListener(evt, function () {
+        if (follow !== null) setFollow(null);
+      }, { passive: true });
+    });
+
     function select(id, moveCamera) {
+      var was = selected;
       selected = (selected === id) ? null : id;
+      if (selected === null) {
+        setFollow(null);
+        hideTrack();
+      }
       renderList();
       renderCard();
       paintPins();
       if (selected !== null && moveCamera) {
         var v = byId(selected);
-        if (v) ymap.setCenter([v.lat, v.lon], Math.max(ymap.getZoom(), 13), { duration: 450, checkZoomRange: true });
+        if (v) {
+          ymap.setCenter([v.lat, v.lon], Math.max(ymap.getZoom(), 14), {
+            duration: 500, checkZoomRange: true
+          });
+          // Клик по машине = «веди за ней камеру», как просил владелец.
+          setFollow(selected);
+        }
       }
+      if (was !== selected && track.vehicleId !== null && track.vehicleId !== selected) hideTrack();
     }
 
-    // ---------- метки ----------
+    // ================= метки =================
     function pinEl(id) { return document.querySelector('#map .mon-pin[data-vid="' + id + '"]'); }
 
-    // Красим метки напрямую по DOM: обводка переходит цветом за 0.7s,
-    // мигание остаётся только у реально едущей машины.
     function paintPins() {
       vehicles.forEach(function (v) {
         var el = pinEl(v.vehicle_id);
@@ -733,7 +1124,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         el.classList.toggle('is-sel', v.vehicle_id === selected);
         el.classList.toggle('is-late', ms >= STALE_MS);
         var tile = el.querySelector('.mon-pin__tile');
-        if (tile) tile.style.boxShadow = '0 0 0 2.5px ' + st.color + ', var(--mon-pin-shadow, 0 10px 24px -10px rgba(11,31,77,.6))';
+        if (tile) tile.style.boxShadow = '0 0 0 2.5px ' + st.color + ', 0 8px 20px -9px rgba(11,31,77,.6)';
+        var pic = el.querySelector('.mon-pin__img');
+        if (pic) pic.className = 'mon-pin__img mon-truck--' + truckClass(v);
         var ring = el.querySelector('.mon-pin__ring');
         if (ring) ring.style.borderColor = st.color;
         var pulse = el.querySelector('.mon-pin__pulse');
@@ -741,15 +1134,18 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       });
     }
 
-    // Плавный переезд метки. Новая точка приходит раз в 30 секунд; метка
-    // доезжает до неё за 1.2 секунды — не прыгает, но и не врёт, показывая
-    // машину «в пути» там, где её уже нет.
-    function moveTo(entry, lat, lon) {
+    // Плавный переезд метки. Новая точка приходит раз в 30-60 секунд; метка
+    // доезжает до неё за 1.2 с — не прыгает, но и не врёт, показывая машину
+    // «в пути» там, где её уже нет. Если камера следит — едет вместе с меткой.
+    function moveTo(entry, lat, lon, vid) {
       if (entry.anim) cancelAnimationFrame(entry.anim);
       var fromLat = entry.lat, fromLon = entry.lon;
-      if (REDUCED || fromLat === undefined || Math.abs(fromLat - lat) + Math.abs(fromLon - lon) > 0.5) {
+      var jump = REDUCED || fromLat === undefined ||
+        Math.abs(fromLat - lat) + Math.abs(fromLon - lon) > 0.5;
+      if (jump) {
         entry.lat = lat; entry.lon = lon;
         entry.pm.geometry.setCoordinates([lat, lon]);
+        if (follow === vid) ymap.setCenter([lat, lon]);
         return;
       }
       var t0 = performance.now(), dur = 1200;
@@ -759,8 +1155,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         entry.lat = fromLat + (lat - fromLat) * e;
         entry.lon = fromLon + (lon - fromLon) * e;
         entry.pm.geometry.setCoordinates([entry.lat, entry.lon]);
-        if (k < 1) entry.anim = requestAnimationFrame(step);
-        else entry.anim = null;
+        if (follow === vid) ymap.setCenter([entry.lat, entry.lon]);
+        entry.anim = (k < 1) ? requestAnimationFrame(step) : null;
       })(t0);
     }
 
@@ -776,15 +1172,18 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
             icon: iconFor(v.type)
           }, {
             iconLayout: PinLayout,
-            iconShape: { type: 'Rectangle', coordinates: [[-23, -23], [23, 23]] },
+            iconShape: { type: 'Rectangle', coordinates: [[-30, -24], [30, 24]] },
             hasBalloon: false,
-            hasHint: false
+            hasHint: false,
+            zIndex: 700
           });
-          pm.events.add('click', function () { select(v.vehicle_id, true); });
+          (function (vid) {
+            pm.events.add('click', function () { select(vid, true); });
+          })(v.vehicle_id);
           ymap.geoObjects.add(pm);
           entry = pins[v.vehicle_id] = { pm: pm, lat: v.lat, lon: v.lon, anim: null };
         } else {
-          moveTo(entry, v.lat, v.lon);
+          moveTo(entry, v.lat, v.lon, v.vehicle_id);
         }
       });
       Object.keys(pins).forEach(function (id) {
@@ -793,7 +1192,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         ymap.geoObjects.remove(pins[id].pm);
         delete pins[id];
       });
-      // Разметка метки появляется асинхронно — красим на следующем кадре.
       requestAnimationFrame(paintPins);
     }
 
@@ -838,22 +1236,204 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (rcsAdded || !list || !list.length) return;
       rcsAdded = true;
       list.forEach(function (rc) {
-        var pm = new ymaps.Placemark([rc.lat, rc.lon], {
+        // Круг геозоны — владелец видит, где именно машина считается «на РЦ».
+        ymap.geoObjects.add(new ymaps.Circle([[rc.lat, rc.lon], rc.radius_m || 400], {}, {
+          fillColor: 'rgba(29,78,216,.06)',
+          strokeColor: 'rgba(29,78,216,.30)',
+          strokeWidth: 1,
+          strokeStyle: 'dash',
+          interactivityModel: 'default#transparent'
+        }));
+        ymap.geoObjects.add(new ymaps.Placemark([rc.lat, rc.lon], {
           name: esc(rc.name),
           balloonContentBody: '<div class="mon-balloon"><h4>РЦ ' + esc(rc.name) + '</h4>' +
             '<div class="meta">' + esc(rc.address || '') + '</div>' +
-            '<div class="meta">Геозона: приезд и отъезд машин фиксируются автоматически</div></div>'
+            '<div class="meta">Радиус геозоны ' + (rc.radius_m || 400) + ' м</div></div>'
         }, {
           iconLayout: RcLayout,
           iconShape: { type: 'Circle', coordinates: [0, 0], radius: 9 },
           balloonPanelMaxMapArea: 0,
           zIndex: 100
-        });
-        ymap.geoObjects.add(pm);
+        }));
       });
     }
 
-    // ---------- счётчик свежести: один такт на всё ----------
+    // ================= ТРЕК =================
+    var track = { vehicleId: null, hours: 12, objects: [], anim: null, loading: false };
+
+    function clearTrackObjects() {
+      if (track.anim) { cancelAnimationFrame(track.anim); track.anim = null; }
+      track.objects.forEach(function (o) { ymap.geoObjects.remove(o); });
+      track.objects = [];
+    }
+
+    function hideTrack() {
+      clearTrackObjects();
+      track.vehicleId = null;
+      trackEl.hidden = true;
+      cardEl.classList.remove('mon-sheet-hide');
+    }
+
+    document.getElementById('mon-track-close').addEventListener('click', hideTrack);
+    document.getElementById('mon-track-periods').addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-hours]');
+      if (!btn || track.vehicleId === null) return;
+      track.hours = parseInt(btn.dataset.hours, 10);
+      [].forEach.call(this.querySelectorAll('button'), function (b) {
+        b.classList.toggle('is-on', b === btn);
+      });
+      loadTrack(track.vehicleId, track.hours);
+    });
+    document.getElementById('mon-card-track').addEventListener('click', function () {
+      if (selected === null) return;
+      loadTrack(selected, track.hours);
+    });
+
+    // Трек рисуется градиентом, как в макете: дальний конец пути бледный,
+    // ближний к машине — насыщенный. Яндекс не умеет градиент на линии,
+    // поэтому линия режется на куски с плавно меняющимся цветом.
+    var TRACK_FAR = [147, 197, 253];   // #93c5fd — где машина была давно
+    var TRACK_NEAR = [29, 78, 216];    // #1d4ed8 — где она сейчас
+    function trackColor(t) {
+      var c = TRACK_FAR.map(function (v, i) {
+        return Math.round(v + (TRACK_NEAR[i] - v) * t);
+      });
+      return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('');
+    }
+
+    function drawTrack(data) {
+      clearTrackObjects();
+      var bounds = [];
+      var moves = data.segments.filter(function (s) { return s.kind === 'move'; });
+      var totalPts = moves.reduce(function (n, s) { return n + s.points.length; }, 0);
+      // куски одинаковой длины: меньше 6 — градиента не видно, больше 28 —
+      // лишние объекты на карте без выигрыша в виде
+      var chunkSize = Math.max(2, Math.ceil(totalPts / 28));
+      var chunks = [];
+      var seen = 0;
+
+      data.segments.forEach(function (seg) {
+        if (seg.kind === 'move') {
+          // Свечение под линией — чтобы трек читался на пёстрой карте.
+          var glow = new ymaps.Polyline(seg.points, {}, {
+            strokeColor: '#2563eb', strokeWidth: 13, strokeOpacity: 0.10,
+            interactivityModel: 'default#transparent'
+          });
+          ymap.geoObjects.add(glow);
+          track.objects.push(glow);
+
+          for (var i = 0; i < seg.points.length - 1; i += chunkSize) {
+            // +1 точка нахлёста, иначе между кусками остаются разрывы
+            var coords = seg.points.slice(i, Math.min(seg.points.length, i + chunkSize + 1));
+            if (coords.length < 2) continue;
+            var t = totalPts > 1 ? Math.min(1, (seen + i) / (totalPts - 1)) : 1;
+            var line = new ymaps.Polyline([], {}, {
+              strokeColor: trackColor(t),
+              strokeWidth: 3.2 + t * 2.2,
+              strokeOpacity: 0.4 + t * 0.55,
+              strokeLineCap: 'round',
+              interactivityModel: 'default#transparent'
+            });
+            ymap.geoObjects.add(line);
+            track.objects.push(line);
+            chunks.push({ line: line, coords: coords });
+          }
+          seen += seg.points.length;
+          seg.points.forEach(function (c) { bounds.push(c); });
+        } else if (seg.kind === 'nosignal') {
+          // Пунктир: связи не было, что машина ехала ИМЕННО ТАК — мы не знаем.
+          var gap = new ymaps.Polyline(seg.points, {
+            hintContent: 'Нет связи ' + seg.duration_label + ' — путь неизвестен'
+          }, {
+            strokeColor: '#c5362b', strokeWidth: 3, strokeStyle: 'dash', strokeOpacity: 0.9
+          });
+          ymap.geoObjects.add(gap);
+          track.objects.push(gap);
+          seg.points.forEach(function (c) { bounds.push(c); });
+        } else if (seg.kind === 'stop') {
+          var stop = new ymaps.Placemark([seg.lat, seg.lon], {
+            label: seg.duration_label,
+            hintContent: 'Стоянка ' + seg.duration_label
+          }, {
+            iconLayout: StopLayout,
+            iconShape: { type: 'Circle', coordinates: [0, 0], radius: 8 },
+            hasBalloon: false,
+            zIndex: 500
+          });
+          ymap.geoObjects.add(stop);
+          track.objects.push(stop);
+          bounds.push([seg.lat, seg.lon]);
+        }
+      });
+
+      if (bounds.length > 1) {
+        var wide = window.innerWidth > 768;
+        ymap.setBounds(ymaps.util.bounds.fromPoints(bounds), {
+          checkZoomRange: true,
+          zoomMargin: wide ? [110, 380, 40, 380] : [110, 24, 330, 24]
+        });
+      }
+
+      // Прорисовка: линия «бежит» от начала пути к машине, кусок за куском.
+      if (REDUCED || !chunks.length) {
+        chunks.forEach(function (c) { c.line.geometry.setCoordinates(c.coords); });
+        return;
+      }
+      var DUR = Math.min(2200, Math.max(900, chunks.length * 70));
+      var t0 = performance.now();
+      var drawn = 0;
+      (function step(now) {
+        var k = Math.min(1, (now - t0) / DUR);
+        var want = Math.max(1, Math.round(k * chunks.length));
+        while (drawn < want) {
+          chunks[drawn].line.geometry.setCoordinates(chunks[drawn].coords);
+          drawn++;
+        }
+        track.anim = (k < 1) ? requestAnimationFrame(step) : null;
+      })(t0);
+    }
+
+    async function loadTrack(vehicleId, hours) {
+      if (track.loading) return;
+      track.loading = true;
+      // Две камеры одновременно спорить не должны: показываем трек целиком —
+      // значит перестаём гнаться за машиной (на телефоне они ещё и налезали
+      // друг на друга в одном углу).
+      setFollow(null);
+      var v = byId(vehicleId);
+      // На телефоне карточка занимает низ экрана, панель трека — верх; вместе
+      // они не оставляют карты. Пока смотрим трек — карточку убираем.
+      if (window.innerWidth <= 768) cardEl.classList.add('mon-sheet-hide');
+      trackEl.hidden = false;
+      document.getElementById('mon-track-title').textContent =
+        'Трек · ' + (v ? v.plate : '');
+      var facts = document.getElementById('mon-track-facts');
+      facts.textContent = 'Загружаю…';
+      try {
+        var r = await fetch('/api/vehicles/' + vehicleId + '/track?hours=' + hours);
+        if (!r.ok) { facts.textContent = 'Не удалось загрузить трек.'; return; }
+        var data = await r.json();
+        track.vehicleId = vehicleId;
+        if (!data.segments.length) {
+          clearTrackObjects();
+          facts.innerHTML = 'За этот период точек нет — машина не выходила на связь.';
+          return;
+        }
+        facts.innerHTML =
+          '<span>Пробег <b>' + data.distance_km + ' км</b></span>' +
+          '<span>Стоянок <b>' + data.stops + '</b></span>' +
+          '<span class="' + (data.gaps ? 'bad' : '') + '">Разрывов связи <b>' + data.gaps + '</b></span>' +
+          '<span>Точек <b>' + data.points + '</b></span>';
+        drawTrack(data);
+      } catch (e) {
+        facts.textContent = 'Не удалось загрузить трек.';
+        console.error(e);
+      } finally {
+        track.loading = false;
+      }
+    }
+
+    // ================= счётчик свежести: один такт на всё =================
     setInterval(function () {
       vehicles.forEach(function (v) {
         var ms = ageMs(v);
@@ -875,7 +1455,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       });
     }, 1000);
 
-    // ---------- опрос сервера ----------
+    // ================= опрос сервера =================
     async function refresh() {
       try {
         var r = await fetch('/api/drivers-locations');
@@ -907,7 +1487,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     }
 
     refresh();
-    setInterval(refresh, 30000);
+    setInterval(refresh, POLL_MS);
     // Вернулся на вкладку — обновляем сразу (фоновые вкладки браузер «усыпляет»).
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) refresh();

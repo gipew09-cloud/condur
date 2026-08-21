@@ -49,6 +49,7 @@ from app.models import (
     Vehicle,
     VehicleState,
     VehicleTelemetryPoint,
+    VEHICLE_COLORS,
     WebSession,
 )
 from app.config import settings
@@ -83,6 +84,10 @@ _TRIP_STATUS_LABELS = {
     "completed": "завершён",
     "cancelled": "отменён",
 }
+
+
+def _vehicle_color(code: str | None) -> str:
+    return code if code in VEHICLE_COLORS else "black"
 
 
 def _vehicle_type_label(code: str | None) -> str:
@@ -152,6 +157,7 @@ def _backdated(obj) -> bool:
 
 
 templates.env.filters["vtype"] = _vehicle_type_label
+templates.env.globals["VEHICLE_COLORS"] = VEHICLE_COLORS
 templates.env.filters["tstatus"] = _trip_status_label
 templates.env.filters["pillclass"] = _pill_class
 templates.env.filters["statusru"] = _status_ru
@@ -1526,6 +1532,7 @@ async def create_vehicle(
     type: Annotated[str, Form()] = "truck",
     fuel_norm_per_100km: Annotated[str, Form()] = "",
     stavtrack_object_id: Annotated[str, Form()] = "",
+    color: Annotated[str, Form()] = "black",
     osago_expires: Annotated[str, Form()] = "",
     inspection_expires: Annotated[str, Form()] = "",
     tacho_expires: Annotated[str, Form()] = "",
@@ -1588,6 +1595,7 @@ async def create_vehicle(
     target.license_plate = plate_clean
     target.brand = brand.strip() or None
     target.type = type
+    target.color = _vehicle_color(color)
     target.stavtrack_object_id = stavtrack_id
     target.fuel_norm_per_100km = norm
     target.osago_expires = _parse_date(osago_expires)
@@ -1652,6 +1660,7 @@ async def vehicle_update(
     type: Annotated[str, Form()] = "truck",
     fuel_norm_per_100km: Annotated[str, Form()] = "",
     stavtrack_object_id: Annotated[str, Form()] = "",
+    color: Annotated[str, Form()] = "black",
     osago_expires: Annotated[str, Form()] = "",
     inspection_expires: Annotated[str, Form()] = "",
     tacho_expires: Annotated[str, Form()] = "",
@@ -1668,6 +1677,7 @@ async def vehicle_update(
     vehicle.license_plate = plate_clean
     vehicle.brand = brand.strip() or None
     vehicle.type = type
+    vehicle.color = _vehicle_color(color)
     stavtrack_id = _clean_stavtrack_object_id(stavtrack_object_id)
     if stavtrack_id:
         gps_existing = (
@@ -3974,7 +3984,7 @@ async def api_drivers_locations(
 ):
     """Для карты: ручные координаты водителей + GPS машин (Stavtrack)."""
     vehicles_res = await session.execute(
-        select(VehicleState, Vehicle.license_plate, Vehicle.type)
+        select(VehicleState, Vehicle.license_plate, Vehicle.type, Vehicle.color)
         .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
         .where(
             Vehicle.owner_id == owner.id,
@@ -4010,6 +4020,7 @@ async def api_drivers_locations(
             # тип кузова — на мониторинге он задаёт иконку метки
             "type": vtype,
             "type_label": _vehicle_type_label(vtype),
+            "color": _vehicle_color(vcolor),
             "driver": driver_by_vehicle.get(st.vehicle_id),
             "lat": float(st.latitude),
             "lon": float(st.longitude),
@@ -4025,10 +4036,17 @@ async def api_drivers_locations(
             "has_active_shift": st.vehicle_id in busy_vehicle_ids,
             "has_active_trip": st.vehicle_id in in_trip_ids,
             "is_valid": st.is_valid,
+            # Напряжение бортсети — как в Ставтрэке. None = трекер не прислал.
+            "voltage": float(st.voltage) if st.voltage is not None else None,
+            "battery_voltage": (
+                float(st.battery_voltage) if st.battery_voltage is not None else None
+            ),
+            # Масса выключена: борт просел, а точки идут — трекер на батарее.
+            "power_cut": telemetry_service.power_cut(st.voltage, st.battery_voltage),
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
             "updated_label": fmt_dt(st.last_seen_at, owner.timezone, "%d.%m, %H:%M"),
         }
-        for st, plate, vtype in vehicles_res.all()
+        for st, plate, vtype, vcolor in vehicles_res.all()
         # «нулевой остров» (потеря GPS у трекера) на карту не выносим
         if abs(float(st.latitude)) > 0.001 or abs(float(st.longitude)) > 0.001
     ]
@@ -4041,6 +4059,7 @@ async def api_drivers_locations(
             DistributionCenter.longitude.is_not(None),
         )
     )
+    rc_objects = list(rcs_res.scalars().all())
     rcs = [
         {
             "id": rc.id,
@@ -4048,13 +4067,85 @@ async def api_drivers_locations(
             "address": rc.address,
             "lat": float(rc.latitude),
             "lon": float(rc.longitude),
+            "radius_m": rc.geofence_radius_m or 400,
         }
-        for rc in rcs_res.scalars().all()
+        for rc in rc_objects
     ]
+    # В какой геозоне РЦ машина стоит прямо сейчас. Считается по последней
+    # точке из «быстрого слоя» — без запроса к истории, поэтому дёшево даже
+    # при опросе раз в 15 секунд.
+    for v in vehicles:
+        zone = rc_service.nearest_center_within(v["lat"], v["lon"], rc_objects)
+        v["zone"] = zone.name if zone is not None else None
     return {
         "drivers": await _driver_positions(session, owner.id),
         "vehicles": vehicles,
         "rcs": rcs,
+    }
+
+
+# =========================================================================
+# /api/vehicles/{id}/track — трек машины за период для карты мониторинга
+# =========================================================================
+@app.get("/api/vehicles/{vehicle_id}/track")
+async def api_vehicle_track(
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    hours: int = 12,
+):
+    """Трек одной машины: отрезки «ехал / стоял / нет связи» с координатами.
+
+    Разрыв связи отдаётся отдельным отрезком и на карте рисуется пунктиром:
+    соединять сплошной линией две точки в разных концах города — значит
+    утверждать, что машина ехала именно так, а этого мы не знаем.
+    """
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    hours = max(1, min(int(hours or 12), 72))
+    now_utc = datetime.now(timezone.utc)
+    since = now_utc - timedelta(hours=hours)
+    rows = (
+        await session.execute(
+            select(
+                VehicleTelemetryPoint.observed_at,
+                VehicleTelemetryPoint.latitude,
+                VehicleTelemetryPoint.longitude,
+                VehicleTelemetryPoint.speed_kmh,
+            )
+            .where(
+                VehicleTelemetryPoint.vehicle_id == vehicle_id,
+                VehicleTelemetryPoint.owner_id == owner.id,
+                VehicleTelemetryPoint.is_valid.is_(True),
+                VehicleTelemetryPoint.observed_at.is_not(None),
+                VehicleTelemetryPoint.observed_at >= since,
+                VehicleTelemetryPoint.latitude.is_not(None),
+                VehicleTelemetryPoint.longitude.is_not(None),
+            )
+            .order_by(VehicleTelemetryPoint.observed_at)
+            .limit(20000)
+        )
+    ).all()
+    segments = telemetry_service.build_track_segments(
+        [(t, lat, lon, speed) for t, lat, lon, speed in rows],
+        window_end=now_utc,
+    )
+    moved = [seg for seg in segments if seg["kind"] == "move"]
+    stops = [seg for seg in segments if seg["kind"] == "stop"]
+    gaps = [seg for seg in segments if seg["kind"] == "nosignal"]
+    return {
+        "vehicle_id": vehicle_id,
+        "plate": vehicle.license_plate,
+        "hours": hours,
+        "from": since.isoformat(),
+        "to": now_utc.isoformat(),
+        "points": len(rows),
+        "distance_km": round(sum(seg["distance_km"] for seg in moved), 1),
+        "stops": len(stops),
+        "gaps": len(gaps),
+        "segments": segments,
     }
 
 

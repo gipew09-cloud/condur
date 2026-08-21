@@ -53,6 +53,13 @@
       <label>Stavtrack ID
         <input type="text" name="stavtrack_object_id" placeholder="129772">
       </label>
+      <label>Цвет на карте
+        <select name="color">
+          {% for code, label in VEHICLE_COLORS.items() %}
+          <option value="{{ code }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label>ОСАГО до
         <input type="date" name="osago_expires">
       </label>

@@ -13,6 +13,13 @@
     </label>
     <label>Норма л/100км <input type="text" name="fuel_norm_per_100km" value="{{ v.fuel_norm_per_100km or '' }}"></label>
     <label>Stavtrack ID <input type="text" name="stavtrack_object_id" value="{{ v.stavtrack_object_id or '' }}" placeholder="129772"></label>
+    <label>Цвет на карте
+      <select name="color">
+        {% for code, label in VEHICLE_COLORS.items() %}
+        <option value="{{ code }}" {% if (v.color or 'black') == code %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <label>ОСАГО до <input type="date" name="osago_expires" value="{{ v.osago_expires.isoformat() if v.osago_expires else '' }}"></label>
     <label>ТО до <input type="date" name="inspection_expires" value="{{ v.inspection_expires.isoformat() if v.inspection_expires else '' }}"></label>
     <label>Тахограф до <input type="date" name="tacho_expires" value="{{ v.tacho_expires.isoformat() if v.tacho_expires else '' }}"></label>

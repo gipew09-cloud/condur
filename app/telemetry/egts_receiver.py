@@ -170,6 +170,14 @@ async def _process_packet(
         last_any: VehicleTelemetryPoint | None = None
         if parsed is not None and vehicle is not None:
             for rec in parsed.records:
+                # Напряжения приходят отдельной подзаписью на всю запись —
+                # раскладываем их по точкам этой же записи.
+                rec_voltage = (
+                    Decimal(str(rec.state.main_power_v)) if rec.state is not None else None
+                )
+                rec_battery = (
+                    Decimal(str(rec.state.backup_battery_v)) if rec.state is not None else None
+                )
                 for pos in rec.positions:
                     # «Нулевой остров»: при потере GPS часть трекеров шлёт (0,0).
                     zeroish = abs(pos.latitude) < 0.001 and abs(pos.longitude) < 0.001
@@ -186,6 +194,8 @@ async def _process_packet(
                         course=Decimal(pos.course),
                         ignition=pos.ignition,
                         mileage_km=Decimal(str(pos.odometer_km)),
+                        voltage=rec_voltage,
+                        battery_voltage=rec_battery,
                         is_valid=good,
                         anomaly_reason=None if good else "нет достоверных координат (GPS)",
                     )
@@ -231,6 +241,8 @@ async def _process_packet(
                         longitude=last_good.longitude,
                         speed_kmh=last_good.speed_kmh,
                         ignition=last_good.ignition,
+                        voltage=last_good.voltage,
+                        battery_voltage=last_good.battery_voltage,
                         motion_status=motion_status,
                         motion_since_at=motion_since_at,
                         is_valid=True,
@@ -238,7 +250,8 @@ async def _process_packet(
                     )
                     update_cols = (
                         "terminal_id", "last_point_id", "last_seen_at", "latitude",
-                        "longitude", "speed_kmh", "ignition", "motion_status",
+                        "longitude", "speed_kmh", "ignition", "voltage",
+                        "battery_voltage", "motion_status",
                         "motion_since_at", "is_valid", "anomaly_reason",
                     )
                 else:
@@ -387,6 +400,14 @@ async def _store_wialon_points(
             mileage_km = telemetry_service.wialon_odometer_km(
                 wp.params.get("totalDistance") if wp.params else None
             )
+            # Напряжение бортсети и своя батарея трекера. Ставтрэк шлёт их в
+            # каждом пакете; раньше power читали только ради зажигания.
+            voltage = telemetry_service.sensor_voltage(
+                wp.params.get("power") if wp.params else None
+            )
+            battery_voltage = telemetry_service.sensor_voltage(
+                wp.params.get("battery") if wp.params else None
+            )
             point = VehicleTelemetryPoint(
                 raw_packet_id=raw.id,
                 owner_id=vehicle.owner_id,
@@ -399,6 +420,8 @@ async def _store_wialon_points(
                 course=Decimal(str(wp.course)) if wp.course is not None else None,
                 ignition=ignition_value,
                 mileage_km=mileage_km,
+                voltage=voltage,
+                battery_voltage=battery_voltage,
                 is_valid=good,
                 anomaly_reason=None if good else "нет достоверных координат (GPS)",
             )
@@ -438,6 +461,8 @@ async def _store_wialon_points(
                     longitude=last_good.longitude,
                     speed_kmh=last_good.speed_kmh,
                     ignition=last_good.ignition,
+                    voltage=last_good.voltage,
+                    battery_voltage=last_good.battery_voltage,
                     motion_status=motion_status,
                     motion_since_at=motion_since_at,
                     is_valid=True,
@@ -445,7 +470,8 @@ async def _store_wialon_points(
                 )
                 update_cols = (
                     "terminal_id", "last_point_id", "last_seen_at", "latitude",
-                    "longitude", "speed_kmh", "ignition", "motion_status",
+                    "longitude", "speed_kmh", "ignition", "voltage",
+                    "battery_voltage", "motion_status",
                     "motion_since_at", "is_valid", "anomaly_reason",
                 )
             else:

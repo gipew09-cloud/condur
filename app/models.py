@@ -150,6 +150,20 @@ class Driver(Base):
 
 
 # ========== МАШИНЫ ==========
+# Палитра цветов машины для метки на мониторинге. Ключ хранится в
+# vehicles.color, набор повторяет Ставтрэк — владелец выбирает привычные
+# цвета. NULL в базе равен "black" (цвет исходного рисунка).
+VEHICLE_COLORS = {
+    "black": "Чёрный",
+    "white": "Белый",
+    "yellow": "Жёлтый",
+    "orange": "Оранжевый",
+    "red": "Красный",
+    "blue": "Синий",
+    "green": "Зелёный",
+}
+
+
 class Vehicle(Base):
     __tablename__ = "vehicles"
     __table_args__ = (
@@ -162,6 +176,9 @@ class Vehicle(Base):
     license_plate: Mapped[str] = mapped_column(String(20))
     brand: Mapped[str | None] = mapped_column(String(100))
     type: Mapped[str | None] = mapped_column(String(50))
+    # Цвет машины для метки на мониторинге. Выбирается ВРУЧНУЮ из палитры
+    # (автоподбор владелец отверг). NULL = чёрный, цвет исходного рисунка.
+    color: Mapped[str | None] = mapped_column(String(16))
     fuel_norm_per_100km: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     # ID объекта из Stavtrack. Его видно в окне ретрансляции рядом с машиной.
     stavtrack_object_id: Mapped[str | None] = mapped_column(String(64))
@@ -468,6 +485,10 @@ class VehicleTelemetryPoint(Base):
     course: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     ignition: Mapped[bool | None] = mapped_column(Boolean)
     mileage_km: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    # напряжение бортсети (Ставтрэк: params['power'], EGTS: main_power_v)
+    voltage: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    # своя батарея трекера — по ней видно, что машину обесточили
+    battery_voltage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     anomaly_reason: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(64), default="stavtrack", server_default="stavtrack")
@@ -496,6 +517,8 @@ class VehicleState(Base):
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
     ignition: Mapped[bool | None] = mapped_column(Boolean)
+    voltage: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    battery_voltage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     motion_status: Mapped[str | None] = mapped_column(String(20))
     motion_since_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_valid: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

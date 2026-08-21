@@ -64,6 +64,46 @@ def engine_running_from_voltage(power_v) -> bool | None:
     return volts >= threshold
 
 
+# Значения-заглушки в потоке Ставтрэка: незаполненные каналы приходят как
+# 65535 / -128 / -327.68. Это «нет датчика», а не показание — пускать такое
+# в интерфейс нельзя (владелец увидит «65535 В» и перестанет верить экрану).
+SENSOR_SENTINELS = (65535, 65534, -128, -327.68, -3276.8)
+SENSOR_VOLTAGE_MAX_V = Decimal("100")
+
+
+def sensor_voltage(value) -> Decimal | None:
+    """Напряжение из параметров трекера. None — нет датчика или мусор."""
+    if value is None:
+        return None
+    try:
+        volts = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    if any(volts == Decimal(str(sentinel)) for sentinel in SENSOR_SENTINELS):
+        return None
+    if volts <= 0 or volts > SENSOR_VOLTAGE_MAX_V:
+        return None
+    return volts
+
+
+# Массу выключили: бортсеть просела почти до нуля, а трекер ещё живёт на своей
+# батарее и продолжает слать точки. Снаружи это выглядит как обычная стоянка —
+# именно так теряются машины (PROBLEMS №21). Порог 5 В: ниже него бортсети
+# фактически нет ни у 12-, ни у 24-вольтовой машины.
+POWER_CUT_MAX_V = Decimal("5")
+
+
+def power_cut(voltage, battery_voltage=None) -> bool:
+    """True — машина обесточена (масса выключена), трекер на своей батарее."""
+    volts = sensor_voltage(voltage)
+    if volts is None:
+        return False
+    if volts >= POWER_CUT_MAX_V:
+        return False
+    # Точки продолжают идти — значит трекер жив, питается от своей батареи.
+    return True
+
+
 # Пробег трекера в Wialon приходит в параметре totalDistance в МЕТРАХ
 # (проверено 18.07.2026: totalDistance=1691610321 м → 1691610.32 км, ровно
 # как одометр в самом Stavtrack). В EGTS пробег уже в км (odometer_km).
@@ -288,6 +328,92 @@ def segment_movements(
     if tail_open and smoothed:
         smoothed[-1]["ongoing"] = True
     return smoothed
+
+
+def build_track_segments(
+    points: list[tuple[datetime, float, float, Decimal | float | int | None]],
+    *,
+    window_end: datetime,
+) -> list[dict]:
+    """Трек машины: отрезки «ехал / стоял / нет связи» с геометрией.
+
+    points — [(observed_at, lat, lon, speed_kmh)] по возрастанию времени,
+    уже отфильтрованные (только достоверные координаты).
+
+    Возвращает список отрезков:
+      * {"kind": "move",     "points": [[lat, lon], ...], "distance_km": ...}
+      * {"kind": "stop",     "lat": ..., "lon": ..., "duration_label": "18 мин"}
+      * {"kind": "nosignal", "points": [[lat, lon], [lat, lon]]}
+
+    Почему разрыв связи — отдельный отрезок, а не просто линия: соединять две
+    точки в разных концах города сплошной линией значит утверждать, что машина
+    ехала именно так. Мы этого не знаем, поэтому рисуем пунктиром.
+    """
+    from app.services import rc_service
+
+    pts = sorted(
+        (( _utc(t), float(lat), float(lon), Decimal(str(s if s is not None else 0)))
+         for t, lat, lon, s in points if t is not None),
+        key=lambda p: p[0],
+    )
+    if not pts:
+        return []
+
+    segments = segment_movements(
+        [(t, speed) for t, _, _, speed in pts], window_end=window_end
+    )
+    out: list[dict] = []
+    for seg in segments:
+        inside = [p for p in pts if seg["start"] <= p[0] <= seg["end"]]
+        if seg["kind"] == "move":
+            coords = [[lat, lon] for _, lat, lon, _ in inside]
+            if len(coords) < 2:
+                continue
+            dist = sum(
+                rc_service.haversine_m(
+                    coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]
+                )
+                for i in range(1, len(coords))
+            )
+            out.append({
+                "kind": "move",
+                "start": seg["start"].isoformat(),
+                "end": seg["end"].isoformat(),
+                "points": coords,
+                "distance_km": round(dist / 1000, 2),
+                "duration_label": duration_label(seg["start"], seg["end"]),
+            })
+        elif seg["kind"] == "stop":
+            # Стоянку показываем одной точкой — последней известной внутри
+            # отрезка (там машина и осталась стоять).
+            anchor_pt = inside[-1] if inside else None
+            if anchor_pt is None:
+                continue
+            out.append({
+                "kind": "stop",
+                "start": seg["start"].isoformat(),
+                "end": seg["end"].isoformat(),
+                "lat": anchor_pt[1],
+                "lon": anchor_pt[2],
+                "duration_label": duration_label(seg["start"], seg["end"]),
+                "seconds": int((seg["end"] - seg["start"]).total_seconds()),
+            })
+        else:  # nosignal
+            before = [p for p in pts if p[0] <= seg["start"]]
+            after = [p for p in pts if p[0] >= seg["end"]]
+            if not before or not after:
+                continue
+            out.append({
+                "kind": "nosignal",
+                "start": seg["start"].isoformat(),
+                "end": seg["end"].isoformat(),
+                "points": [
+                    [before[-1][1], before[-1][2]],
+                    [after[0][1], after[0][2]],
+                ],
+                "duration_label": duration_label(seg["start"], seg["end"]),
+            })
+    return out
 
 
 def int_or_none(value) -> int | None:
