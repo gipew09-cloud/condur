@@ -245,6 +245,13 @@ def test_admin_revocation_is_immediate():
 
 
 # ------------------------------------------------------------------ рендер страниц
+# Шаблоны машин рисуют палитру цветов — в проде она приходит глобалом
+# из router.py; здесь берём тот же словарь из моделей.
+from app.models import VEHICLE_COLORS as _VEHICLE_COLORS  # noqa: E402
+
+_ENV.globals["VEHICLE_COLORS"] = _VEHICLE_COLORS
+
+
 def _render(name, **ctx):
     return _ENV.get_template(name).render(**ctx)
 
