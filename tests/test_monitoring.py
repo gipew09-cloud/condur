@@ -93,6 +93,70 @@ def test_track_stop_has_place_and_duration():
     assert "мин" in stop["duration_label"] or "ч" in stop["duration_label"]
 
 
+def test_track_does_not_draw_a_straight_line_through_city_blocks():
+    """Пропала пачка точек посреди поездки — путь неизвестен, рисуем пунктир.
+
+    Боевой случай 22.08.2026: трекер замолчал на несколько минут, машина за это
+    время проехала по улицам несколько километров, а на карте появилась прямая
+    линия наискосок через кварталы. Такая линия УТВЕРЖДАЕТ маршрут, которого
+    система не знает, и завышает пробег.
+    """
+    t0 = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
+    pts = []
+    for i in range(20):                       # едет 10 минут
+        pts.append((t0 + timedelta(seconds=30 * i), 59.800 + i * 0.0003, 30.400, 50))
+    # тишина 6 минут — короче SEGMENT_GAP_SECONDS (15 мин), поэтому раньше
+    # это НЕ считалось разрывом и точки соединялись прямой
+    jump_at = t0 + timedelta(minutes=10 + 6)
+    for i in range(20):                       # и продолжает ехать в 5 км оттуда
+        pts.append((jump_at + timedelta(seconds=30 * i), 59.850 + i * 0.0003, 30.470, 50))
+
+    segs = telemetry_service.build_track_segments(
+        pts, window_end=jump_at + timedelta(minutes=10)
+    )
+    kinds = [s["kind"] for s in segs]
+    assert kinds.count("move") == 2, "поездку не разрезали в месте пропажи точек"
+    gaps = [s for s in segs if s["kind"] == "nosignal"]
+    assert len(gaps) == 1, "пропуск пути не помечен"
+    assert gaps[0]["reason"] == "no_points"
+    assert len(gaps[0]["points"]) == 2
+
+    # скачок не попал в пробег: 5 км «через дома» приписывать машине нельзя
+    driven = sum(s["distance_km"] for s in segs if s["kind"] == "move")
+    assert driven < 2.0, f"пробег завышен скачком: {driven} км"
+
+
+def test_track_keeps_normal_highway_legs_solid():
+    """На трассе точки далеко друг от друга — это НЕ повод рвать линию."""
+    t0 = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
+    # 40 секунд между точками, 90 км/ч → около километра за шаг
+    pts = [
+        (t0 + timedelta(seconds=40 * i), 59.800 + i * 0.009, 30.400, 90)
+        for i in range(20)
+    ]
+    segs = telemetry_service.build_track_segments(
+        pts, window_end=t0 + timedelta(minutes=20)
+    )
+    assert [s["kind"] for s in segs].count("nosignal") == 0, "трасса разрезана зря"
+    assert [s["kind"] for s in segs].count("move") == 1
+
+
+def test_track_teleport_is_a_gap_even_within_seconds():
+    """Скачок GPS на километры за секунды — это не поездка, а сбой."""
+    t0 = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
+    pts = [
+        (t0, 59.800, 30.400, 40),
+        (t0 + timedelta(seconds=30), 59.801, 30.400, 40),
+        # 20 км за 30 секунд — 2400 км/ч
+        (t0 + timedelta(seconds=60), 59.980, 30.400, 40),
+        (t0 + timedelta(seconds=90), 59.981, 30.400, 40),
+    ]
+    segs = telemetry_service.build_track_segments(
+        pts, window_end=t0 + timedelta(minutes=5)
+    )
+    assert any(s["kind"] == "nosignal" for s in segs), "телепорт нарисован как поездка"
+
+
 def test_track_empty_input_is_empty_track():
     assert telemetry_service.build_track_segments(
         [], window_end=datetime.now(timezone.utc)
@@ -153,11 +217,16 @@ def test_monitoring_screen_draws_truck_picture_and_address():
     # ключ рисунка задан явно, а не выводится из имени файла
     assert "key: 'reefer'" in src
     assert "artFor(v.type).key" in src
-    # обводка состояния осталась носителем состояния
-    assert "'0 0 0 2.5px ' + st.color" in src
-    # адрес берётся у геокодера Яндекса и кэшируется по округлённой точке
-    assert "ymaps.geocode(" in src
+    # обводка состояния осталась носителем состояния (теперь через ringCss/applyRing)
+    assert "applyRing(tile, key, st.color, 2.5" in src
+    # адрес берётся у своего эндпоинта (он кэширует и сам выбирает геокодер);
+    # ymaps.geocode использовать нельзя — для него нужен ОТДЕЛЬНЫЙ ключ Яндекса,
+    # и без него вызов молча падал, а карточка навсегда писала «определяю адрес…»
+    assert "/api/geocode/reverse?lat=" in src
+    assert "ymaps.geocode(" not in src
     assert "addrCache" in src
+    # неудачу показываем честно, а не вечным «определяю…»
+    assert "адрес не определился" in src
 
 
 def test_monitoring_track_is_a_gradient_like_the_design():
@@ -178,6 +247,241 @@ def test_truck_picture_is_shipped_and_transparent():
     color_type = png[25]
     assert width >= 256, width
     assert color_type == 6, f"нужен RGBA, а не тип {color_type}"
+
+
+# ------------------------------------------------------------------ топливо
+def test_fuel_level_read_from_real_stavtrack_packet():
+    """Боевой пакет Т557ОС178 от 25.08.2026 — датчик на канале 2."""
+    real = {"fuel2": 3608, "fuel3": 65535, "fuel4": 65535,
+            "fuelTemp2": 18, "fuelTemp3": -128}
+    assert telemetry_service.fuel_level_raw(real) == Decimal("3608")
+    assert telemetry_service.fuel_temp_c(real) == Decimal("18")
+
+
+def test_fuel_sentinels_are_not_readings():
+    """65535 и -128 — «датчика нет», а не показание.
+
+    Если пустить их в интерфейс, владелец увидит «65535» и перестанет верить
+    экрану (та же ловушка, что с напряжением).
+    """
+    empty = {"fuel2": 65535, "fuel3": 65535, "fuelTemp2": -128}
+    assert telemetry_service.fuel_level_raw(empty) is None
+    assert telemetry_service.fuel_temp_c(empty) is None
+    # мусор и пустота не должны падать
+    for bad in (None, {}, {"fuel1": "абв"}, {"fuel1": -5}, {"fuel1": 999999}):
+        assert telemetry_service.fuel_level_raw(bad) is None
+
+
+def test_fuel_channel_is_not_hardcoded():
+    """Канал ищем перебором: на другой машине ДУТ может стоять не на втором."""
+    assert telemetry_service.fuel_level_raw({"fuel5": 1200}) == Decimal("1200")
+    # беспроводной BLE-датчик (каналы 8…15 по документации УМКа302)
+    assert telemetry_service.fuel_level_raw({"fuel8": 900}) == Decimal("900")
+    # температура берётся с ТОГО ЖЕ канала, где нашёлся уровень
+    assert telemetry_service.fuel_temp_c({"fuel5": 1200, "fuelTemp5": 12}) == Decimal("12")
+    assert telemetry_service.fuel_temp_c({"fuel5": 1200, "fuelTemp2": 99}) is None
+
+
+def test_fuel_is_stored_by_receiver_in_every_branch():
+    """Топливо должно попадать и в историю, и в «быстрый слой».
+
+    Отдельно проверяем ветку недостоверного GPS: уровень в баке от спутников
+    не зависит, датчик меряет его и когда координаты врут.
+    """
+    src = open("app/telemetry/egts_receiver.py", encoding="utf-8").read()
+    assert "fuel_level_raw=fuel_raw" in src, "не пишем в точку истории"
+    # в списках обновляемых колонок — во всех четырёх ветках upsert
+    assert src.count('"fuel_level_raw", "fuel_temp_c",') == 4
+    assert "fuel_level_raw=last_any.fuel_level_raw" in src, "ветка плохого GPS без топлива"
+
+
+def test_card_shows_litres_only_with_calibration():
+    """Литры — только когда есть тарировка. Иначе честная надпись, не сырое число.
+
+    Сырое значение датчика (3608) владельцу ничего не говорит, а выдать его за
+    литры — соврать.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "fuelMetrics" in src
+    assert "нужна тарировка" in src            # тарировки нет
+    assert "датчик не подключён" in src        # датчика нет
+    assert "Math.round(v.fuel_litres)" in src  # тарировка есть → литры
+    # сырое значение на экран не выводим ни при каком раскладе
+    assert "v.fuel_raw.toFixed" not in src
+    # процент бака — только если объём задан, иначе это выдумка
+    assert "if (v.tank_litres)" in src
+
+
+# ------------------------------------------------------------------ тарировка
+def test_calibration_converts_real_stavtrack_table():
+    """Пары со скриншота Ставтрэка (Датчики → Топливо → Дополнительные)."""
+    cal = [[1, 0], [73, 10], [168, 20], [259, 30], [331, 40], [417, 50]]
+    # узловые точки совпадают ровно
+    assert telemetry_service.fuel_litres(73, cal) == Decimal("10.0")
+    assert telemetry_service.fuel_litres(331, cal) == Decimal("40.0")
+    # между узлами — по прямой, как считает и сам Ставтрэк своими a и b
+    assert telemetry_service.fuel_litres(120, cal) == Decimal("14.9")
+    # за краями таблицы НЕ экстраполируем: у дна и у горловины датчик врёт
+    assert telemetry_service.fuel_litres(0, cal) == Decimal("0")
+    assert telemetry_service.fuel_litres(99999, cal) == Decimal("50")
+    # нет таблицы или нет показания — нет и литров
+    assert telemetry_service.fuel_litres(3608, None) is None
+    assert telemetry_service.fuel_litres(None, cal) is None
+
+
+# Полная тарировка бака Т557ОС178, переписанная из Ставтрэка 25.08.2026
+# (Автопарк → Т 557 ОС 178 СМАРТ → Датчики → Топливо → Дополнительные).
+REAL_CALIBRATION = [
+    [1, 0], [73, 10], [168, 20], [259, 30], [331, 40], [417, 50], [592, 75],
+    [756, 100], [908, 125], [1080, 150], [1232, 175], [1380, 200], [1526, 225],
+    [1667, 250], [1809, 275], [1949, 300], [2089, 325], [2229, 350], [2371, 375],
+    [2511, 400], [2656, 425], [2799, 450], [2949, 475], [3105, 500], [3165, 510],
+    [3229, 520], [3296, 530], [3365, 540], [3436, 550], [3505, 560], [3585, 570],
+    [3630, 575], [3678, 580], [3692, 585],
+]
+
+
+def test_calibration_matches_stavtrack_own_coefficients():
+    """Наш пересчёт обязан совпадать со Ставтрэком до сотых.
+
+    Ставтрэк на каждый отрезок хранит прямую y = a·x + b и показывает её в той же
+    таблице. Берём две его строки и сверяем: если разойдёмся, владелец увидит в
+    двух системах разные литры по одной и той же машине и не поверит ни одной.
+    """
+    # X=73:  a=0.105263157, b=2.315789473  → ровно 10 л
+    assert telemetry_service.fuel_litres(73, REAL_CALIBRATION) == Decimal("10.0")
+    # X=417: a=0.142857142, b=-9.5714285   → ровно 50 л
+    assert telemetry_service.fuel_litres(417, REAL_CALIBRATION) == Decimal("50.0")
+    # и в середине отрезка, где интерполяция реально работает
+    assert telemetry_service.fuel_litres(3608, REAL_CALIBRATION) == Decimal("572.6")
+
+
+def test_calibration_covers_the_whole_tank():
+    """Таблица покрывает бак целиком — иначе показания упрутся в потолок.
+
+    С первыми шестью строками (до 417) боевые 3608 превращались в «50 л»
+    вместо 573: значение зажималось краем таблицы.
+    """
+    assert len(REAL_CALIBRATION) == 34
+    assert REAL_CALIBRATION[-1] == [3692, 585]
+    # реальные показания из логов 25.08 попадают ВНУТРЬ таблицы, а не на край
+    for raw in (3608, 3620, 3644):
+        litres = telemetry_service.fuel_litres(raw, REAL_CALIBRATION)
+        assert Decimal("560") < litres < Decimal("585"), f"{raw} → {litres}"
+
+
+def test_parked_noise_is_not_consumption():
+    """Стоящая машина не должна «расходовать» топливо.
+
+    25.08 на реальной стоянке показания датчика гуляли в пределах ~4 литров без
+    всякого движения. Если считать расход в лоб по разнице соседних точек, за
+    сутки набежали бы десятки литров из воздуха.
+    """
+    t0 = datetime(2026, 8, 26, 7, 0, tzinfo=timezone.utc)
+    noisy = [
+        (t0 + timedelta(minutes=i), 3608 + (7 if i % 3 == 0 else -6))
+        for i in range(60)
+    ]
+    summary = telemetry_service.fuel_summary(noisy, REAL_CALIBRATION)
+    assert summary["spent_l"] == 0.0, summary
+    assert summary["refuelled_l"] == 0.0
+    assert summary["refuels"] == [] and summary["drains"] == []
+
+
+def test_refuel_does_not_eat_the_consumption():
+    """Заправка посреди периода не должна обнулять расход.
+
+    Считаем спуски и подъёмы кривой отдельно: «конец минус начало» показал бы
+    плюс, хотя машина реально сожгла топливо.
+    """
+    t0 = datetime(2026, 8, 26, 7, 0, tzinfo=timezone.utc)
+    points, level = [], 2500
+    for i in range(30):                      # едет, тратит
+        level -= 20
+        points.append((t0 + timedelta(minutes=3 * i), level))
+    level += 900                             # заправился
+    for i in range(30, 60):                  # снова едет
+        level -= 20
+        points.append((t0 + timedelta(minutes=3 * i), level))
+
+    summary = telemetry_service.fuel_summary(points, REAL_CALIBRATION)
+    assert summary["spent_l"] > 50, summary
+    assert summary["refuelled_l"] > 50, summary
+    assert len(summary["refuels"]) == 1
+
+
+def test_sharp_drop_is_flagged_as_possible_drain():
+    """Резкое падение уровня за минуты — повод проверить, а не расход."""
+    t0 = datetime(2026, 8, 26, 7, 0, tzinfo=timezone.utc)
+    points = [(t0 + timedelta(minutes=i), 2500) for i in range(10)]
+    # −700 единиц (около 120 л) за пять минут
+    points += [(t0 + timedelta(minutes=10 + i), 1800) for i in range(10)]
+    summary = telemetry_service.fuel_summary(points, REAL_CALIBRATION)
+    assert summary["drains"], "слив не помечен"
+    assert summary["drains"][0]["litres"] > 50
+
+
+def test_fuel_summary_needs_calibration_and_data():
+    t0 = datetime(2026, 8, 26, 7, 0, tzinfo=timezone.utc)
+    pts = [(t0, 3000), (t0 + timedelta(minutes=5), 2990)]
+    assert telemetry_service.fuel_summary(pts, None) is None
+    assert telemetry_service.fuel_summary([], REAL_CALIBRATION) is None
+    # одной точки мало, чтобы говорить о расходе
+    assert telemetry_service.fuel_summary([(t0, 3000)], REAL_CALIBRATION) is None
+
+
+def test_smoothing_kills_single_spikes_not_the_trend():
+    """Медиана, а не среднее: одиночный выброс не должен сдвигать кривую."""
+    from decimal import Decimal as D
+    series = [D(100), D(100), D(500), D(100), D(100)]
+    assert telemetry_service.smooth_fuel(series)[2] == D(100)
+    # настоящий спуск сглаживание сохраняет
+    falling = [D(100), D(90), D(80), D(70), D(60)]
+    assert telemetry_service.smooth_fuel(falling)[0] > telemetry_service.smooth_fuel(falling)[-1]
+
+
+def test_calibration_text_is_parsed_forgivingly():
+    """Владелец переписывает пары руками — принимаем любой разумный разделитель."""
+    parse = telemetry_service.parse_fuel_calibration
+    assert parse("1 0\n73,10\n168;20") == [[1.0, 0.0], [73.0, 10.0], [168.0, 20.0]]
+    # порядок строк не важен, дубли схлопываются
+    assert parse("168 20\n1 0\n168 21") == [[1.0, 0.0], [168.0, 21.0]]
+    assert parse("") is None and parse(None) is None
+
+
+def test_calibration_errors_say_what_is_wrong():
+    """Молчаливое «не сохранилось» — худший ответ. Ошибка называет строку."""
+    parse = telemetry_service.parse_fuel_calibration
+    for bad, expect in (("1", "Строка 1"), ("абв где", "Строка 1"), ("1 0", "минимум две")):
+        try:
+            parse(bad)
+            raise AssertionError(f"«{bad}» приняли, а не должны были")
+        except ValueError as exc:
+            assert expect in str(exc), str(exc)
+
+
+def test_invalid_gps_ring_is_dashed_everywhere():
+    """«GPS недостоверный» рисуется пунктиром во ВСЕХ трёх местах.
+
+    Владелец 24.08: «в легенде написано пунктиром, а рисуется не пунктиром».
+    Пунктир был только у метки на карте: в строке списка и в карточке рамка
+    задавалась через box-shadow, а он пунктир не умеет. Теперь для этого
+    состояния переходим на border.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "function ringCss(" in src and "function applyRing(" in src
+    assert "stateKey === 'invalid'" in src
+    assert "px dashed ' + color" in src
+    # ни одно из трёх мест не задаёт кольцо в обход общей функции
+    assert "box-shadow: 0 0 0 2px ' + st.color" not in src, "строка списка мимо ringCss"
+    assert "boxShadow = '0 0 0 2.5px ' + st.color" not in src, "карточка мимо applyRing"
+    assert "ringCss(key, st.color, 2)" in src
+    assert "applyRing(document.getElementById('mon-card-tile')" in src
+    assert "applyRing(tile, key, st.color, 2.5" in src
+    # рамка не должна менять размер плитки
+    assert src.count("box-sizing: border-box; border: 0;") >= 2
+    # у метки внутреннее кольцо гасим, иначе два пунктира друг на друге
+    assert '.mon-pin[data-state="invalid"] .mon-pin__ring { border-color: transparent; }' in src
 
 
 def test_truck_artwork_has_dark_parts_to_protect():
@@ -244,6 +548,76 @@ def test_truck_artwork_has_dark_parts_to_protect():
     # колёса, рама, стёкла — заметная доля; кузов — тоже
     assert dark / opaque > 0.15, f"тёмных деталей всего {dark / opaque:.0%} — красить будет нечего"
     assert light / opaque > 0.30, f"светлого кузова всего {light / opaque:.0%}"
+
+
+# ------------------------------------------------------------------ геозоны
+def test_geofence_default_radius_is_one_named_constant():
+    """Базовый радиус — 400 м и живёт в одном месте.
+
+    Владелец 21.08 принял за баг то, что у всех зон на карте написано «400 м»:
+    пустое поле «Радиус» и означает базовые 400. Теперь подпись говорит,
+    задан радиус вручную или взят базовый.
+    """
+    from app.services.rc_service import RC_DEFAULT_RADIUS_M
+
+    assert RC_DEFAULT_RADIUS_M == 400
+    router = open("app/web/router.py", encoding="utf-8").read()
+    assert "rc_service.RC_DEFAULT_RADIUS_M" in router
+    assert '"radius_custom": rc.geofence_radius_m is not None' in router
+    screen = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "задан вручную" in screen
+    assert "базовый (поле «Радиус» у склада пустое)" in screen
+
+
+# ------------------------------------------------------------------ адрес
+def test_reverse_geocode_parsers():
+    from app.services import geocode_service as g
+
+    yandex = {"response": {"GeoObjectCollection": {"featureMember": [
+        {"GeoObject": {"metaDataProperty": {"GeocoderMetaData": {
+            "text": "Россия, Санкт-Петербург, Софийская улица, 60к7"}}}}]}}}
+    assert g.parse_yandex_reverse(yandex) == "Санкт-Петербург, Софийская улица, 60к7"
+    assert g.parse_nominatim_reverse(
+        {"display_name": "Россия, Санкт-Петербург, Софийская улица"}
+    ) == "Санкт-Петербург, Софийская улица"
+    # мусор и пустые ответы не должны падать
+    for bad in ({}, [], None, "текст", {"response": {}}):
+        assert g.parse_yandex_reverse(bad) is None
+    for bad in ([], None, "текст", {}):
+        assert g.parse_nominatim_reverse(bad) is None
+
+
+def test_reverse_geocode_endpoint_is_cached_and_throttled():
+    src = open("app/web/router.py", encoding="utf-8").read()
+    assert '@app.get("/api/geocode/reverse")' in src
+    # кэш по округлённым координатам: стоящая машина не дёргает сервис
+    assert "_GEOCODE_CACHE" in src and '{lat:.4f},{lon:.4f}' in src
+    # пауза между запросами — политика Nominatim
+    assert "_GEOCODE_MIN_GAP" in src
+    # координаты проверяются, чужие значения в внешний сервис не уходят
+    assert "Bad coordinates" in src
+
+
+# ------------------------------------------------------------------ напряжение
+def test_locations_api_falls_back_to_last_point_voltage():
+    """Если в «быстром слое» напряжения нет, берём его из свежей точки.
+
+    Так карточка показывает напряжение даже когда приёмник телеметрии ещё
+    не обновлён или состояние обновилось недостоверной точкой.
+    """
+    src = open("app/web/router.py", encoding="utf-8").read()
+    assert "missing_voltage" in src
+    assert "VehicleTelemetryPoint.voltage.is_not(None)" in src
+    screen = open("app/web/templates/map.html", encoding="utf-8").read()
+    # пустое напряжение подписано словами, а не голым прочерком
+    assert "нет данных" in screen
+
+
+def test_receiver_logs_what_it_actually_stored():
+    """В лог пишем сохранённое напряжение, а не только пришедшее в params."""
+    src = open("app/telemetry/egts_receiver.py", encoding="utf-8").read()
+    assert "stored_voltage=%s" in src
+    assert "last_good.voltage if last_good is not None" in src
 
 
 def test_monitoring_screen_has_track_camera_and_voltage():
