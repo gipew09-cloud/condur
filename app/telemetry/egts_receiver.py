@@ -242,6 +242,8 @@ async def _process_packet(
                         speed_kmh=last_good.speed_kmh,
                         ignition=last_good.ignition,
                         voltage=last_good.voltage,
+                        fuel_level_raw=last_good.fuel_level_raw,
+                        fuel_temp_c=last_good.fuel_temp_c,
                         battery_voltage=last_good.battery_voltage,
                         motion_status=motion_status,
                         motion_since_at=motion_since_at,
@@ -251,6 +253,7 @@ async def _process_packet(
                     update_cols = (
                         "terminal_id", "last_point_id", "last_seen_at", "latitude",
                         "longitude", "speed_kmh", "ignition", "voltage",
+                        "fuel_level_raw", "fuel_temp_c",
                         "battery_voltage", "motion_status",
                         "motion_since_at", "is_valid", "anomaly_reason",
                     )
@@ -267,10 +270,15 @@ async def _process_packet(
                         motion_since_at=motion_since_at,
                         is_valid=False,
                         anomaly_reason="нет достоверных координат (GPS)",
+                        # Уровень топлива от спутников не зависит — датчик в баке
+                        # меряет его и когда GPS врёт. Обновляем и здесь.
+                        fuel_level_raw=last_any.fuel_level_raw,
+                        fuel_temp_c=last_any.fuel_temp_c,
                     )
                     update_cols = (
                         "terminal_id", "last_seen_at", "ignition", "motion_status",
                         "motion_since_at", "is_valid", "anomaly_reason",
+                        "fuel_level_raw", "fuel_temp_c",
                     )
                 stmt = pg_insert(VehicleState).values(**values)
                 stmt = stmt.on_conflict_do_update(
@@ -408,6 +416,10 @@ async def _store_wialon_points(
             battery_voltage = telemetry_service.sensor_voltage(
                 wp.params.get("battery") if wp.params else None
             )
+            # Уровень топлива с ДУТ. Значение СЫРОЕ (единицы датчика): литры
+            # получатся только после тарировки бака, таблицу ждём от монтажника.
+            fuel_raw = telemetry_service.fuel_level_raw(wp.params)
+            fuel_temp = telemetry_service.fuel_temp_c(wp.params)
             point = VehicleTelemetryPoint(
                 raw_packet_id=raw.id,
                 owner_id=vehicle.owner_id,
@@ -422,6 +434,8 @@ async def _store_wialon_points(
                 mileage_km=mileage_km,
                 voltage=voltage,
                 battery_voltage=battery_voltage,
+                fuel_level_raw=fuel_raw,
+                fuel_temp_c=fuel_temp,
                 is_valid=good,
                 anomaly_reason=None if good else "нет достоверных координат (GPS)",
             )
@@ -462,6 +476,8 @@ async def _store_wialon_points(
                     speed_kmh=last_good.speed_kmh,
                     ignition=last_good.ignition,
                     voltage=last_good.voltage,
+                    fuel_level_raw=last_good.fuel_level_raw,
+                    fuel_temp_c=last_good.fuel_temp_c,
                     battery_voltage=last_good.battery_voltage,
                     motion_status=motion_status,
                     motion_since_at=motion_since_at,
@@ -471,6 +487,7 @@ async def _store_wialon_points(
                 update_cols = (
                     "terminal_id", "last_point_id", "last_seen_at", "latitude",
                     "longitude", "speed_kmh", "ignition", "voltage",
+                        "fuel_level_raw", "fuel_temp_c",
                     "battery_voltage", "motion_status",
                     "motion_since_at", "is_valid", "anomaly_reason",
                 )
@@ -484,10 +501,13 @@ async def _store_wialon_points(
                     motion_since_at=motion_since_at,
                     is_valid=False,
                     anomaly_reason="нет достоверных координат (GPS)",
+                    fuel_level_raw=last_any.fuel_level_raw,
+                    fuel_temp_c=last_any.fuel_temp_c,
                 )
                 update_cols = (
                     "terminal_id", "last_seen_at", "ignition", "motion_status",
                     "motion_since_at", "is_valid", "anomaly_reason",
+                    "fuel_level_raw", "fuel_temp_c",
                 )
             stmt = pg_insert(VehicleState).values(**values)
             stmt = stmt.on_conflict_do_update(
@@ -503,9 +523,12 @@ async def _store_wialon_points(
         await session.commit()
         if verbose:
             sample = points[0] if points else None
+            # stored_voltage — то, что реально легло в базу. В params напряжение
+            # видно всегда, и по логу нельзя было понять, сохранили мы его или
+            # выбросили. Теперь видно обе величины сразу.
             logger.info(
                 "Wialon packet terminal=%s vehicle=%s points=%s time=%s lat=%s lon=%s "
-                "speed=%s valid=%s ignition=%s params=%s",
+                "speed=%s valid=%s ignition=%s stored_voltage=%s stored_battery=%s params=%s",
                 terminal_id, vehicle.license_plate, len(points),
                 sample.observed_at if sample else "—",
                 sample.latitude if sample else "—",
@@ -513,6 +536,8 @@ async def _store_wialon_points(
                 sample.speed_kmh if sample else "—",
                 sample.is_valid if sample else "—",
                 sample.ignition if sample else "—",
+                last_good.voltage if last_good is not None else "—",
+                last_good.battery_voltage if last_good is not None else "—",
                 sample.params if sample else "—",
             )
 

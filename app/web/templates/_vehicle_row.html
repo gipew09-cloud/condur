@@ -13,6 +13,12 @@
     </label>
     <label>Норма л/100км <input type="text" name="fuel_norm_per_100km" value="{{ v.fuel_norm_per_100km or '' }}"></label>
     <label>Stavtrack ID <input type="text" name="stavtrack_object_id" value="{{ v.stavtrack_object_id or '' }}" placeholder="129772"></label>
+    <label>Объём бака, л <input type="text" name="tank_litres" value="{{ v.tank_litres or '' }}" inputmode="numeric" placeholder="600"></label>
+    <label style="min-width: 240px;">Тарировка бака
+      <textarea name="fuel_calibration" rows="4" placeholder="1 0&#10;73 10&#10;168 20"
+                title="Пары «значение датчика — литры», по одной в строке. Берётся из Ставтрэка: Автопарк → машина → Датчики → Топливо → Дополнительные, колонки X и Y.">{% if v.fuel_calibration %}{% for pair in v.fuel_calibration %}{{ pair[0] }} {{ pair[1] }}
+{% endfor %}{% endif %}</textarea>
+    </label>
     <label>Цвет на карте
       <select name="color">
         {% for code, label in VEHICLE_COLORS.items() %}

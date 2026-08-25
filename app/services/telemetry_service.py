@@ -86,6 +86,223 @@ def sensor_voltage(value) -> Decimal | None:
     return volts
 
 
+# Уровень топлива с ДУТ приходит в параметрах fuel1…fuel15, температура — в
+# fuelTemp1…fuelTemp15. По документации УМКа302: 1…7 — проводные каналы,
+# 8…15 — беспроводные BLE-датчики. Незанятый канал шлёт заглушку 65535
+# (температура — -128). У Т557ОС178 датчик сидит на канале 2 → fuel2/fuelTemp2,
+# но канал жёстко не зашиваем: на другой машине он может оказаться другим.
+FUEL_CHANNELS = tuple(range(1, 16))
+FUEL_RAW_MAX = Decimal("60000")     # выше — заведомо мусор, а не показание
+FUEL_TEMP_MIN = Decimal("-60")
+FUEL_TEMP_MAX = Decimal("120")
+
+
+def _clean_number(value):
+    """Число из параметров трекера без заглушек. None — датчика нет или мусор."""
+    if value is None:
+        return None
+    try:
+        num = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    if any(num == Decimal(str(sentinel)) for sentinel in SENSOR_SENTINELS):
+        return None
+    return num
+
+
+def fuel_level_raw(params: dict | None) -> Decimal | None:
+    """Сырой уровень топлива с первого живого канала ДУТ.
+
+    Возвращает единицы датчика, НЕ литры: перевод требует тарировочной таблицы
+    бака. Показывать это число владельцу нельзя — только хранить и считать по
+    нему разницу, когда таблица появится.
+    """
+    if not params:
+        return None
+    for i in FUEL_CHANNELS:
+        num = _clean_number(params.get(f"fuel{i}"))
+        if num is None:
+            continue
+        if num < 0 or num > FUEL_RAW_MAX:
+            continue
+        return num
+    return None
+
+
+def fuel_temp_c(params: dict | None) -> Decimal | None:
+    """Температура топлива с того же канала, где нашёлся уровень."""
+    if not params:
+        return None
+    for i in FUEL_CHANNELS:
+        if _clean_number(params.get(f"fuel{i}")) is None:
+            continue
+        num = _clean_number(params.get(f"fuelTemp{i}"))
+        if num is None:
+            return None
+        if num < FUEL_TEMP_MIN or num > FUEL_TEMP_MAX:
+            return None
+        return num
+    return None
+
+
+def parse_fuel_calibration(text: str | None) -> list[list[float]] | None:
+    """Тарировка из текста, как её видно в Ставтрэке: пары «X Y» по строкам.
+
+    Принимаем что угодно разумное: «417 50», «417,50», «417;50», с табами.
+    Возвращаем пары, отсортированные по X, без дублей. None — пусто.
+    Кидаем ValueError с понятным текстом, если строка не разбирается: владелец
+    вводит это руками, и «просто не сохранилось» — худший из возможных ответов.
+    """
+    if not text or not text.strip():
+        return None
+    pairs: dict[float, float] = {}
+    for num, raw_line in enumerate(text.strip().splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [p for p in line.replace(",", " ").replace(";", " ").replace("\t", " ").split(" ") if p]
+        if len(parts) != 2:
+            raise ValueError(f"Строка {num}: нужно два числа через пробел, а получилось «{line}»")
+        try:
+            x, y = float(parts[0]), float(parts[1])
+        except ValueError:
+            raise ValueError(f"Строка {num}: «{line}» — это не числа")
+        if x < 0 or y < 0:
+            raise ValueError(f"Строка {num}: отрицательные значения не бывают")
+        pairs[x] = y
+    if len(pairs) < 2:
+        raise ValueError("Нужно минимум две точки: пустой бак и полный")
+    return [[x, pairs[x]] for x in sorted(pairs)]
+
+
+def fuel_litres(raw, calibration) -> Decimal | None:
+    """Сырое значение датчика → литры по тарировочной таблице.
+
+    Между соседними точками считаем по прямой (так же, как Ставтрэк: у него
+    на каждый отрезок свои коэффициенты a и b, что и есть уравнение прямой).
+    За пределами таблицы НЕ экстраполируем — прижимаем к краю: датчик у дна и
+    у горловины врёт, выдумывать там литры нельзя.
+    """
+    if raw is None or not calibration:
+        return None
+    try:
+        points = sorted(
+            (Decimal(str(x)), Decimal(str(y)))
+            for x, y in calibration
+        )
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    if len(points) < 2:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+
+    if value <= points[0][0]:
+        return points[0][1]
+    if value >= points[-1][0]:
+        return points[-1][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= value <= x1:
+            if x1 == x0:
+                return y1
+            share = (value - x0) / (x1 - x0)
+            return (y0 + (y1 - y0) * share).quantize(Decimal("0.1"))
+    return None
+
+
+# Разбор кривой уровня топлива. Датчик шумит: на стоянке 25.08 показания
+# гуляли в пределах ~4 литров без всякого движения. Поэтому мелкие колебания
+# гасим, иначе «расход» набежит на пустом месте.
+FUEL_NOISE_L = Decimal("1.5")        # меньше — шум датчика, не расход
+FUEL_REFUEL_MIN_L = Decimal("15")    # рост больше — это заправка
+FUEL_DRAIN_MIN_L = Decimal("20")     # падение больше за короткое время — похоже на слив
+FUEL_DRAIN_MAX_MINUTES = 15
+
+
+def _median(values: list[Decimal]) -> Decimal:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def smooth_fuel(series: list[Decimal], window: int = 5) -> list[Decimal]:
+    """Сгладить кривую уровня скользящей медианой.
+
+    Медиана, а не среднее: одиночный выброс датчика (а они есть) среднее сдвинет,
+    медиану — нет.
+    """
+    if window < 3 or len(series) < window:
+        return list(series)
+    half = window // 2
+    out: list[Decimal] = []
+    for i in range(len(series)):
+        lo, hi = max(0, i - half), min(len(series), i + half + 1)
+        out.append(_median(series[lo:hi]))
+    return out
+
+
+def fuel_summary(points, calibration) -> dict | None:
+    """Расход, заправки и подозрения на слив за период.
+
+    points — [(observed_at, сырое значение датчика)] по возрастанию времени.
+
+    Считаем не «первый минус последний»: так заправка посреди периода съела бы
+    весь расход. Идём по кривой и складываем отдельно все спуски (расход) и все
+    подъёмы (заправки).
+    """
+    if not calibration or not points:
+        return None
+    rows = []
+    for observed_at, raw in points:
+        litres = fuel_litres(raw, calibration)
+        if litres is not None and observed_at is not None:
+            rows.append((_utc(observed_at), litres))
+    if len(rows) < 2:
+        return None
+    rows.sort(key=lambda r: r[0])
+    smoothed = smooth_fuel([litres for _, litres in rows])
+
+    spent = Decimal(0)
+    refuelled = Decimal(0)
+    refuels: list[dict] = []
+    drains: list[dict] = []
+    for i in range(1, len(smoothed)):
+        delta = smoothed[i] - smoothed[i - 1]
+        if abs(delta) < FUEL_NOISE_L:
+            continue
+        minutes = (rows[i][0] - rows[i - 1][0]).total_seconds() / 60
+        if delta > 0:
+            if delta >= FUEL_REFUEL_MIN_L:
+                refuelled += delta
+                refuels.append({
+                    "at": rows[i][0].isoformat(),
+                    "litres": float(delta.quantize(Decimal("0.1"))),
+                })
+            # мелкий подъём — плескание в баке на неровностях, не заправка
+            continue
+        drop = -delta
+        spent += drop
+        if drop >= FUEL_DRAIN_MIN_L and minutes <= FUEL_DRAIN_MAX_MINUTES:
+            drains.append({
+                "at": rows[i][0].isoformat(),
+                "litres": float(drop.quantize(Decimal("0.1"))),
+                "minutes": round(minutes),
+            })
+    return {
+        "start_l": float(smoothed[0].quantize(Decimal("0.1"))),
+        "end_l": float(smoothed[-1].quantize(Decimal("0.1"))),
+        "spent_l": float(spent.quantize(Decimal("0.1"))),
+        "refuelled_l": float(refuelled.quantize(Decimal("0.1"))),
+        "refuels": refuels,
+        "drains": drains,
+        "points": len(rows),
+    }
+
+
 # Массу выключили: бортсеть просела почти до нуля, а трекер ещё живёт на своей
 # батарее и продолжает слать точки. Снаружи это выглядит как обычная стоянка —
 # именно так теряются машины (PROBLEMS №21). Порог 5 В: ниже него бортсети
@@ -252,6 +469,15 @@ SEGMENT_MOVE_KMH = Decimal("3")   # порог «едет» — как в vehicl
 SEGMENT_MIN_SECONDS = 180         # короче — светофор/дрожание GPS, склеиваем
 SEGMENT_GAP_SECONDS = 15 * 60     # дыра между точками дольше — «нет сигнала»
 
+# Проверка ЗДРАВОГО СМЫСЛА для соседних точек трека.
+# Ставтрэк шлёт точки примерно раз в 30–40 секунд. Если между двумя точками
+# прошло сильно больше и машина при этом заметно сместилась — мы НЕ ЗНАЕМ,
+# каким путём она ехала: прямая линия между ними прошла бы «сквозь дома».
+# Такой участок рисуем пунктиром и в пробег не считаем.
+TRACK_LEG_GAP_SECONDS = 120       # больше двух минут между точками — пропуск
+TRACK_LEG_MAX_M = 400             # ближе 400 м прямая линия — безобидное упрощение
+TRACK_LEG_MAX_KMH = 150           # быстрее — физически невозможно, это скачок
+
 
 def _utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
@@ -330,6 +556,49 @@ def segment_movements(
     return smoothed
 
 
+def _leg_is_unknown(prev, cur) -> bool:
+    """Между двумя точками потерялся путь — соединять их прямой нельзя.
+
+    prev/cur — (observed_at, lat, lon, speed). Признаки:
+      * прошло больше TRACK_LEG_GAP_SECONDS И машина сместилась заметно —
+        точек за этот кусок не было, каким путём ехала, мы не знаем;
+      * либо получившаяся скорость физически невозможна (скачок GPS).
+    """
+    from app.services import rc_service
+
+    seconds = (cur[0] - prev[0]).total_seconds()
+    if seconds <= 0:
+        return False
+    metres = rc_service.haversine_m(prev[1], prev[2], cur[1], cur[2])
+    if metres <= TRACK_LEG_MAX_M:
+        return False
+    if seconds > TRACK_LEG_GAP_SECONDS:
+        return True
+    return (metres / seconds) * 3.6 > TRACK_LEG_MAX_KMH
+
+
+def _push_move(out: list[dict], coords: list[list[float]], start, end) -> None:
+    """Добавить кусок поездки, если в нём есть что рисовать."""
+    from app.services import rc_service
+
+    if len(coords) < 2:
+        return
+    dist = sum(
+        rc_service.haversine_m(
+            coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]
+        )
+        for i in range(1, len(coords))
+    )
+    out.append({
+        "kind": "move",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "points": coords,
+        "distance_km": round(dist / 1000, 2),
+        "duration_label": duration_label(start, end),
+    })
+
+
 def build_track_segments(
     points: list[tuple[datetime, float, float, Decimal | float | int | None]],
     *,
@@ -366,23 +635,29 @@ def build_track_segments(
     for seg in segments:
         inside = [p for p in pts if seg["start"] <= p[0] <= seg["end"]]
         if seg["kind"] == "move":
-            coords = [[lat, lon] for _, lat, lon, _ in inside]
-            if len(coords) < 2:
+            if len(inside) < 2:
                 continue
-            dist = sum(
-                rc_service.haversine_m(
-                    coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]
-                )
-                for i in range(1, len(coords))
-            )
-            out.append({
-                "kind": "move",
-                "start": seg["start"].isoformat(),
-                "end": seg["end"].isoformat(),
-                "points": coords,
-                "distance_km": round(dist / 1000, 2),
-                "duration_label": duration_label(seg["start"], seg["end"]),
-            })
+            # Режем поездку там, где между точками потерялся кусок пути.
+            # Иначе две далёкие точки соединяются прямой, и трек «едет через
+            # дома» — владелец увидел это 22.08 на реальных данных.
+            run: list[list[float]] = [[inside[0][1], inside[0][2]]]
+            run_start = inside[0][0]
+            for prev, cur in zip(inside, inside[1:]):
+                if _leg_is_unknown(prev, cur):
+                    _push_move(out, run, run_start, prev[0])
+                    out.append({
+                        "kind": "nosignal",
+                        "start": prev[0].isoformat(),
+                        "end": cur[0].isoformat(),
+                        "points": [[prev[1], prev[2]], [cur[1], cur[2]]],
+                        "duration_label": duration_label(prev[0], cur[0]),
+                        "reason": "no_points",
+                    })
+                    run = [[cur[1], cur[2]]]
+                    run_start = cur[0]
+                    continue
+                run.append([cur[1], cur[2]])
+            _push_move(out, run, run_start, inside[-1][0])
         elif seg["kind"] == "stop":
             # Стоянку показываем одной точкой — последней известной внутри
             # отрезка (там машина и осталась стоять).

@@ -34,7 +34,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   --mon-text-4: #8a93a3;
   --mon-accent: #1d4ed8;
   --mon-panel-shadow: 0 18px 44px -22px rgba(11, 31, 77, .4);
-  --mon-pin-bg: #fff;
+  --mon-pin-bg: #f4f7fb;
   --mon-pin-ink: #0e1b3a;
   /* размер метки: задаётся скриптом по зуму — на общем плане квадраты
      не должны закрывать пол-города */
@@ -137,6 +137,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-row.is-sel { background: var(--mon-sel); }
 .mon-tile {
   width: 48px; height: 38px; border-radius: 11px;
+  box-sizing: border-box; border: 0;
   background: var(--mon-fill);
   box-shadow: 0 0 0 2px #94a3b8;
   display: inline-flex; align-items: center; justify-content: center;
@@ -374,8 +375,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-pin__tile {
   position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
   width: calc(var(--pin) * 1.3); height: var(--pin);
+  box-sizing: border-box; border: 0;
   border-radius: calc(var(--pin) / 3.6); overflow: hidden;
-  background: var(--mon-pin-bg, #fff); color: var(--mon-pin-ink, #0e1b3a);
+  background: var(--mon-pin-bg, #f4f7fb); color: var(--mon-pin-ink, #0e1b3a);
   display: flex; align-items: center; justify-content: center;
   font-size: calc(var(--pin) * .46);
   box-shadow: 0 0 0 2.5px #94a3b8, 0 8px 20px -9px rgba(11, 31, 77, .6);
@@ -387,6 +389,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   display: block; width: 92%; height: 92%;
   background-repeat: no-repeat; background-position: center;
   background-size: contain;
+}
+/* Белая машина на белой плитке пропадала. Обводим её силуэт тонким контуром —
+   только белую, остальным цветам контраста хватает. */
+[class*="mon-truck--"][class$="-white"] {
+  filter: drop-shadow(0 0 1px rgba(11, 31, 77, .55))
+          drop-shadow(0 0 2px rgba(11, 31, 77, .28));
 }
 .mon-photo {
   display: block; width: 100%; height: 124px;
@@ -403,7 +411,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   animation: monBlink 2.4s ease-in-out infinite;
 }
 .mon-pin:not([data-state="moving"]) .mon-pin__ring { animation: none; opacity: 1; }
-.mon-pin[data-state="invalid"] .mon-pin__ring { border-style: dashed; }
+.mon-pin[data-state="invalid"] .mon-pin__ring { border-color: transparent; }
 .mon-pin__plate {
   position: absolute; left: 0; top: 0;
   margin-top: calc(var(--pin) * .62);
@@ -579,6 +587,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     </div>
     <i class="mon-photo mon-card__photo" id="mon-card-photo" aria-hidden="true"></i>
     <div class="mon-metrics" id="mon-card-metrics"></div>
+    <div class="mon-metric mon-metric--wide" id="mon-card-fuel" hidden></div>
     <div class="mon-card__alert" id="mon-card-alert" hidden></div>
     <div class="mon-card__foot">
       <button type="button" class="mon-btn" id="mon-card-track"><i class="ph ph-path"></i>Показать трек</button>
@@ -601,8 +610,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     <div class="mon-track__facts" id="mon-track-facts">Загружаю…</div>
     <div class="mon-track__legend">
       <span><i></i>ехал</span>
-      <span class="stop"><i></i>стоянка</span>
-      <span class="gap"><i></i>нет связи — линия не значит, что машина там ехала</span>
+      <span class="stop" title="Стоянка — скорость ниже 3 км/ч дольше 3 минут. Короче трёх минут (светофор, пробка) поездку не разрывает. Наведите на точку — покажет, с какого по какое время.">
+        <i></i>стоянка — стоял дольше 3 минут</span>
+      <span class="gap" title="Точек за этот участок не было: прошло больше 2 минут и машина заметно сместилась. Прямая линия здесь означала бы маршрут, которого мы не знаем, поэтому рисуем пунктир и в пробег не считаем.">
+        <i></i>путь неизвестен — точек не было, в пробег не считаем</span>
     </div>
   </div>
 
@@ -802,6 +813,28 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     return seen;
   }, []);
 
+  // Обводка плитки состояния. У «GPS недостоверный» она ПУНКТИРНАЯ — ровно так
+  // же, как нарисовано в легенде. box-shadow пунктир не умеет, поэтому для
+  // этого состояния переходим на border. Раньше пунктир был только у метки на
+  // карте, а в списке и в карточке рамка оставалась сплошной.
+  function ringCss(stateKey, color, width) {
+    return stateKey === 'invalid'
+      ? 'border: ' + width + 'px dashed ' + color + '; box-shadow: none;'
+      : 'border: 0; box-shadow: 0 0 0 ' + width + 'px ' + color + ';';
+  }
+
+  function applyRing(el, stateKey, color, width, extraShadow) {
+    if (!el) return;
+    if (stateKey === 'invalid') {
+      el.style.border = width + 'px dashed ' + color;
+      el.style.boxShadow = extraShadow || 'none';
+    } else {
+      el.style.border = '0';
+      el.style.boxShadow = '0 0 0 ' + width + 'px ' + color +
+        (extraShadow ? ', ' + extraShadow : '');
+    }
+  }
+
   function truckClass(v) {
     var color = TRUCK_TINTS[v.color] ? v.color : 'black';
     return artFor(v.type).key + '-' + color;
@@ -814,13 +847,26 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       controls: ['zoomControl', 'typeSelector', 'fullscreenControl']
     }, { suppressMapOpenBlock: true });
 
-    if (window.innerWidth > 768) {
+    var wideScreen = window.innerWidth > 768;
+    if (wideScreen) {
       try {
-        ymap.controls.get('zoomControl').options.set({ position: { right: 382, top: 90 } });
+        ymap.controls.get('zoomControl').options.set({ position: { right: 382, top: 126 } });
         ymap.controls.get('typeSelector').options.set({ position: { right: 382, top: 16 } });
         ymap.controls.get('fullscreenControl').options.set({ position: { right: 382, top: 52 } });
       } catch (e) { /* набор контролов мог смениться — не критично */ }
     }
+    // Кнопка «вся техника» — как в Ставтрэке: свернуть карту так, чтобы
+    // все машины поместились. Стоит в той же стопке, что зум и полный экран.
+    var fitAllBtn = new ymaps.control.Button({
+      data: { content: 'Вся техника', title: 'Показать все машины' },
+      options: {
+        selectOnClick: false,
+        maxWidth: [30, 150],
+        position: wideScreen ? { right: 382, top: 89 } : { right: 10, top: 52 }
+      }
+    });
+    fitAllBtn.events.add('click', function () { fitAllVehicles(true); });
+    ymap.controls.add(fitAllBtn);
     fit();
 
     // Метка машины. Класс состояния НЕ передаём через properties: любое
@@ -910,7 +956,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         return;
       }
       listEl.innerHTML = rows.map(function (v) {
-        var st = STATES[stateKey(v)];
+        var key = stateKey(v);
+        var st = STATES[key];
         var ms = ageMs(v);
         var speed = (v.motion_status === 'moving' || v.speed_kmh > 3)
           ? Math.round(v.speed_kmh || 0) + ' км/ч' : '—';
@@ -918,7 +965,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
                               : (v.zone ? st.label + ' · ' + v.zone : st.label);
         return '<button type="button" class="mon-row' + (v.vehicle_id === selected ? ' is-sel' : '') +
             '" data-vid="' + v.vehicle_id + '">' +
-          '<i class="mon-tile" style="box-shadow: 0 0 0 2px ' + st.color + ';">' +
+          '<i class="mon-tile" style="' + ringCss(key, st.color, 2) + '">' +
             '<i class="mon-tile__img mon-truck--' + truckClass(v) + '"></i></i>' +
           '<span class="mon-row__name"><b>' + esc(v.plate) + '</b>' +
             '<small>' + esc(sub) + '</small></span>' +
@@ -954,32 +1001,125 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     });
 
     // ================= карточка машины =================
-    // Адрес метки. Считает геокодер Яндекса — тот же, что рисует карту,
-    // отдельный ключ не нужен. Спрашиваем только для ОТКРЫТОЙ карточки и
-    // только когда машина реально сместилась (~10 м), иначе на каждом опросе
-    // уходил бы лишний запрос.
+    // Адрес метки. Спрашиваем СВОЙ эндпоинт: он кэширует ответы и сам решает,
+    // куда идти — в Геокодер Яндекса (если задан отдельный ключ) или в
+    // бесплатный Nominatim. Ключ карт для геокодера не подходит: у Яндекса
+    // это разные сервисы, поэтому прежний вызов ymaps.geocode молча падал и
+    // адрес навсегда оставался «определяю…».
+    // Спрашиваем только для ОТКРЫТОЙ карточки и только когда машина реально
+    // сместилась (~10 м), иначе запрос уходил бы на каждом опросе.
     var addrCache = {};
+    var ADDR_EMPTY = { key: null, text: null, failed: false };
     function addressFor(v) {
       var key = v.lat.toFixed(4) + ',' + v.lon.toFixed(4);
       var hit = addrCache[v.vehicle_id];
-      if (hit && hit.key === key) return hit.text;
-      if (hit && hit.pending === key) return hit.text;
-      addrCache[v.vehicle_id] = { key: null, pending: key, text: hit ? hit.text : null };
-      ymaps.geocode([v.lat, v.lon], { results: 1 }).then(function (res) {
-        var obj = res.geoObjects.get(0);
-        var text = obj ? String(obj.getAddressLine() || '').replace(/^Россия,\s*/, '') : null;
-        addrCache[v.vehicle_id] = { key: key, text: text || null };
-        if (selected === v.vehicle_id) renderCard();
-      }, function () {
-        // геокодер недоступен — покажем координаты, врать не будем
-        addrCache[v.vehicle_id] = { key: key, text: null };
-      });
-      return addrCache[v.vehicle_id].text;
+      if (hit && (hit.key === key || hit.pending === key)) return hit;
+      addrCache[v.vehicle_id] = {
+        key: null, pending: key, text: hit ? hit.text : null, failed: false
+      };
+      fetch('/api/geocode/reverse?lat=' + v.lat + '&lon=' + v.lon)
+        .then(function (r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+        .then(function (data) {
+          addrCache[v.vehicle_id] = {
+            key: key, text: data.address || null, failed: !data.address
+          };
+          if (selected === v.vehicle_id) renderCard();
+        })
+        .catch(function (err) {
+          console.warn('Адрес не определился:', err);
+          addrCache[v.vehicle_id] = { key: key, text: null, failed: true };
+          if (selected === v.vehicle_id) renderCard();
+        });
+      return addrCache[v.vehicle_id];
     }
 
     function metric(k, v, cls) {
       return '<div class="mon-metric"><div class="mon-metric__k">' + k + '</div>' +
              '<div class="mon-metric__v ' + (cls || '') + '">' + v + '</div></div>';
+    }
+
+    // Топливо. Датчик отдаёт СЫРОЕ значение — единицы самого ДУТ, не литры.
+    // Пересчитать в литры можно только по тарировочной таблице бака, её ещё нет.
+    // Показывать «3608» владельцу бессмысленно, врать про литры — тем более,
+    // поэтому пишем состояние датчика и чего не хватает.
+    function fuelMetrics(v) {
+      if (v.fuel_raw === null || v.fuel_raw === undefined) {
+        return '<div class="mon-metric mon-metric--wide"><div class="mon-metric__k">Топливо</div>' +
+          '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">' +
+          'датчик не подключён' +
+          '<small>на этой машине ДУТ не отвечает</small></div></div>';
+      }
+      var temp = (v.fuel_temp_c === null || v.fuel_temp_c === undefined)
+        ? '—' : v.fuel_temp_c.toFixed(0) + ' °C';
+      if (v.fuel_litres === null || v.fuel_litres === undefined) {
+        return metric('Топливо',
+            '<span title="Датчик отдаёт свои единицы. Литры появятся, когда в карточке ' +
+            'машины будет заполнена тарировка бака.">нужна тарировка</span>',
+            'is-warn is-text') +
+          metric('Температура топлива', temp, '');
+      }
+      var litres = Math.round(v.fuel_litres) + ' л';
+      // Процент от бака показываем, только если объём задан: иначе это выдумка.
+      if (v.tank_litres) {
+        var pct = Math.round(v.fuel_litres / v.tank_litres * 100);
+        litres += '<small style="color:var(--mon-text-3)"> · ' + pct + '% бака</small>';
+      }
+      return metric('Топливо', litres, '') +
+        metric('Температура топлива', temp, '');
+    }
+
+    // Расход за последние сутки. Считается на сервере по кривой уровня:
+    // отдельно спуски (расход) и отдельно подъёмы (заправки) — иначе заправка
+    // посреди периода съела бы весь расход.
+    var fuelCache = {};
+    function loadFuelSummary(v) {
+      var box = document.getElementById('mon-card-fuel');
+      if (!box) return;
+      if (v.fuel_litres === null || v.fuel_litres === undefined) { box.hidden = true; return; }
+      var hit = fuelCache[v.vehicle_id];
+      if (hit && Date.now() - hit.at < 120000) { paintFuelSummary(hit.data); return; }
+      box.hidden = false;
+      box.innerHTML = '<div class="mon-metric__k">Расход за сутки</div>' +
+        '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">считаю…</div>';
+      fetch('/api/vehicles/' + v.vehicle_id + '/fuel?hours=24')
+        .then(function (r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+        .then(function (data) {
+          fuelCache[v.vehicle_id] = { at: Date.now(), data: data };
+          if (selected === v.vehicle_id) paintFuelSummary(data);
+        })
+        .catch(function (err) {
+          console.warn('Расход не посчитался:', err);
+          if (selected === v.vehicle_id) {
+            box.innerHTML = '<div class="mon-metric__k">Расход за сутки</div>' +
+              '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">не посчитался</div>';
+          }
+        });
+    }
+
+    function paintFuelSummary(data) {
+      var box = document.getElementById('mon-card-fuel');
+      if (!box) return;
+      var sum = data && data.summary;
+      if (!sum) {
+        box.innerHTML = '<div class="mon-metric__k">Расход за сутки</div>' +
+          '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">данных мало</div>';
+        return;
+      }
+      var html = '<div class="mon-metric__k">Расход за сутки</div>' +
+        '<div class="mon-metric__v">' + Math.round(sum.spent_l) + ' л';
+      if (sum.refuelled_l > 0) {
+        html += '<small style="color:var(--mon-text-3)"> · заправлено ' +
+          Math.round(sum.refuelled_l) + ' л</small>';
+      }
+      html += '</div>';
+      if (sum.drains && sum.drains.length) {
+        // Резкое падение уровня за считанные минуты — это не расход.
+        html += '<div class="mon-card__alert" style="margin:10px 0 0">Резкое падение уровня: ' +
+          sum.drains.map(function (d) {
+            return Math.round(d.litres) + ' л за ' + d.minutes + ' мин';
+          }).join(', ') + '. Похоже на слив — стоит проверить.</div>';
+      }
+      box.innerHTML = html;
     }
 
     function shiftLabel(v) {
@@ -989,11 +1129,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     }
 
     function addressMetric(v) {
-      var addr = addressFor(v);
+      var st = addressFor(v) || ADDR_EMPTY;
       var zone = v.zone ? ' · ' + esc(v.zone) : '';
-      var body = addr
-        ? esc(addr) + zone
-        : '<span style="color:#8a93a3">определяю адрес…</span>' + zone;
+      var body;
+      if (st.text) body = esc(st.text) + zone;
+      else if (st.failed) body = '<span style="color:#8a93a3">адрес не определился</span>' + zone;
+      else body = '<span style="color:#8a93a3">определяю адрес…</span>' + zone;
       return '<div class="mon-metric mon-metric--wide"><div class="mon-metric__k">Адрес</div>' +
         '<div class="mon-metric__v">' + body +
         '<small>' + v.lat.toFixed(6) + ', ' + v.lon.toFixed(6) + '</small></div></div>';
@@ -1017,7 +1158,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
                : (key === 'stale' ? 'is-bad'
                : ((key === 'off' || key === 'unknown') ? '' : 'is-warn'));
 
-      document.getElementById('mon-card-tile').style.boxShadow = '0 0 0 2.5px ' + st.color;
+      applyRing(document.getElementById('mon-card-tile'), key, st.color, 2.5);
       document.getElementById('mon-card-icon').className = 'mon-tile__img mon-truck--' + truckClass(v);
       document.getElementById('mon-card-photo').className =
         'mon-photo mon-card__photo mon-truck--' + truckClass(v);
@@ -1037,19 +1178,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // Напряжение бортсети — то же значение, что показывает Ставтрэк.
       // Ниже 5 В — массу выключили, трекер живёт на своей батарее.
       var volt = (v.voltage === null || v.voltage === undefined)
-        ? '—' : v.voltage.toFixed(1) + ' В';
+        ? '<span title="Трекер не прислал напряжение — либо датчик не настроен, либо приёмник телеметрии ещё на старой версии">нет данных</span>'
+        : v.voltage.toFixed(1) + ' В';
       var voltCls = (v.voltage === null || v.voltage === undefined) ? ''
         : (v.power_cut ? 'is-bad' : (v.voltage >= 26 || (v.voltage >= 13 && v.voltage < 18) ? 'is-ok' : 'is-warn'));
 
       document.getElementById('mon-card-metrics').innerHTML =
         metric('Состояние', esc(st.label), tone + ' is-text is-wrap') +
         metric('Скорость', Math.round(v.speed_kmh || 0) + ' км/ч', key === 'moving' ? 'is-ok' : '') +
-        metric('Напряжение', volt, voltCls) +
+        metric('Напряжение', volt, voltCls + ((v.voltage === null || v.voltage === undefined) ? ' is-text' : '')) +
         metric('Свежесть GPS', '<span data-fresh="' + v.vehicle_id + '">' + freshText(ms) + '</span>',
                ms >= STALE_MS ? 'is-bad' : 'is-ok') +
         addressMetric(v) +
         metric('В этом состоянии', esc(v.motion_duration_label || '—'), '') +
-        metric('Смена и рейс', shiftLabel(v), (v.has_active_shift ? 'is-ok' : '') + ' is-text');
+        metric('Смена и рейс', shiftLabel(v), (v.has_active_shift ? 'is-ok' : '') + ' is-text') +
+        fuelMetrics(v);
 
       var alert = document.getElementById('mon-card-alert');
       var msgs = [];
@@ -1065,6 +1208,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       alert.innerHTML = msgs.map(esc).join('<br>');
 
       document.getElementById('mon-card-link').href = '/vehicles/' + v.vehicle_id + '/stats';
+      loadFuelSummary(v);
     }
 
     document.getElementById('mon-card-close').addEventListener('click', function () {
@@ -1124,7 +1268,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         el.classList.toggle('is-sel', v.vehicle_id === selected);
         el.classList.toggle('is-late', ms >= STALE_MS);
         var tile = el.querySelector('.mon-pin__tile');
-        if (tile) tile.style.boxShadow = '0 0 0 2.5px ' + st.color + ', 0 8px 20px -9px rgba(11,31,77,.6)';
+        applyRing(tile, key, st.color, 2.5, '0 8px 20px -9px rgba(11,31,77,.6)');
         var pic = el.querySelector('.mon-pin__img');
         if (pic) pic.className = 'mon-pin__img mon-truck--' + truckClass(v);
         var ring = el.querySelector('.mon-pin__ring');
@@ -1248,7 +1392,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           name: esc(rc.name),
           balloonContentBody: '<div class="mon-balloon"><h4>РЦ ' + esc(rc.name) + '</h4>' +
             '<div class="meta">' + esc(rc.address || '') + '</div>' +
-            '<div class="meta">Радиус геозоны ' + (rc.radius_m || 400) + ' м</div></div>'
+            '<div class="meta">Радиус геозоны ' + rc.radius_m + ' м · ' +
+            (rc.radius_custom
+              ? 'задан вручную'
+              : 'базовый (поле «Радиус» у склада пустое)') +
+            '</div></div>'
         }, {
           iconLayout: RcLayout,
           iconShape: { type: 'Circle', coordinates: [0, 0], radius: 9 },
@@ -1294,6 +1442,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // поэтому линия режется на куски с плавно меняющимся цветом.
     var TRACK_FAR = [147, 197, 253];   // #93c5fd — где машина была давно
     var TRACK_NEAR = [29, 78, 216];    // #1d4ed8 — где она сейчас
+    // «2026-08-22T10:15:00+00:00» → «10:15» в часовом поясе владельца
+    function hhmm(iso) {
+      if (!iso) return '—';
+      var d = new Date(iso);
+      return isNaN(d) ? '—' : d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+
     function trackColor(t) {
       var c = TRACK_FAR.map(function (v, i) {
         return Math.round(v + (TRACK_NEAR[i] - v) * t);
@@ -1343,7 +1498,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         } else if (seg.kind === 'nosignal') {
           // Пунктир: связи не было, что машина ехала ИМЕННО ТАК — мы не знаем.
           var gap = new ymaps.Polyline(seg.points, {
-            hintContent: 'Нет связи ' + seg.duration_label + ' — путь неизвестен'
+            hintContent: (seg.reason === 'no_points'
+              ? 'Точек не было ' + seg.duration_label
+              : 'Нет связи ' + seg.duration_label) +
+              ' (с ' + hhmm(seg.start) + ') — каким путём ехала, неизвестно'
           }, {
             strokeColor: '#c5362b', strokeWidth: 3, strokeStyle: 'dash', strokeOpacity: 0.9
           });
@@ -1353,7 +1511,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         } else if (seg.kind === 'stop') {
           var stop = new ymaps.Placemark([seg.lat, seg.lon], {
             label: seg.duration_label,
-            hintContent: 'Стоянка ' + seg.duration_label
+            // «во сколько встал и во сколько тронулся» — без этого подпись
+            // «7 ч 16 мин» непонятно к какому времени относится
+            hintContent: 'Стоянка ' + seg.duration_label +
+              ' · с ' + hhmm(seg.start) + ' до ' + hhmm(seg.end)
           }, {
             iconLayout: StopLayout,
             iconShape: { type: 'Circle', coordinates: [0, 0], radius: 8 },
@@ -1433,6 +1594,25 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       }
     }
 
+    // Свернуть карту так, чтобы поместились все машины. byUser=true —
+    // владелец нажал кнопку: тогда слежение за одной машиной отпускаем.
+    function fitAllVehicles(byUser) {
+      var pts = vehicles.map(function (v) { return [v.lat, v.lon]; });
+      if (!pts.length) return false;
+      if (byUser) setFollow(null);
+      if (pts.length === 1) {
+        ymap.setCenter(pts[0], Math.min(ymap.getZoom() || 13, 14), { duration: byUser ? 400 : 0 });
+        return true;
+      }
+      var wide = window.innerWidth > 768;
+      ymap.setBounds(ymaps.util.bounds.fromPoints(pts), {
+        checkZoomRange: true,
+        zoomMargin: wide ? [40, 380, 40, 380] : [40, 24, 330, 24],
+        duration: byUser ? 400 : 0
+      });
+      return true;
+    }
+
     // ================= счётчик свежести: один такт на всё =================
     setInterval(function () {
       vehicles.forEach(function (v) {
@@ -1469,20 +1649,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         renderCard();
 
         // Камеру подгоняем ОДИН раз — дальше не дёргаем, чтобы карта не
-        // прыгала, пока владелец её рассматривает.
-        if (!didFit) {
-          var pts = vehicles.map(function (v) { return [v.lat, v.lon]; })
-            .concat((data.drivers || []).map(function (d) { return [d.lat, d.lon]; }));
-          if (pts.length === 1) { didFit = true; ymap.setCenter(pts[0], 13); }
-          else if (pts.length > 1) {
-            didFit = true;
-            var wide = window.innerWidth > 768;
-            ymap.setBounds(ymaps.util.bounds.fromPoints(pts), {
-              checkZoomRange: true,
-              zoomMargin: wide ? [40, 380, 40, 380] : [40, 24, 330, 24]
-            });
-          }
-        }
+        // прыгала, пока владелец её рассматривает. Вручную — кнопкой
+        // «Вся техника».
+        if (!didFit && fitAllVehicles(false)) didFit = true;
       } catch (e) { console.error(e); }
     }
 

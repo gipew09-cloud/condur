@@ -123,7 +123,7 @@
           <label>Алиасы <input name="aliases" placeholder="Шушары; РЦ СПб"></label>
           <label>Широта <input name="latitude" inputmode="decimal" placeholder="59.8"></label>
           <label>Долгота <input name="longitude" inputmode="decimal" placeholder="30.3"></label>
-          <label>Радиус зоны, м <input name="geofence_radius_m" inputmode="numeric" placeholder="400 (пусто = 400)"></label>
+          <label>Радиус зоны, м <input name="geofence_radius_m" inputmode="numeric" placeholder="пусто = базовые 400 м"></label>
         </div>
         <button type="submit"><i class="ph ph-plus"></i> Добавить</button>
       </form>
@@ -182,7 +182,8 @@
         <input name="longitude" inputmode="decimal" value="{{ c.longitude or '' }}">
       </label>
       <label>Радиус, м
-        <input name="geofence_radius_m" inputmode="numeric" value="{{ c.geofence_radius_m or '' }}" placeholder="400" title="Зона «приехал»: расстояние от точки до машины. Большим складам ставьте больше (500–800).">
+        <input name="geofence_radius_m" inputmode="numeric" value="{{ c.geofence_radius_m or '' }}"
+               placeholder="400 — базовый" title="Зона «приехал»: расстояние от точки до машины. Большим складам ставьте больше (500–800). Очистите поле — вернётся базовый радиус 400 м.">
       </label>
       <div class="rc-row__actions">
         <button type="submit"><i class="ph ph-check"></i> Сохранить</button>

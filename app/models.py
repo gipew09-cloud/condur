@@ -180,6 +180,10 @@ class Vehicle(Base):
     # (автоподбор владелец отверг). NULL = чёрный, цвет исходного рисунка.
     color: Mapped[str | None] = mapped_column(String(16))
     fuel_norm_per_100km: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    # Тарировка бака: пары [сырое значение датчика, литры] по возрастанию.
+    # Берётся из настроек датчика в Ставтрэке (вкладка «Дополнительные»).
+    fuel_calibration: Mapped[list | None] = mapped_column(JSONB)
+    tank_litres: Mapped[int | None] = mapped_column(Integer)
     # ID объекта из Stavtrack. Его видно в окне ретрансляции рядом с машиной.
     stavtrack_object_id: Mapped[str | None] = mapped_column(String(64))
 
@@ -486,6 +490,10 @@ class VehicleTelemetryPoint(Base):
     ignition: Mapped[bool | None] = mapped_column(Boolean)
     mileage_km: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
     # напряжение бортсети (Ставтрэк: params['power'], EGTS: main_power_v)
+    # Уровень топлива с ДУТ. СЫРОЕ значение датчика, не литры: перевод в литры
+    # требует тарировочной таблицы бака (её пока нет, запросили у монтажника).
+    fuel_level_raw: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    fuel_temp_c: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
     voltage: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     # своя батарея трекера — по ней видно, что машину обесточили
     battery_voltage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
@@ -517,6 +525,10 @@ class VehicleState(Base):
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     speed_kmh: Mapped[Decimal | None] = mapped_column(Numeric(7, 2))
     ignition: Mapped[bool | None] = mapped_column(Boolean)
+    # Уровень топлива с ДУТ. СЫРОЕ значение датчика, не литры: перевод в литры
+    # требует тарировочной таблицы бака (её пока нет, запросили у монтажника).
+    fuel_level_raw: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    fuel_temp_c: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
     voltage: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     battery_voltage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     motion_status: Mapped[str | None] = mapped_column(String(20))

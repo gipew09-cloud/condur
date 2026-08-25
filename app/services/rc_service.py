@@ -99,12 +99,18 @@ def haversine_m(
     return 2 * 6_371_000 * asin(sqrt(a))
 
 
+# Базовый радиус геозоны РЦ. Пустое поле «Радиус» у склада означает именно
+# это значение — оно НЕ хранится в базе, поэтому на карте у всех зон без
+# своего радиуса подпись одинаковая. Владелец 21.08 принял это за баг.
+RC_DEFAULT_RADIUS_M = 400
+
+
 def nearest_center_within(
     lat: Decimal | float,
     lon: Decimal | float,
     centers: list,
     *,
-    default_radius_m: int = 400,
+    default_radius_m: int = RC_DEFAULT_RADIUS_M,
 ):
     """Ближайший РЦ, в чью геозону попадает точка (lat, lon). None — если
     точка не попала ни в одну зону. Радиус у РЦ может быть свой

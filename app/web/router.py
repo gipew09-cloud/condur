@@ -12,8 +12,10 @@
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import re
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -84,6 +86,31 @@ _TRIP_STATUS_LABELS = {
     "completed": "завершён",
     "cancelled": "отменён",
 }
+
+
+def _fuel_litres_or_none(raw, calibration) -> float | None:
+    """Литры по тарировке. None — нет датчика или нет таблицы."""
+    litres = telemetry_service.fuel_litres(raw, calibration)
+    return float(litres) if litres is not None else None
+
+
+def _apply_fuel_settings(vehicle, calibration_text: str, tank_text: str) -> None:
+    """Тарировка бака и его объём из формы. Ошибку показываем словами."""
+    try:
+        vehicle.fuel_calibration = telemetry_service.parse_fuel_calibration(calibration_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Тарировка: {exc}") from exc
+    tank = tank_text.strip()
+    if not tank:
+        vehicle.tank_litres = None
+    else:
+        try:
+            litres = int(tank)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Объём бака — целое число литров")
+        if not (10 <= litres <= 2000):
+            raise HTTPException(status_code=400, detail="Объём бака: от 10 до 2000 литров")
+        vehicle.tank_litres = litres
 
 
 def _vehicle_color(code: str | None) -> str:
@@ -1533,6 +1560,8 @@ async def create_vehicle(
     fuel_norm_per_100km: Annotated[str, Form()] = "",
     stavtrack_object_id: Annotated[str, Form()] = "",
     color: Annotated[str, Form()] = "black",
+    fuel_calibration: Annotated[str, Form()] = "",
+    tank_litres: Annotated[str, Form()] = "",
     osago_expires: Annotated[str, Form()] = "",
     inspection_expires: Annotated[str, Form()] = "",
     tacho_expires: Annotated[str, Form()] = "",
@@ -1596,6 +1625,7 @@ async def create_vehicle(
     target.brand = brand.strip() or None
     target.type = type
     target.color = _vehicle_color(color)
+    _apply_fuel_settings(target, fuel_calibration, tank_litres)
     target.stavtrack_object_id = stavtrack_id
     target.fuel_norm_per_100km = norm
     target.osago_expires = _parse_date(osago_expires)
@@ -1661,6 +1691,8 @@ async def vehicle_update(
     fuel_norm_per_100km: Annotated[str, Form()] = "",
     stavtrack_object_id: Annotated[str, Form()] = "",
     color: Annotated[str, Form()] = "black",
+    fuel_calibration: Annotated[str, Form()] = "",
+    tank_litres: Annotated[str, Form()] = "",
     osago_expires: Annotated[str, Form()] = "",
     inspection_expires: Annotated[str, Form()] = "",
     tacho_expires: Annotated[str, Form()] = "",
@@ -1678,6 +1710,7 @@ async def vehicle_update(
     vehicle.brand = brand.strip() or None
     vehicle.type = type
     vehicle.color = _vehicle_color(color)
+    _apply_fuel_settings(vehicle, fuel_calibration, tank_litres)
     stavtrack_id = _clean_stavtrack_object_id(stavtrack_object_id)
     if stavtrack_id:
         gps_existing = (
@@ -3984,7 +4017,10 @@ async def api_drivers_locations(
 ):
     """Для карты: ручные координаты водителей + GPS машин (Stavtrack)."""
     vehicles_res = await session.execute(
-        select(VehicleState, Vehicle.license_plate, Vehicle.type, Vehicle.color)
+        select(
+            VehicleState, Vehicle.license_plate, Vehicle.type, Vehicle.color,
+            Vehicle.fuel_calibration, Vehicle.tank_litres,
+        )
         .join(Vehicle, Vehicle.id == VehicleState.vehicle_id)
         .where(
             Vehicle.owner_id == owner.id,
@@ -4038,6 +4074,12 @@ async def api_drivers_locations(
             "is_valid": st.is_valid,
             # Напряжение бортсети — как в Ставтрэке. None = трекер не прислал.
             "voltage": float(st.voltage) if st.voltage is not None else None,
+            # Уровень топлива — СЫРОЕ значение датчика. В литры не переводим:
+            # без тарировочной таблицы бака это будет выдуманное число.
+            "fuel_raw": float(st.fuel_level_raw) if st.fuel_level_raw is not None else None,
+            "fuel_temp_c": float(st.fuel_temp_c) if st.fuel_temp_c is not None else None,
+            "fuel_litres": _fuel_litres_or_none(st.fuel_level_raw, _cal),
+            "tank_litres": _tank,
             "battery_voltage": (
                 float(st.battery_voltage) if st.battery_voltage is not None else None
             ),
@@ -4046,7 +4088,7 @@ async def api_drivers_locations(
             "updated_at": st.last_seen_at.isoformat() if st.last_seen_at else None,
             "updated_label": fmt_dt(st.last_seen_at, owner.timezone, "%d.%m, %H:%M"),
         }
-        for st, plate, vtype, vcolor in vehicles_res.all()
+        for st, plate, vtype, vcolor, _cal, _tank in vehicles_res.all()
         # «нулевой остров» (потеря GPS у трекера) на карту не выносим
         if abs(float(st.latitude)) > 0.001 or abs(float(st.longitude)) > 0.001
     ]
@@ -4059,6 +4101,41 @@ async def api_drivers_locations(
             DistributionCenter.longitude.is_not(None),
         )
     )
+    # Напряжение живёт в «быстром слое», но он обновляется только достоверными
+    # точками. Если там пусто (например, приёмник телеметрии ещё на старой
+    # версии), берём его из свежей точки истории — по одной строке на машину.
+    missing_voltage = [v["vehicle_id"] for v in vehicles if v["voltage"] is None]
+    if missing_voltage:
+        volt_rows = (
+            await session.execute(
+                select(
+                    VehicleTelemetryPoint.vehicle_id,
+                    VehicleTelemetryPoint.voltage,
+                    VehicleTelemetryPoint.battery_voltage,
+                )
+                .where(
+                    VehicleTelemetryPoint.vehicle_id.in_(missing_voltage),
+                    VehicleTelemetryPoint.voltage.is_not(None),
+                    VehicleTelemetryPoint.observed_at
+                    >= datetime.now(timezone.utc) - timedelta(hours=2),
+                )
+                .order_by(
+                    VehicleTelemetryPoint.vehicle_id,
+                    VehicleTelemetryPoint.observed_at.desc(),
+                )
+            )
+        ).all()
+        freshest: dict[int, tuple] = {}
+        for vehicle_id, volt, battery in volt_rows:
+            freshest.setdefault(vehicle_id, (volt, battery))
+        for v in vehicles:
+            hit = freshest.get(v["vehicle_id"])
+            if hit is None:
+                continue
+            v["voltage"] = float(hit[0]) if hit[0] is not None else None
+            v["battery_voltage"] = float(hit[1]) if hit[1] is not None else None
+            v["power_cut"] = telemetry_service.power_cut(hit[0], hit[1])
+
     rc_objects = list(rcs_res.scalars().all())
     rcs = [
         {
@@ -4067,7 +4144,10 @@ async def api_drivers_locations(
             "address": rc.address,
             "lat": float(rc.latitude),
             "lon": float(rc.longitude),
-            "radius_m": rc.geofence_radius_m or 400,
+            "radius_m": rc.geofence_radius_m or rc_service.RC_DEFAULT_RADIUS_M,
+            # свой радиус или общий по умолчанию — иначе непонятно, почему
+            # у всех зон одинаковая подпись
+            "radius_custom": rc.geofence_radius_m is not None,
         }
         for rc in rc_objects
     ]
@@ -4081,6 +4161,100 @@ async def api_drivers_locations(
         "drivers": await _driver_positions(session, owner.id),
         "vehicles": vehicles,
         "rcs": rcs,
+    }
+
+
+# =========================================================================
+# /api/geocode/reverse — координаты в адрес для карточки машины
+# =========================================================================
+# Кэш адресов: ключ — координаты, округлённые до ~10 метров. Стоящая машина
+# спрашивает адрес один раз, а не каждые 15 секунд. Держим до 500 записей.
+_GEOCODE_CACHE: dict[str, tuple[float, str | None]] = {}
+_GEOCODE_TTL_SECONDS = 6 * 3600
+_GEOCODE_LOCK = asyncio.Lock()
+_GEOCODE_LAST_CALL = 0.0
+_GEOCODE_MIN_GAP = 1.1   # политика Nominatim: не чаще одного запроса в секунду
+
+
+@app.get("/api/geocode/reverse")
+async def api_geocode_reverse(
+    owner: Annotated[Owner, Depends(current_owner)],
+    lat: float,
+    lon: float,
+):
+    """Адрес по координатам. Кэшируется, к внешнему сервису ходит редко."""
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        raise HTTPException(status_code=400, detail="Bad coordinates")
+    key = f"{lat:.4f},{lon:.4f}"
+    now = time.monotonic()
+    hit = _GEOCODE_CACHE.get(key)
+    if hit is not None and now - hit[0] < _GEOCODE_TTL_SECONDS:
+        return {"address": hit[1], "cached": True}
+
+    global _GEOCODE_LAST_CALL
+    async with _GEOCODE_LOCK:
+        # повторная проверка: пока ждали блокировку, адрес мог уже приехать
+        hit = _GEOCODE_CACHE.get(key)
+        if hit is not None and time.monotonic() - hit[0] < _GEOCODE_TTL_SECONDS:
+            return {"address": hit[1], "cached": True}
+        gap = time.monotonic() - _GEOCODE_LAST_CALL
+        if gap < _GEOCODE_MIN_GAP:
+            await asyncio.sleep(_GEOCODE_MIN_GAP - gap)
+        address = await geocode_service.reverse_geocode(
+            lat, lon, yandex_key=settings.yandex_geocoder_api_key
+        )
+        _GEOCODE_LAST_CALL = time.monotonic()
+        if len(_GEOCODE_CACHE) > 500:
+            _GEOCODE_CACHE.clear()
+        _GEOCODE_CACHE[key] = (time.monotonic(), address)
+    return {"address": address, "cached": False}
+
+
+# =========================================================================
+# /api/vehicles/{id}/fuel — расход, заправки и подозрения на слив за период
+# =========================================================================
+@app.get("/api/vehicles/{vehicle_id}/fuel")
+async def api_vehicle_fuel(
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    hours: int = 12,
+):
+    """Что было с топливом за период. Без тарировки не считаем — соврём."""
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not vehicle.fuel_calibration:
+        return {"vehicle_id": vehicle_id, "calibrated": False, "summary": None}
+
+    hours = max(1, min(int(hours or 12), 24 * 31))
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = (
+        await session.execute(
+            select(
+                VehicleTelemetryPoint.observed_at,
+                VehicleTelemetryPoint.fuel_level_raw,
+            )
+            .where(
+                VehicleTelemetryPoint.vehicle_id == vehicle_id,
+                VehicleTelemetryPoint.owner_id == owner.id,
+                VehicleTelemetryPoint.observed_at.is_not(None),
+                VehicleTelemetryPoint.observed_at >= since,
+                VehicleTelemetryPoint.fuel_level_raw.is_not(None),
+            )
+            .order_by(VehicleTelemetryPoint.observed_at)
+            .limit(20000)
+        )
+    ).all()
+    summary = telemetry_service.fuel_summary(
+        [(observed_at, raw) for observed_at, raw in rows], vehicle.fuel_calibration
+    )
+    return {
+        "vehicle_id": vehicle_id,
+        "calibrated": True,
+        "hours": hours,
+        "tank_litres": vehicle.tank_litres,
+        "summary": summary,
     }
 
 
