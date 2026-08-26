@@ -210,3 +210,18 @@ def test_qr_with_implausible_amount_is_rejected():
 def test_qr_survives_being_pasted_with_spaces_around():
     r = parse_fiscal_qr("  Чек: " + QR + "  ")
     assert r is not None and r.amount_rub == Decimal("2758.25")
+
+
+def test_startup_log_says_whether_ocr_is_alive():
+    """При старте в лог обязано попасть состояние OCR.
+
+    Логи Railway 26.08 показали ровно эту дыру: OCR молчал, и по логу было
+    не понять — он выключен, не тот провайдер, нет ключа или он сломался.
+    Теперь это видно первой же строкой, без отправки фото чека.
+    """
+    src = open("app/main.py", encoding="utf-8").read()
+    assert "OCR чека: провайдер=%s" in src
+    assert "_ocr.is_enabled()" in src
+    # сам ключ в лог не пишем — там только «есть»/«НЕТ»
+    assert "_get_provider_key()" in src
+    assert '"есть" if _ocr._get_provider_key() else "НЕТ"' in src
