@@ -767,6 +767,33 @@ def test_dark_map_theme_is_set_on_the_scheme_layer():
     assert 'data-state="invalid"><i></i>' in src
 
 
+def test_markers_stay_above_the_basemap():
+    """Слой меток обязан лежать НАД подложкой, иначе спутник её накрывает.
+
+    26.08 на боевом: включаешь «Спутник» — и машины исчезают с карты. Причина
+    не в спутнике, а в zIndex: по умолчанию любой слой в 3.0 идёт с 1500, ровно
+    как подложка, а при равенстве выигрывает добавленный позже.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "new YMapDefaultFeaturesLayer({ zIndex: 1800 })" in src
+    # и порядок потомков: после любой смены подложки слой меток поднимается
+    assert "function raiseFeatures()" in src
+    assert src.count("raiseFeatures()") >= 3
+
+
+def test_dark_theme_covers_panels_that_paint_background_by_number():
+    """Панели, у которых фон вписан числом, обязаны иметь тёмную пару.
+
+    Панель трека такую пару потеряла при переносе палитры на токены макета:
+    получилась белая плашка со светлым текстом — то есть пустое место.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert 'background: rgba(13, 21, 36, .88);\n  border-color: rgba(255, 255, 255, .09);' in src
+    # светлый акцент тёмной темы нельзя пускать под белый текст
+    assert '.mon[data-mode="dark"] .mon-follow,' in src
+    assert "background: #2563eb; color: #fff; border-color: #2563eb;" in src
+
+
 def test_map_says_out_loud_when_the_key_is_rejected():
     """Ключ не приняли — пишем это словами, а не показываем серый прямоугольник.
 
