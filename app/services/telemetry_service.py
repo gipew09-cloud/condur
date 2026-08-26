@@ -49,6 +49,25 @@ ENGINE_ON_THRESHOLD_24V = Decimal("27.0")   # генератор 24-В сети
 ENGINE_ON_THRESHOLD_12V = Decimal("13.2")   # генератор 12-В сети
 
 
+def engine_running_from_params(params: dict | None) -> bool | None:
+    """Работает ли двигатель, по любым признакам, что прислал терминал.
+
+    Порядок: сначала напряжение бортсети (генератор заряжает АКБ), потом
+    прямой флаг `generator` навтелекома. У нового терминала «СМАРТ» поля
+    `ignition` нет вообще, а `power` приходит нулём, когда выключена масса, —
+    без этого разбора машина навсегда застревала в «зажигание не передано».
+    """
+    if not params:
+        return None
+    by_voltage = engine_running_from_voltage(params.get("power"))
+    if by_voltage is not None:
+        return by_voltage
+    generator = params.get("generator")
+    if generator in (0, 1, True, False):
+        return bool(generator)
+    return None
+
+
 def engine_running_from_voltage(power_v) -> bool | None:
     """Двигатель заведён по напряжению бортсети. None — судить нельзя (нет
     достоверного напряжения): пусть решает сырой бит зажигания как раньше."""
@@ -130,18 +149,24 @@ def fuel_level_raw(params: dict | None) -> Decimal | None:
 
 
 def fuel_temp_c(params: dict | None) -> Decimal | None:
-    """Температура топлива с того же канала, где нашёлся уровень."""
+    """Температура топлива с того же канала, где нашёлся уровень.
+
+    Разные терминалы называют её по-разному: FleetGuide шлёт `fuelTemp2`,
+    навтелеком «СМАРТ» — `temp_rs485_1` (датчик висит на шине RS-485).
+    Поэтому пробуем оба имени, иначе на новой машине температура пропадает.
+    """
     if not params:
         return None
     for i in FUEL_CHANNELS:
         if _clean_number(params.get(f"fuel{i}")) is None:
             continue
-        num = _clean_number(params.get(f"fuelTemp{i}"))
-        if num is None:
-            return None
-        if num < FUEL_TEMP_MIN or num > FUEL_TEMP_MAX:
-            return None
-        return num
+        for key in (f"fuelTemp{i}", f"temp_rs485_{i}"):
+            num = _clean_number(params.get(key))
+            if num is None:
+                continue
+            if FUEL_TEMP_MIN <= num <= FUEL_TEMP_MAX:
+                return num
+        return None
     return None
 
 

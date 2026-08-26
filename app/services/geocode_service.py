@@ -94,14 +94,28 @@ async def geocode_many(
 # Обратное геокодирование: координаты → адрес (для метки на мониторинге)
 # =========================================================================
 def _short_address(full: str | None) -> str | None:
-    """Убрать из адреса страну и лишние хвосты — на карточке мало места."""
+    """Короткий адрес для карточки: дом, улица, район.
+
+    Nominatim отдаёт всё дерево целиком — «60 к6, Софийская улица, Обухово,
+    Александровский округ, Санкт-Петербург, Северо-Западный федеральный округ,
+    192249, Россия». В карточке это четыре строки ни о чём: владельцу нужны
+    первые составляющие, остальное он и так знает.
+    """
     if not full:
         return None
     text = str(full).strip()
     for prefix in ("Россия, ", "Russia, ", "Российская Федерация, "):
         if text.startswith(prefix):
             text = text[len(prefix):]
-    return text or None
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    # выкидываем страну, индекс и федеральный округ — они ничего не уточняют
+    parts = [
+        p for p in parts
+        if p not in ("Россия", "Russia")
+        and not p.isdigit()
+        and "федеральный округ" not in p.lower()
+    ]
+    return ", ".join(parts[:3]) or None
 
 
 def parse_yandex_reverse(payload: object) -> str | None:

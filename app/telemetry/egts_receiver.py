@@ -398,9 +398,7 @@ async def _store_wialon_points(
             # если оно пришло: сырой бит ign у части трекеров залипает на 1
             # (см. telemetry_service.engine_running_from_voltage). Нет
             # напряжения — доверяем биту, как раньше.
-            voltage_engine = telemetry_service.engine_running_from_voltage(
-                wp.params.get("power") if wp.params else None
-            )
+            voltage_engine = telemetry_service.engine_running_from_params(wp.params)
             ignition_value = voltage_engine if voltage_engine is not None else wp.ignition
             # Пробег прибора из Wialon (totalDistance, метры → км) — чтобы
             # сравнение «одометр vs GPS» работало и по wialon-машинам, а не

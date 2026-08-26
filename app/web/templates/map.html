@@ -221,8 +221,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   display: inline-flex; align-items: center; gap: 5px;
   padding: 4px 9px; border-radius: 7px; white-space: nowrap;
   font-size: 11.5px; font-weight: 800;
-  background: #e6f6ec; color: #147a3d;
+  background: var(--mon-fill); color: var(--mon-text-2);
 }
+.mon-chip[data-state="moving"]  { background: #e6f6ec; color: #147a3d; }
+.mon-chip[data-state="stale"]   { background: #fde8e6; color: #c5362b; }
+.mon-chip[data-state="idle"],
+.mon-chip[data-state="invalid"] { background: #fdf0d3; color: #9a5b00; }
 .mon-chip i { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
 .mon-card__close {
   width: 26px; height: 26px; min-height: 26px; flex: 0 0 26px;
@@ -486,6 +490,141 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   color: var(--mon-text-2); background: #fff; line-height: 1.5;
 }
 
+/* ---------- колонка кнопок над картой ----------
+   Свои кнопки, а не встроенные: встроенные в 3.0 живут внутри YMapControls
+   и умеют вставать только по углам, а справа у нас панель машины 350px.
+   Сдвиг right: 382px — ровно как было у контролов 2.1. */
+.mon-ctl {
+  position: absolute; z-index: 21; right: 382px; top: 16px;
+  display: grid; gap: 6px;
+}
+.mon-ctl button {
+  width: 36px; height: 36px; min-height: 36px; padding: 0;
+  border: 1px solid var(--mon-border); border-radius: 10px;
+  background: var(--mon-surface); color: var(--mon-text-2);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; cursor: pointer;
+  box-shadow: 0 6px 16px -10px rgba(11, 31, 77, .55);
+}
+.mon-ctl button:hover { background: var(--mon-sel); color: var(--mon-accent); }
+.mon-ctl button.is-on {
+  background: var(--mon-accent); color: #fff; border-color: var(--mon-accent);
+}
+
+/* ---------- подсказка на карте ----------
+   Балунов и хинтов в JS API 3.0 нет. Вместо них — карточка на обычной метке:
+   она сама едет вместе с картой, пересчитывать экранные координаты не нужно. */
+.mon-balloon-anchor { position: relative; width: 0; height: 0; }
+.mon-balloon-anchor[hidden] { display: none; }
+.mon-balloon-box {
+  position: absolute; left: 0; bottom: 16px; transform: translateX(-50%);
+  width: 236px; padding: 11px 13px;
+  border-radius: 12px; border: 1px solid var(--mon-border);
+  background: var(--mon-surface); color: var(--mon-text);
+  box-shadow: var(--mon-panel-shadow);
+  font-size: 12px; line-height: 1.35;
+}
+.mon-balloon-box__x {
+  position: absolute; right: 6px; top: 6px;
+  width: 20px; height: 20px; min-height: 20px; padding: 0;
+  border: 0; border-radius: 6px; cursor: pointer; box-shadow: none;
+  background: var(--mon-fill); color: var(--mon-text-3);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
+}
+
+/* Ключ не приняли — говорим об этом словами, а не серым прямоугольником.
+   2.1 отдавала библиотеку на любой ключ, поэтому опечатку искали три дня. */
+.mon-mapfail {
+  position: absolute; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: var(--mon-surface);
+}
+.mon-mapfail > div {
+  max-width: 560px; font-size: 13px; line-height: 1.5; color: var(--mon-text-2);
+}
+.mon-mapfail b { color: var(--mon-text); }
+.mon-mapfail code {
+  font-size: 12px; word-break: break-all;
+  background: var(--mon-fill); color: var(--mon-text);
+}
+
+/* во весь экран: высоту держит стиль, а не подгон по окну */
+.mon:fullscreen { height: 100% !important; border-top: 0; }
+
+/* =====================================================================
+   ТЁМНАЯ ТЕМА. Ради неё и затевался переезд на JS API 3.0 — в 2.1 тёмной
+   схемы карты нет вообще. Разметка и JS не меняются: здесь переменные и
+   те немногие места, где цвет когда-то был вписан числом.
+   ===================================================================== */
+.mon[data-mode="dark"] {
+  --mon-surface: #151a23;
+  --mon-border: #28303d;
+  --mon-divider: #222936;
+  --mon-fill: #1e2632;
+  --mon-sel: #1d2f52;
+  --mon-text: #e9eef7;
+  --mon-text-2: #a7b3c6;
+  --mon-text-3: #8c98ad;
+  --mon-text-4: #78849a;
+  --mon-accent: #6294ff;
+  --mon-panel-shadow: 0 18px 44px -20px rgba(0, 0, 0, .8);
+  --mon-pin-bg: #1e2632;
+  --mon-pin-ink: #e9eef7;
+  background: #0e1218;
+}
+.mon[data-mode="dark"] .mon-row:hover { background: #1b2331; }
+.mon[data-mode="dark"] .mon-panel--list::before { background: #333c4c; }
+.mon[data-mode="dark"] .mon-sort,
+.mon[data-mode="dark"] .mon-card__close,
+.mon[data-mode="dark"] .mon-track__x,
+.mon[data-mode="dark"] .mon-track__periods button,
+.mon[data-mode="dark"] .mon-tile { color: var(--mon-text-2); }
+.mon[data-mode="dark"] .mon-track__periods button.is-on { color: #fff; }
+.mon[data-mode="dark"] .mon-legend__row span { color: var(--mon-text-2); }
+.mon[data-mode="dark"] .mon-fresh { background: #14301f; color: #6ee7a3; }
+.mon[data-mode="dark"] .mon-fresh.is-warn { background: #35290f; color: #f0c274; }
+.mon[data-mode="dark"] .mon-fresh.is-bad  { background: #3a1a17; color: #f6a79c; }
+.mon[data-mode="dark"] .mon-chip[data-state="moving"]  { background: #14301f; color: #6ee7a3; }
+.mon[data-mode="dark"] .mon-chip[data-state="stale"]   { background: #3a1a17; color: #f6a79c; }
+.mon[data-mode="dark"] .mon-chip[data-state="idle"],
+.mon[data-mode="dark"] .mon-chip[data-state="invalid"] { background: #35290f; color: #f0c274; }
+.mon[data-mode="dark"] .mon-note {
+  background: #2b2313; border-color: #574726; color: #e2b45f;
+}
+.mon[data-mode="dark"] .mon-card__head,
+.mon[data-mode="dark"] .mon-photo,
+.mon[data-mode="dark"] .mon-card__photo { border-color: var(--mon-divider); }
+/* именно background-color: сокращённое background стёрло бы картинку
+   машины — она приходит классом перекраски .mon-truck--* */
+.mon[data-mode="dark"] .mon-card__photo { background-color: var(--mon-surface); }
+.mon[data-mode="dark"] .mon-metrics { background: var(--mon-divider); }
+.mon[data-mode="dark"] .mon-metric__v.is-ok   { color: #5ddc95; }
+.mon[data-mode="dark"] .mon-metric__v.is-warn { color: #f0b955; }
+.mon[data-mode="dark"] .mon-metric__v.is-bad  { color: #f58b7f; }
+.mon[data-mode="dark"] .mon-card__alert {
+  background: #2c1614; border-color: #5d2a25; color: #f3a49b;
+}
+.mon[data-mode="dark"] .mon-btn--ghost {
+  background: var(--mon-surface); color: var(--mon-text-2); border-color: var(--mon-border);
+}
+.mon[data-mode="dark"] .mon-btn--ghost:hover { background: var(--mon-sel); color: var(--mon-accent); }
+.mon[data-mode="dark"] .mon-track {
+  background: rgba(21, 26, 35, .96); border-color: #2e3f61;
+}
+.mon[data-mode="dark"] .mon-track__facts .bad { color: #f58b7f; }
+.mon[data-mode="dark"] .mon-track__legend .stop i { background: var(--mon-surface); }
+/* подписи поверх карты: на тёмных тайлах белая обводка превращалась в кляксу */
+.mon[data-mode="dark"] .mon-stop__label {
+  background: rgba(21, 26, 35, .94); border-color: #2e3846; color: var(--mon-text-2);
+}
+.mon[data-mode="dark"] .mon-rc__label {
+  color: #cfd8e6; text-shadow: 0 1px 0 #0e1218, 0 0 5px #0e1218;
+}
+.mon[data-mode="dark"] .mon-pin__age {
+  color: #f58b7f; text-shadow: 0 1px 0 #0e1218, 0 0 5px #0e1218;
+}
+.mon[data-mode="dark"] .mon-stop__dot { background: var(--mon-surface); }
+
 @media (prefers-reduced-motion: reduce) {
   .mon-pin__pulse { display: none; }
   .mon-pin__ring, .mon-tick { animation: none !important; }
@@ -517,7 +656,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   .mon-photo { height: 84px; }
   .mon-panel--card { max-height: 62%; }
   .mon-track__legend { display: none; }
-  .mon-track { left: 8px; right: 8px; top: 8px; transform: none; width: auto; }
+  /* правый край оставлен колонке кнопок карты (.mon-ctl) */
+  .mon-track { left: 8px; right: 54px; top: 8px; transform: none; width: auto; }
+  .mon-ctl { right: 8px; top: 8px; }
   .mon-follow { left: 12px; bottom: auto; top: 12px; }
   .mon-row { padding: 12px 14px; min-height: 44px; }
   /* 16px — иначе iOS зумит страницу при фокусе на поле */
@@ -634,7 +775,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
 {% block scripts %}
 {% if yandex_maps_api_key %}
-<script src="https://api-maps.yandex.ru/2.1/?apikey={{ yandex_maps_api_key }}&lang=ru_RU"></script>
+<script src="https://api-maps.yandex.ru/v3/?apikey={{ yandex_maps_api_key }}&lang=ru_RU"></script>
 <script>
 (function () {
   'use strict';
@@ -642,14 +783,24 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   var mon = document.getElementById('mon');
   if (!mon) return;
 
+  // Тему помним между заходами и ставим ДО создания карты, иначе панели
+  // моргнут светлым, пока грузятся тайлы.
+  var THEME_KEY = 'condur-map-theme';
+  var theme = 'light';
+  try { if (localStorage.getItem(THEME_KEY) === 'dark') theme = 'dark'; } catch (e) { /* приватный режим */ }
+  mon.dataset.mode = theme;
+
   var ymap = null;
   function fit() {
+    // в полном экране высоту держит CSS (:fullscreen), считать нечего
+    if (document.fullscreenElement === mon) return;
     var top = mon.getBoundingClientRect().top;
     var bn = document.querySelector('.bottom-nav');
     var bnH = (bn && getComputedStyle(bn).display !== 'none') ? bn.offsetHeight : 0;
     var h = Math.max(420, Math.round(window.innerHeight - top - bnH - 10));
     mon.style.height = h + 'px';
-    if (ymap) ymap.container.fitToViewport();
+    // подгонять карту под контейнер вручную, как в 2.1, больше не нужно:
+    // YMap сам следит за размером через ResizeObserver
   }
   fit();
   window.addEventListener('resize', fit);
@@ -721,6 +872,44 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     el.classList.remove('mon-tick');
     void el.offsetWidth;
     el.classList.add('mon-tick');
+  }
+
+  // ================= КООРДИНАТЫ: единственное место, где меняется порядок ====
+  // ⚠️ JS API 3.0 принимает [ДОЛГОТА, ШИРОТА] — наоборот к 2.1 и к тому, как
+  // их отдаёт наш сервер ([lat, lon]). Поэтому ниже нет ни одного «руками
+  // собранного» массива координат: всё идёт через LL / LLp / boundsOf.
+  // Пропущенное место = метка уезжает в Сомали, и это не видно в тестах.
+  function LL(lat, lon) { return [lon, lat]; }
+  function LLp(p) { return [p[1], p[0]]; }              // точка сервера [lat, lon]
+  function LLline(points) { return points.map(LLp); }   // ломаная сервера
+
+  // Прямоугольник для подгона камеры. В 3.0 это [верхний левый, нижний правый],
+  // то есть [[minLon, maxLat], [maxLon, minLat]] — не «юго-запад, северо-восток».
+  function boundsOf(points) {
+    var minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    points.forEach(function (p) {
+      if (p[0] < minLat) minLat = p[0];
+      if (p[0] > maxLat) maxLat = p[0];
+      if (p[1] < minLon) minLon = p[1];
+      if (p[1] > maxLon) maxLon = p[1];
+    });
+    // вырожденный прямоугольник (все точки в одном месте) карта не переварит
+    if (maxLat - minLat < 0.002) { minLat -= 0.001; maxLat += 0.001; }
+    if (maxLon - minLon < 0.004) { minLon -= 0.002; maxLon += 0.002; }
+    return [[minLon, maxLat], [maxLon, minLat]];
+  }
+
+  // Круг геозоны РЦ. В 3.0 круга нет — рисуем многоугольником; на масштабах
+  // города погрешность плоской формулы меньше толщины линии.
+  function circleRing(lat, lon, radiusM) {
+    var ring = [];
+    var dLat = radiusM / 111320;
+    var dLon = radiusM / (111320 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+    for (var i = 0; i <= 64; i++) {
+      var a = i / 64 * 2 * Math.PI;
+      ring.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]);
+    }
+    return ring;
   }
 
   // ================= перекраска рисунка машины =================
@@ -840,65 +1029,56 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     return artFor(v.type).key + '-' + color;
   }
 
-  ymaps.ready(function () {
-    ymap = new ymaps.Map('map', {
-      center: [59.93, 30.33],   // Петербург и область, пока нет ни одной точки
-      zoom: 9,
-      controls: ['zoomControl', 'typeSelector', 'fullscreenControl']
-    }, { suppressMapOpenBlock: true });
+  // ================= библиотека не пришла =================
+  // 2.1 отдавала скрипт на ЛЮБОЙ ключ и ругалась уже внутри карты, поэтому
+  // опечатку в ключе искали три дня. 3.0 проверяет ключ на выдаче — значит
+  // можно сказать прямо, что произошло, вместо пустого серого прямоугольника.
+  var mapRoot = document.getElementById('map');
+  function showMapFail(html) {
+    var box = document.createElement('div');
+    box.className = 'mon-mapfail';
+    box.innerHTML = '<div>' + html + '</div>';
+    mon.appendChild(box);
+  }
 
-    var wideScreen = window.innerWidth > 768;
-    if (wideScreen) {
-      try {
-        ymap.controls.get('zoomControl').options.set({ position: { right: 382, top: 126 } });
-        ymap.controls.get('typeSelector').options.set({ position: { right: 382, top: 16 } });
-        ymap.controls.get('fullscreenControl').options.set({ position: { right: 382, top: 52 } });
-      } catch (e) { /* набор контролов мог смениться — не критично */ }
-    }
-    // Кнопка «вся техника» — как в Ставтрэке: свернуть карту так, чтобы
-    // все машины поместились. Стоит в той же стопке, что зум и полный экран.
-    var fitAllBtn = new ymaps.control.Button({
-      data: { content: 'Вся техника', title: 'Показать все машины' },
-      options: {
-        selectOnClick: false,
-        maxWidth: [30, 150],
-        position: wideScreen ? { right: 382, top: 89 } : { right: 10, top: 52 }
-      }
+  if (typeof ymaps3 === 'undefined') {
+    showMapFail(
+      '<b>Карта не загрузилась.</b><br>' +
+      'Яндекс не отдал библиотеку JS API 3.0 по ключу из <code>YANDEX_MAPS_API_KEY</code>. ' +
+      'Обычно это опечатка в ключе или незаполненное поле Referer в кабинете разработчика.' +
+      '<br><br>Проверить ключ можно, открыв в браузере ' +
+      '<code>https://api-maps.yandex.ru/v3/?apikey=КЛЮЧ&amp;lang=ru_RU</code>: ' +
+      'при рабочем ключе скачается скрипт, при неверном придёт «Invalid api key».');
+    return;
+  }
+
+  ymaps3.ready.then(start).catch(function (err) {
+    console.error('Карта не инициализировалась:', err);
+    showMapFail('<b>Карта не запустилась.</b><br>' +
+      'Библиотека загрузилась, но карта не создалась. Подробности — в консоли браузера.');
+  });
+
+  function start() {
+    var YMap = ymaps3.YMap;
+    var YMapDefaultSchemeLayer = ymaps3.YMapDefaultSchemeLayer;
+    var YMapDefaultFeaturesLayer = ymaps3.YMapDefaultFeaturesLayer;
+    var YMapMarker = ymaps3.YMapMarker;
+    var YMapFeature = ymaps3.YMapFeature;
+    var YMapListener = ymaps3.YMapListener;
+    // спутник в разных сборках 3.0 бывает не собран — кнопку рисуем по факту
+    var YMapDefaultSatelliteLayer = ymaps3.YMapDefaultSatelliteLayer || null;
+
+    ymap = new YMap(mapRoot, {
+      location: { center: LL(59.93, 30.33), zoom: 9 },  // Петербург и область
+      theme: theme,
+      // вращение и наклон мышью в 2.1 не включались — не пугаем ими владельца
+      behaviors: ['drag', 'pinchZoom', 'scrollZoom', 'dblClick', 'oneFingerZoom']
     });
-    fitAllBtn.events.add('click', function () { fitAllVehicles(true); });
-    ymap.controls.add(fitAllBtn);
+    var schemeLayer = new YMapDefaultSchemeLayer({});
+    var satelliteLayer = null;
+    ymap.addChild(schemeLayer);
+    ymap.addChild(new YMapDefaultFeaturesLayer({}));
     fit();
-
-    // Метка машины. Класс состояния НЕ передаём через properties: любое
-    // properties.set пересобирает разметку, и переход цвета/пульс срываются.
-    // Поэтому после создания красим метку напрямую по DOM.
-    var PinLayout = ymaps.templateLayoutFactory.createClass(
-      '<div class="mon-pin" data-vid="$[properties.vid]">' +
-        '<i class="mon-pin__pulse"></i>' +
-        '<span class="mon-pin__tile"><i class="mon-pin__img"></i><i class="mon-pin__ring"></i></span>' +
-        '<b class="mon-pin__plate">$[properties.plate]</b>' +
-        '<i class="mon-pin__age"></i>' +
-      '</div>'
-    );
-    var RcLayout = ymaps.templateLayoutFactory.createClass(
-      '<div class="mon-rc"><i class="mon-rc__dot"></i><b class="mon-rc__label">$[properties.name]</b></div>'
-    );
-    var DriverLayout = ymaps.templateLayoutFactory.createClass(
-      '<div class="mon-driver $[properties.cls]">$[properties.initials]</div>'
-    );
-    var StopLayout = ymaps.templateLayoutFactory.createClass(
-      '<div class="mon-stop"><i class="mon-stop__dot"></i><b class="mon-stop__label">$[properties.label]</b></div>'
-    );
-
-    var vehicles = [];               // последние данные с сервера
-    var pins = {};                   // vehicle_id → { pm, anim, lat, lon }
-    var drivers = {};
-    var rcsAdded = false;
-    var selected = null;             // vehicle_id выбранной машины
-    var follow = null;               // за какой машиной едет камера
-    var sortMode = 'state';
-    var query = '';
-    var didFit = false;
 
     var listEl = document.getElementById('mon-list');
     var countEl = document.getElementById('mon-count');
@@ -907,10 +1087,72 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var followEl = document.getElementById('mon-follow');
     var trackEl = document.getElementById('mon-track');
 
+    // ================= поля вокруг карты =================
+    // В 2.1 у каждого подгона камеры был свой zoomMargin. В 3.0 поле задаётся
+    // карте один раз и учитывается ЛЮБЫМ подгоном — заодно и центрирование
+    // на машине перестаёт прятать её под панелью.
+    function applyMargin() {
+      var wide = window.innerWidth > 768;
+      var top = trackEl.hidden ? 24 : 120;
+      ymap.setMargin(wide ? [top, 366, 24, 372] : [top, 16, 330, 16]);
+    }
+    applyMargin();
+    window.addEventListener('resize', applyMargin);
+
+    function moveCameraTo(pointsLatLon, duration) {
+      if (!pointsLatLon.length) return false;
+      applyMargin();
+      if (pointsLatLon.length === 1) {
+        ymap.setLocation({
+          center: LLp(pointsLatLon[0]),
+          zoom: Math.min(ymap.zoom || 13, 14),
+          duration: duration || 0
+        });
+        return true;
+      }
+      ymap.setLocation({ bounds: boundsOf(pointsLatLon), duration: duration || 0 });
+      return true;
+    }
+
+    var vehicles = [];               // последние данные с сервера
+    var pins = {};                   // vehicle_id → { marker, el, anim, lat, lon }
+    var drivers = {};
+    var rcsAdded = false;
+    var selected = null;             // vehicle_id выбранной машины
+    var follow = null;               // за какой машиной едет камера
+    var sortMode = 'state';
+    var query = '';
+    var didFit = false;
+
     function byId(id) {
       for (var i = 0; i < vehicles.length; i++) if (vehicles[i].vehicle_id === id) return vehicles[i];
       return null;
     }
+
+    // ================= всплывающая подсказка =================
+    // Балунов и хинтов в 3.0 нет — вместо них своя карточка на обычной метке:
+    // она сама едет вместе с картой, экранных пересчётов не нужно.
+    var balloonAnchor = document.createElement('div');
+    balloonAnchor.className = 'mon-balloon-anchor';
+    balloonAnchor.hidden = true;
+    var balloonBox = document.createElement('div');
+    balloonBox.className = 'mon-balloon-box';
+    balloonAnchor.appendChild(balloonBox);
+    balloonBox.addEventListener('click', function (e) {
+      if (e.target.closest('.mon-balloon-box__x')) hideBalloon();
+    });
+    var balloonMarker = new YMapMarker(
+      { coordinates: LL(59.93, 30.33), zIndex: 2000, blockBehaviors: true }, balloonAnchor
+    );
+    ymap.addChild(balloonMarker);
+
+    function showBalloon(lngLat, html) {
+      balloonBox.innerHTML =
+        '<button type="button" class="mon-balloon-box__x" aria-label="Закрыть"><i class="ph ph-x"></i></button>' + html;
+      balloonMarker.update({ coordinates: lngLat });
+      balloonAnchor.hidden = false;
+    }
+    function hideBalloon() { balloonAnchor.hidden = true; }
 
     // ================= размер метки по зуму =================
     // На общем плане города квадрат 46px закрывает несколько кварталов —
@@ -922,13 +1164,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (z <= 16) return 38;
       return 44;
     }
-    function applyPinSize() {
-      mon.style.setProperty('--pin', pinSizeForZoom(ymap.getZoom()) + 'px');
+    var pinSize = 0;
+    function applyPinSize(z) {
+      var size = pinSizeForZoom(z === undefined ? ymap.zoom : z);
+      if (size === pinSize) return;   // onUpdate прилетает на каждый кадр движения
+      pinSize = size;
+      mon.style.setProperty('--pin', size + 'px');
     }
     applyPinSize();
-    ymap.events.add('boundschange', function (e) {
-      if (e.get('newZoom') !== e.get('oldZoom')) applyPinSize();
-    });
+    ymap.addChild(new YMapListener({
+      onUpdate: function (o) { if (o && o.location) applyPinSize(o.location.zoom); }
+    }));
 
     // ================= список машин =================
     function visibleVehicles() {
@@ -1004,8 +1250,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // Адрес метки. Спрашиваем СВОЙ эндпоинт: он кэширует ответы и сам решает,
     // куда идти — в Геокодер Яндекса (если задан отдельный ключ) или в
     // бесплатный Nominatim. Ключ карт для геокодера не подходит: у Яндекса
-    // это разные сервисы, поэтому прежний вызов ymaps.geocode молча падал и
-    // адрес навсегда оставался «определяю…».
+    // это разные сервисы, поэтому прежний вызов через библиотеку карт молча
+    // падал и адрес навсегда оставался «определяю…».
     // Спрашиваем только для ОТКРЫТОЙ карточки и только когда машина реально
     // сместилась (~10 м), иначе запрос уходил бы на каждом опросе.
     var addrCache = {};
@@ -1167,13 +1413,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         [v.type_label && v.type_label !== '—' ? v.type_label : null, v.driver || 'водитель не в смене']
           .filter(Boolean).join(' · ');
 
+      // Цвета чипа живут в стилях (и переключаются вместе с тёмной темой),
+      // здесь только состояние.
       var chip = document.getElementById('mon-card-chip');
       chip.querySelector('span').textContent = st.short;
       chip.title = st.label;
-      chip.style.background = key === 'moving' ? '#e6f6ec'
-        : (key === 'stale' ? '#fde8e6' : ((key === 'idle' || key === 'invalid') ? '#fdf0d3' : '#f1f4f9'));
-      chip.style.color = key === 'moving' ? '#147a3d'
-        : (key === 'stale' ? '#c5362b' : ((key === 'idle' || key === 'invalid') ? '#9a5b00' : '#5c6884'));
+      chip.dataset.state = key;
 
       // Напряжение бортсети — то же значение, что показывает Ставтрэк.
       // Ниже 5 В — массу выключили, трекер живёт на своей батарее.
@@ -1226,7 +1471,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     document.getElementById('mon-follow-off').addEventListener('click', function () { setFollow(null); });
     // Владелец сам потащил карту — перестаём её у него отбирать.
     ['mousedown', 'touchstart', 'wheel'].forEach(function (evt) {
-      document.getElementById('map').addEventListener(evt, function () {
+      mapRoot.addEventListener(evt, function () {
         if (follow !== null) setFollow(null);
       }, { passive: true });
     });
@@ -1244,8 +1489,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (selected !== null && moveCamera) {
         var v = byId(selected);
         if (v) {
-          ymap.setCenter([v.lat, v.lon], Math.max(ymap.getZoom(), 14), {
-            duration: 500, checkZoomRange: true
+          applyMargin();
+          ymap.setLocation({
+            center: LL(v.lat, v.lon),
+            zoom: Math.max(ymap.zoom, 14),
+            duration: 500
           });
           // Клик по машине = «веди за ней камеру», как просил владелец.
           setFollow(selected);
@@ -1255,7 +1503,24 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     }
 
     // ================= метки =================
-    function pinEl(id) { return document.querySelector('#map .mon-pin[data-vid="' + id + '"]'); }
+    // В 3.0 нет фабрики шаблонов: элемент метки — обычный DOM, который мы
+    // делаем сами и держим за ссылку. Раньше метку приходилось искать по
+    // селектору в чужой вёрстке карты.
+    function pinEl(id) { return pins[id] ? pins[id].el : null; }
+
+    function makePinEl(v) {
+      var el = document.createElement('div');
+      el.className = 'mon-pin';
+      el.dataset.vid = v.vehicle_id;
+      el.innerHTML =
+        '<i class="mon-pin__pulse"></i>' +
+        '<span class="mon-pin__tile"><i class="mon-pin__img"></i><i class="mon-pin__ring"></i></span>' +
+        '<b class="mon-pin__plate"></b>' +
+        '<i class="mon-pin__age"></i>';
+      el.querySelector('.mon-pin__plate').textContent = v.plate || '';
+      el.addEventListener('click', function () { select(v.vehicle_id, true); });
+      return el;
+    }
 
     function paintPins() {
       vehicles.forEach(function (v) {
@@ -1288,8 +1553,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         Math.abs(fromLat - lat) + Math.abs(fromLon - lon) > 0.5;
       if (jump) {
         entry.lat = lat; entry.lon = lon;
-        entry.pm.geometry.setCoordinates([lat, lon]);
-        if (follow === vid) ymap.setCenter([lat, lon]);
+        entry.marker.update({ coordinates: LL(lat, lon) });
+        if (follow === vid) ymap.setLocation({ center: LL(lat, lon) });
         return;
       }
       var t0 = performance.now(), dur = 1200;
@@ -1298,8 +1563,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var e = 1 - Math.pow(1 - k, 3);
         entry.lat = fromLat + (lat - fromLat) * e;
         entry.lon = fromLon + (lon - fromLon) * e;
-        entry.pm.geometry.setCoordinates([entry.lat, entry.lon]);
-        if (follow === vid) ymap.setCenter([entry.lat, entry.lon]);
+        entry.marker.update({ coordinates: LL(entry.lat, entry.lon) });
+        if (follow === vid) ymap.setLocation({ center: LL(entry.lat, entry.lon) });
         entry.anim = (k < 1) ? requestAnimationFrame(step) : null;
       })(t0);
     }
@@ -1310,22 +1575,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         seen[v.vehicle_id] = true;
         var entry = pins[v.vehicle_id];
         if (!entry) {
-          var pm = new ymaps.Placemark([v.lat, v.lon], {
-            vid: v.vehicle_id,
-            plate: esc(v.plate),
-            icon: iconFor(v.type)
-          }, {
-            iconLayout: PinLayout,
-            iconShape: { type: 'Rectangle', coordinates: [[-30, -24], [30, 24]] },
-            hasBalloon: false,
-            hasHint: false,
-            zIndex: 700
-          });
-          (function (vid) {
-            pm.events.add('click', function () { select(vid, true); });
-          })(v.vehicle_id);
-          ymap.geoObjects.add(pm);
-          entry = pins[v.vehicle_id] = { pm: pm, lat: v.lat, lon: v.lon, anim: null };
+          var el = makePinEl(v);
+          var marker = new YMapMarker({ coordinates: LL(v.lat, v.lon), zIndex: 700 }, el);
+          ymap.addChild(marker);
+          entry = pins[v.vehicle_id] = { marker: marker, el: el, lat: v.lat, lon: v.lon, anim: null };
         } else {
           moveTo(entry, v.lat, v.lon, v.vehicle_id);
         }
@@ -1333,10 +1586,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       Object.keys(pins).forEach(function (id) {
         if (seen[id]) return;
         if (pins[id].anim) cancelAnimationFrame(pins[id].anim);
-        ymap.geoObjects.remove(pins[id].pm);
+        ymap.removeChild(pins[id].marker);
         delete pins[id];
       });
-      requestAnimationFrame(paintPins);
+      paintPins();
     }
 
     function syncDrivers(list) {
@@ -1353,25 +1606,23 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           (d.phone ? '<div class="meta">' + esc(d.phone) + '</div>' : '') +
           '<div class="meta">геопозиция ' + esc(ago) + '</div></div>';
         if (drivers[key]) {
-          drivers[key].geometry.setCoordinates([d.lat, d.lon]);
-          drivers[key].properties.set({ balloonContentBody: body });
+          drivers[key].body = body;
+          drivers[key].el.className = 'mon-driver' + (d.active_shift ? ' is-on' : '');
+          drivers[key].marker.update({ coordinates: LL(d.lat, d.lon) });
           return;
         }
-        var pm = new ymaps.Placemark([d.lat, d.lon], {
-          initials: esc(d.initials || '—'),
-          cls: d.active_shift ? 'is-on' : '',
-          balloonContentBody: body
-        }, {
-          iconLayout: DriverLayout,
-          iconShape: { type: 'Circle', coordinates: [0, 0], radius: 18 },
-          balloonPanelMaxMapArea: 0
-        });
-        ymap.geoObjects.add(pm);
-        drivers[key] = pm;
+        var el = document.createElement('div');
+        el.className = 'mon-driver' + (d.active_shift ? ' is-on' : '');
+        el.textContent = d.initials || '—';
+        var entry = { el: el, body: body, marker: null };
+        el.addEventListener('click', function () { showBalloon(LL(d.lat, d.lon), entry.body); });
+        entry.marker = new YMapMarker({ coordinates: LL(d.lat, d.lon), zIndex: 300 }, el);
+        ymap.addChild(entry.marker);
+        drivers[key] = entry;
       });
       Object.keys(drivers).forEach(function (key) {
         if (seen[key]) return;
-        ymap.geoObjects.remove(drivers[key]);
+        ymap.removeChild(drivers[key].marker);
         delete drivers[key];
       });
     }
@@ -1381,37 +1632,43 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       rcsAdded = true;
       list.forEach(function (rc) {
         // Круг геозоны — владелец видит, где именно машина считается «на РЦ».
-        ymap.geoObjects.add(new ymaps.Circle([[rc.lat, rc.lon], rc.radius_m || 400], {}, {
-          fillColor: 'rgba(29,78,216,.06)',
-          strokeColor: 'rgba(29,78,216,.30)',
-          strokeWidth: 1,
-          strokeStyle: 'dash',
-          interactivityModel: 'default#transparent'
+        // В 3.0 круга нет, поэтому это многоугольник из circleRing.
+        ymap.addChild(new YMapFeature({
+          geometry: { type: 'Polygon', coordinates: [circleRing(rc.lat, rc.lon, rc.radius_m || 400)] },
+          style: {
+            fill: 'rgba(29,78,216,.06)',
+            stroke: [{ color: 'rgba(29,78,216,.30)', width: 1, dash: [6, 5] }],
+            zIndex: 10,
+            interactive: false
+          }
         }));
-        ymap.geoObjects.add(new ymaps.Placemark([rc.lat, rc.lon], {
-          name: esc(rc.name),
-          balloonContentBody: '<div class="mon-balloon"><h4>РЦ ' + esc(rc.name) + '</h4>' +
-            '<div class="meta">' + esc(rc.address || '') + '</div>' +
-            '<div class="meta">Радиус геозоны ' + rc.radius_m + ' м · ' +
-            (rc.radius_custom
-              ? 'задан вручную'
-              : 'базовый (поле «Радиус» у склада пустое)') +
-            '</div></div>'
-        }, {
-          iconLayout: RcLayout,
-          iconShape: { type: 'Circle', coordinates: [0, 0], radius: 9 },
-          balloonPanelMaxMapArea: 0,
-          zIndex: 100
-        }));
+        var body = '<div class="mon-balloon"><h4>РЦ ' + esc(rc.name) + '</h4>' +
+          '<div class="meta">' + esc(rc.address || '') + '</div>' +
+          '<div class="meta">Радиус геозоны ' + rc.radius_m + ' м · ' +
+          (rc.radius_custom
+            ? 'задан вручную'
+            : 'базовый (поле «Радиус» у склада пустое)') +
+          '</div></div>';
+        var el = document.createElement('div');
+        el.className = 'mon-rc';
+        el.innerHTML = '<i class="mon-rc__dot"></i><b class="mon-rc__label"></b>';
+        el.querySelector('.mon-rc__label').textContent = rc.name || '';
+        el.addEventListener('click', function () { showBalloon(LL(rc.lat, rc.lon), body); });
+        ymap.addChild(new YMapMarker({ coordinates: LL(rc.lat, rc.lon), zIndex: 100 }, el));
       });
     }
 
     // ================= ТРЕК =================
     var track = { vehicleId: null, hours: 12, objects: [], anim: null, loading: false };
 
+    function addTrackObject(obj) {
+      ymap.addChild(obj);
+      track.objects.push(obj);
+    }
+
     function clearTrackObjects() {
       if (track.anim) { cancelAnimationFrame(track.anim); track.anim = null; }
-      track.objects.forEach(function (o) { ymap.geoObjects.remove(o); });
+      track.objects.forEach(function (o) { ymap.removeChild(o); });
       track.objects = [];
     }
 
@@ -1420,6 +1677,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       track.vehicleId = null;
       trackEl.hidden = true;
       cardEl.classList.remove('mon-sheet-hide');
+      applyMargin();
     }
 
     document.getElementById('mon-track-close').addEventListener('click', hideTrack);
@@ -1456,6 +1714,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('');
     }
 
+    function addChunk(c) {
+      addTrackObject(new YMapFeature({
+        geometry: { type: 'LineString', coordinates: c.coords },
+        style: {
+          stroke: [{ color: c.color, width: c.width, opacity: c.opacity }],
+          zIndex: 30,
+          interactive: false
+        }
+      }));
+    }
+
     function drawTrack(data) {
       clearTrackObjects();
       var bounds = [];
@@ -1470,74 +1739,68 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       data.segments.forEach(function (seg) {
         if (seg.kind === 'move') {
           // Свечение под линией — чтобы трек читался на пёстрой карте.
-          var glow = new ymaps.Polyline(seg.points, {}, {
-            strokeColor: '#2563eb', strokeWidth: 13, strokeOpacity: 0.10,
-            interactivityModel: 'default#transparent'
-          });
-          ymap.geoObjects.add(glow);
-          track.objects.push(glow);
+          addTrackObject(new YMapFeature({
+            geometry: { type: 'LineString', coordinates: LLline(seg.points) },
+            style: {
+              stroke: [{ color: '#2563eb', width: 13, opacity: 0.10 }],
+              zIndex: 20,
+              interactive: false
+            }
+          }));
 
           for (var i = 0; i < seg.points.length - 1; i += chunkSize) {
             // +1 точка нахлёста, иначе между кусками остаются разрывы
             var coords = seg.points.slice(i, Math.min(seg.points.length, i + chunkSize + 1));
             if (coords.length < 2) continue;
             var t = totalPts > 1 ? Math.min(1, (seen + i) / (totalPts - 1)) : 1;
-            var line = new ymaps.Polyline([], {}, {
-              strokeColor: trackColor(t),
-              strokeWidth: 3.2 + t * 2.2,
-              strokeOpacity: 0.4 + t * 0.55,
-              strokeLineCap: 'round',
-              interactivityModel: 'default#transparent'
+            chunks.push({
+              coords: LLline(coords),
+              color: trackColor(t),
+              width: 3.2 + t * 2.2,
+              opacity: 0.4 + t * 0.55
             });
-            ymap.geoObjects.add(line);
-            track.objects.push(line);
-            chunks.push({ line: line, coords: coords });
           }
           seen += seg.points.length;
           seg.points.forEach(function (c) { bounds.push(c); });
         } else if (seg.kind === 'nosignal') {
           // Пунктир: связи не было, что машина ехала ИМЕННО ТАК — мы не знаем.
-          var gap = new ymaps.Polyline(seg.points, {
-            hintContent: (seg.reason === 'no_points'
+          var hint = (seg.reason === 'no_points'
               ? 'Точек не было ' + seg.duration_label
               : 'Нет связи ' + seg.duration_label) +
-              ' (с ' + hhmm(seg.start) + ') — каким путём ехала, неизвестно'
-          }, {
-            strokeColor: '#c5362b', strokeWidth: 3, strokeStyle: 'dash', strokeOpacity: 0.9
-          });
-          ymap.geoObjects.add(gap);
-          track.objects.push(gap);
+            ' (с ' + hhmm(seg.start) + ') — каким путём ехала, неизвестно';
+          addTrackObject(new YMapFeature({
+            geometry: { type: 'LineString', coordinates: LLline(seg.points) },
+            style: {
+              stroke: [{ color: '#c5362b', width: 3, opacity: 0.9, dash: [7, 6] }],
+              zIndex: 35,
+              cursor: 'help'
+            },
+            onMouseEnter: function (e, mapEvent) {
+              showBalloon(mapEvent.coordinates,
+                '<div class="mon-balloon"><div class="meta">' + esc(hint) + '</div></div>');
+            },
+            onMouseLeave: hideBalloon
+          }));
           seg.points.forEach(function (c) { bounds.push(c); });
         } else if (seg.kind === 'stop') {
-          var stop = new ymaps.Placemark([seg.lat, seg.lon], {
-            label: seg.duration_label,
-            // «во сколько встал и во сколько тронулся» — без этого подпись
-            // «7 ч 16 мин» непонятно к какому времени относится
-            hintContent: 'Стоянка ' + seg.duration_label +
-              ' · с ' + hhmm(seg.start) + ' до ' + hhmm(seg.end)
-          }, {
-            iconLayout: StopLayout,
-            iconShape: { type: 'Circle', coordinates: [0, 0], radius: 8 },
-            hasBalloon: false,
-            zIndex: 500
-          });
-          ymap.geoObjects.add(stop);
-          track.objects.push(stop);
+          var el = document.createElement('div');
+          el.className = 'mon-stop';
+          el.innerHTML = '<i class="mon-stop__dot"></i><b class="mon-stop__label"></b>';
+          el.querySelector('.mon-stop__label').textContent = seg.duration_label || '';
+          // «во сколько встал и во сколько тронулся» — без этого подпись
+          // «7 ч 16 мин» непонятно к какому времени относится
+          el.title = 'Стоянка ' + seg.duration_label +
+            ' · с ' + hhmm(seg.start) + ' до ' + hhmm(seg.end);
+          addTrackObject(new YMapMarker({ coordinates: LL(seg.lat, seg.lon), zIndex: 500 }, el));
           bounds.push([seg.lat, seg.lon]);
         }
       });
 
-      if (bounds.length > 1) {
-        var wide = window.innerWidth > 768;
-        ymap.setBounds(ymaps.util.bounds.fromPoints(bounds), {
-          checkZoomRange: true,
-          zoomMargin: wide ? [110, 380, 40, 380] : [110, 24, 330, 24]
-        });
-      }
+      if (bounds.length > 1) moveCameraTo(bounds, 0);
 
       // Прорисовка: линия «бежит» от начала пути к машине, кусок за куском.
       if (REDUCED || !chunks.length) {
-        chunks.forEach(function (c) { c.line.geometry.setCoordinates(c.coords); });
+        chunks.forEach(addChunk);
         return;
       }
       var DUR = Math.min(2200, Math.max(900, chunks.length * 70));
@@ -1546,10 +1809,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       (function step(now) {
         var k = Math.min(1, (now - t0) / DUR);
         var want = Math.max(1, Math.round(k * chunks.length));
-        while (drawn < want) {
-          chunks[drawn].line.geometry.setCoordinates(chunks[drawn].coords);
-          drawn++;
-        }
+        while (drawn < want) addChunk(chunks[drawn++]);
         track.anim = (k < 1) ? requestAnimationFrame(step) : null;
       })(t0);
     }
@@ -1566,6 +1826,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // они не оставляют карты. Пока смотрим трек — карточку убираем.
       if (window.innerWidth <= 768) cardEl.classList.add('mon-sheet-hide');
       trackEl.hidden = false;
+      applyMargin();
       document.getElementById('mon-track-title').textContent =
         'Трек · ' + (v ? v.plate : '');
       var facts = document.getElementById('mon-track-facts');
@@ -1600,18 +1861,81 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var pts = vehicles.map(function (v) { return [v.lat, v.lon]; });
       if (!pts.length) return false;
       if (byUser) setFollow(null);
-      if (pts.length === 1) {
-        ymap.setCenter(pts[0], Math.min(ymap.getZoom() || 13, 14), { duration: byUser ? 400 : 0 });
-        return true;
-      }
-      var wide = window.innerWidth > 768;
-      ymap.setBounds(ymaps.util.bounds.fromPoints(pts), {
-        checkZoomRange: true,
-        zoomMargin: wide ? [40, 380, 40, 380] : [40, 24, 330, 24],
-        duration: byUser ? 400 : 0
-      });
-      return true;
+      return moveCameraTo(pts, byUser ? 400 : 0);
     }
+
+    // ================= кнопки над картой =================
+    // Свои, а не встроенные: встроенные в 3.0 живут в YMapControls и не умеют
+    // вставать со сдвигом от края, а справа у нас панель машины шириной 350.
+    var ctl = document.createElement('div');
+    ctl.className = 'mon-ctl';
+    mon.appendChild(ctl);
+
+    function ctlButton(icon, title, onClick) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.innerHTML = '<i class="ph ' + icon + '"></i>';
+      b.addEventListener('click', onClick);
+      ctl.appendChild(b);
+      return b;
+    }
+
+    function zoomBy(delta) {
+      ymap.setLocation({ zoom: ymap.zoom + delta, duration: 200 });
+    }
+    ctlButton('ph-plus', 'Приблизить', function () { zoomBy(1); });
+    ctlButton('ph-minus', 'Отдалить', function () { zoomBy(-1); });
+
+    // Ради тёмной карты и затевался переход на 3.0: в 2.1 тёмной схемы нет.
+    var themeBtn = ctlButton('ph-moon', 'Тёмная карта', function () {
+      theme = (theme === 'dark') ? 'light' : 'dark';
+      mon.dataset.mode = theme;
+      ymap.update({ theme: theme });
+      paintThemeBtn();
+      try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* приватный режим */ }
+    });
+    function paintThemeBtn() {
+      var label = theme === 'dark' ? 'Светлая карта' : 'Тёмная карта';
+      themeBtn.innerHTML = '<i class="ph ' + (theme === 'dark' ? 'ph-sun' : 'ph-moon') + '"></i>';
+      themeBtn.title = label;
+      themeBtn.setAttribute('aria-label', label);
+      themeBtn.classList.toggle('is-on', theme === 'dark');
+    }
+    paintThemeBtn();
+
+    if (YMapDefaultSatelliteLayer) {
+      var satOn = false;
+      var satBtn = ctlButton('ph-globe-hemisphere-west', 'Спутник', function () {
+        satOn = !satOn;
+        if (satOn) {
+          satelliteLayer = satelliteLayer || new YMapDefaultSatelliteLayer({});
+          ymap.removeChild(schemeLayer);
+          ymap.addChild(satelliteLayer);
+        } else {
+          ymap.removeChild(satelliteLayer);
+          ymap.addChild(schemeLayer);
+        }
+        satBtn.classList.toggle('is-on', satOn);
+        satBtn.title = satOn ? 'Схема' : 'Спутник';
+      });
+    }
+
+    if (document.fullscreenEnabled) {
+      ctlButton('ph-arrows-out', 'Во весь экран', function () {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else if (mon.requestFullscreen) mon.requestFullscreen();
+      });
+      document.addEventListener('fullscreenchange', function () {
+        if (document.fullscreenElement !== mon) mon.style.height = '';
+        fit();
+        applyMargin();
+      });
+    }
+
+    // Как в Ставтрэке: свернуть карту так, чтобы все машины поместились.
+    ctlButton('ph-truck', 'Показать все машины', function () { fitAllVehicles(true); });
 
     // ================= счётчик свежести: один такт на всё =================
     setInterval(function () {
@@ -1661,7 +1985,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) refresh();
     });
-  });
+  }
 })();
 </script>
 {% endif %}
