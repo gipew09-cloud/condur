@@ -208,6 +208,18 @@ async def main() -> None:
 
     await _setup_bot_commands(owner_bot)
 
+    # Состояние OCR — В САМОМ НАЧАЛЕ ЛОГА, чтобы не гадать по молчанию.
+    # Раньше при неверных переменных OCR просто тихо не работал: ни ошибки,
+    # ни строки в логе — и было не отличить «выключен» от «сломался».
+    from app.services import receipt_ocr as _ocr
+    logging.info(
+        "OCR чека: провайдер=%s, ключ=%s, флаг=%s → %s",
+        _ocr._get_provider() or "не задан",
+        "есть" if _ocr._get_provider_key() else "НЕТ",
+        "on" if settings.feature_receipt_ocr else "off",
+        "РАБОТАЕТ" if _ocr.is_enabled() else "выключен, водитель вводит сумму вручную",
+    )
+
     logging.info("Боты, веб-кабинет и планировщик запущены. Порт: %s. Ctrl+C для остановки.", port)
     try:
         await asyncio.gather(
