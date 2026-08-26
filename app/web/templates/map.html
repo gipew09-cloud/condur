@@ -189,7 +189,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-legend__row i {
   width: 14px; height: 14px; border-radius: 5px; background: var(--mon-surface);
+  box-sizing: border-box; border: 0;
 }
+/* Цвет состояния — из стилей, а не из разметки: инлайновый стиль тёмная тема
+   перебить не может, и легенда осталась бы приглушённой на тёмной карте. */
+.mon-legend__row[data-state="moving"] i  { box-shadow: 0 0 0 2px #16a34a; }
+.mon-legend__row[data-state="idle"] i    { box-shadow: 0 0 0 2px #e0a32e; }
+.mon-legend__row[data-state="unknown"] i { box-shadow: 0 0 0 2px #94a3b8; }
+.mon-legend__row[data-state="stale"] i   { box-shadow: 0 0 0 2px #c5362b; }
+.mon-legend__row[data-state="invalid"] i { border: 2px dashed #e0a32e; box-shadow: none; }
 .mon-legend__row span { font-size: 12px; font-weight: 600; color: #3a4453; }
 .mon-note {
   margin: 0 12px 6px; padding: 10px 12px;
@@ -552,78 +560,97 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon:fullscreen { height: 100% !important; border-top: 0; }
 
 /* =====================================================================
-   ТЁМНАЯ ТЕМА. Ради неё и затевался переезд на JS API 3.0 — в 2.1 тёмной
-   схемы карты нет вообще. Разметка и JS не меняются: здесь переменные и
-   те немногие места, где цвет когда-то был вписан числом.
+   ТЁМНАЯ ТЕМА — по токенам из «Редизайна системы мониторинга» (там она
+   объявлена ОСНОВНЫМ вариантом экрана). Ради неё и затевался переезд на
+   JS API 3.0: в 2.1 тёмной схемы карты нет вообще.
+
+   Панели — «стекло»: полупрозрачный тёмно-синий с размытием подложки.
+   Поэтому всё, что лежит ВНУТРИ панели, фон себе не рисует — иначе
+   прозрачность складывается сама с собой и выходят тёмные заплатки.
    ===================================================================== */
 .mon[data-mode="dark"] {
-  --mon-surface: #151a23;
-  --mon-border: #28303d;
-  --mon-divider: #222936;
-  --mon-fill: #1e2632;
-  --mon-sel: #1d2f52;
-  --mon-text: #e9eef7;
-  --mon-text-2: #a7b3c6;
-  --mon-text-3: #8c98ad;
-  --mon-text-4: #78849a;
-  --mon-accent: #6294ff;
-  --mon-panel-shadow: 0 18px 44px -20px rgba(0, 0, 0, .8);
-  --mon-pin-bg: #1e2632;
-  --mon-pin-ink: #e9eef7;
-  background: #0e1218;
+  --mon-surface: rgba(13, 21, 36, .88);
+  --mon-border: rgba(255, 255, 255, .09);
+  --mon-divider: rgba(255, 255, 255, .05);
+  --mon-fill: rgba(255, 255, 255, .06);
+  --mon-sel: rgba(37, 99, 235, .18);
+  --mon-text: #eaf0fa;
+  --mon-text-2: #b9c9e6;
+  --mon-text-3: #a9bcda;
+  --mon-text-4: #6b7c9c;
+  --mon-accent: #9dc0ff;
+  --mon-panel-shadow: 0 24px 60px -24px rgba(0, 0, 0, .85);
+  --mon-pin-bg: #14213a;
+  --mon-pin-ink: #dfe9fb;
+  background: #0a1120;
 }
-.mon[data-mode="dark"] .mon-row:hover { background: #1b2331; }
-.mon[data-mode="dark"] .mon-panel--list::before { background: #333c4c; }
+.mon[data-mode="dark"] .mon-panel,
+.mon[data-mode="dark"] .mon-track,
+.mon[data-mode="dark"] .mon-balloon-box,
+.mon[data-mode="dark"] .mon-ctl button {
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+/* внутренности панели своего фона не имеют — см. комментарий выше */
+.mon[data-mode="dark"] .mon-metric,
+.mon[data-mode="dark"] .mon-legend__row i { background: transparent; }
+/* именно background-color: сокращённое background стёрло бы картинку
+   машины — она приходит классом перекраски .mon-truck--* */
+.mon[data-mode="dark"] .mon-card__photo { background-color: transparent; }
+.mon[data-mode="dark"] .mon-metrics { background: var(--mon-divider); }
+.mon[data-mode="dark"] .mon-row:hover { background: rgba(255, 255, 255, .04); }
+.mon[data-mode="dark"] .mon-panel--list::before { background: rgba(255, 255, 255, .18); }
 .mon[data-mode="dark"] .mon-sort,
 .mon[data-mode="dark"] .mon-card__close,
 .mon[data-mode="dark"] .mon-track__x,
 .mon[data-mode="dark"] .mon-track__periods button,
 .mon[data-mode="dark"] .mon-tile { color: var(--mon-text-2); }
-.mon[data-mode="dark"] .mon-track__periods button.is-on { color: #fff; }
-.mon[data-mode="dark"] .mon-legend__row span { color: var(--mon-text-2); }
-.mon[data-mode="dark"] .mon-fresh { background: #14301f; color: #6ee7a3; }
-.mon[data-mode="dark"] .mon-fresh.is-warn { background: #35290f; color: #f0c274; }
-.mon[data-mode="dark"] .mon-fresh.is-bad  { background: #3a1a17; color: #f6a79c; }
-.mon[data-mode="dark"] .mon-chip[data-state="moving"]  { background: #14301f; color: #6ee7a3; }
-.mon[data-mode="dark"] .mon-chip[data-state="stale"]   { background: #3a1a17; color: #f6a79c; }
+.mon[data-mode="dark"] .mon-track__periods button.is-on {
+  background: rgba(37, 99, 235, .22); color: #9dc0ff;
+}
+.mon[data-mode="dark"] .mon-legend__row span { color: #a9bcda; }
+/* состояния на тёмных тайлах ярче — те же роли, что в светлой */
+.mon[data-mode="dark"] .mon-legend__row[data-state="moving"] i { box-shadow: 0 0 0 2px #22c55e; }
+.mon[data-mode="dark"] .mon-legend__row[data-state="stale"] i  { box-shadow: 0 0 0 2px #ef4444; }
+.mon[data-mode="dark"] .mon-fresh { background: rgba(34, 197, 94, .16); color: #6ee7a3; }
+.mon[data-mode="dark"] .mon-fresh.is-warn { background: rgba(224, 163, 46, .16); color: #f0c274; }
+.mon[data-mode="dark"] .mon-fresh.is-bad  { background: rgba(239, 68, 68, .16); color: #f6a79c; }
+.mon[data-mode="dark"] .mon-chip[data-state="moving"]  { background: rgba(34, 197, 94, .16); color: #6ee7a3; }
+.mon[data-mode="dark"] .mon-chip[data-state="stale"]   { background: rgba(239, 68, 68, .16); color: #f6a79c; }
 .mon[data-mode="dark"] .mon-chip[data-state="idle"],
-.mon[data-mode="dark"] .mon-chip[data-state="invalid"] { background: #35290f; color: #f0c274; }
+.mon[data-mode="dark"] .mon-chip[data-state="invalid"] { background: rgba(224, 163, 46, .16); color: #f0c274; }
 .mon[data-mode="dark"] .mon-note {
-  background: #2b2313; border-color: #574726; color: #e2b45f;
+  background: rgba(224, 163, 46, .12); border-color: rgba(224, 163, 46, .38); color: #e2b45f;
 }
 .mon[data-mode="dark"] .mon-card__head,
 .mon[data-mode="dark"] .mon-photo,
 .mon[data-mode="dark"] .mon-card__photo { border-color: var(--mon-divider); }
-/* именно background-color: сокращённое background стёрло бы картинку
-   машины — она приходит классом перекраски .mon-truck--* */
-.mon[data-mode="dark"] .mon-card__photo { background-color: var(--mon-surface); }
-.mon[data-mode="dark"] .mon-metrics { background: var(--mon-divider); }
 .mon[data-mode="dark"] .mon-metric__v.is-ok   { color: #5ddc95; }
 .mon[data-mode="dark"] .mon-metric__v.is-warn { color: #f0b955; }
 .mon[data-mode="dark"] .mon-metric__v.is-bad  { color: #f58b7f; }
 .mon[data-mode="dark"] .mon-card__alert {
-  background: #2c1614; border-color: #5d2a25; color: #f3a49b;
+  background: rgba(239, 68, 68, .12); border-color: rgba(239, 68, 68, .35); color: #f3a49b;
 }
 .mon[data-mode="dark"] .mon-btn--ghost {
-  background: var(--mon-surface); color: var(--mon-text-2); border-color: var(--mon-border);
+  background: var(--mon-fill); color: var(--mon-text-2); border-color: var(--mon-border);
 }
 .mon[data-mode="dark"] .mon-btn--ghost:hover { background: var(--mon-sel); color: var(--mon-accent); }
-.mon[data-mode="dark"] .mon-track {
-  background: rgba(21, 26, 35, .96); border-color: #2e3f61;
-}
+.mon[data-mode="dark"] .mon-track { border-color: rgba(255, 255, 255, .09); }
 .mon[data-mode="dark"] .mon-track__facts .bad { color: #f58b7f; }
-.mon[data-mode="dark"] .mon-track__legend .stop i { background: var(--mon-surface); }
-/* подписи поверх карты: на тёмных тайлах белая обводка превращалась в кляксу */
+/* подписи поверх карты: белая обводка на тёмных тайлах превращалась в кляксу */
 .mon[data-mode="dark"] .mon-stop__label {
-  background: rgba(21, 26, 35, .94); border-color: #2e3846; color: var(--mon-text-2);
+  background: rgba(13, 21, 36, .92); border-color: rgba(255, 255, 255, .12);
+  color: var(--mon-text-2);
 }
 .mon[data-mode="dark"] .mon-rc__label {
-  color: #cfd8e6; text-shadow: 0 1px 0 #0e1218, 0 0 5px #0e1218;
+  color: #cfd8e6; text-shadow: 0 1px 0 #0a1120, 0 0 5px #0a1120;
 }
 .mon[data-mode="dark"] .mon-pin__age {
-  color: #f58b7f; text-shadow: 0 1px 0 #0e1218, 0 0 5px #0e1218;
+  color: #f58b7f; text-shadow: 0 1px 0 #0a1120, 0 0 5px #0a1120;
 }
-.mon[data-mode="dark"] .mon-stop__dot { background: var(--mon-surface); }
+/* эти два кружка лежат НА КАРТЕ, а не на панели — фон нужен непрозрачный */
+.mon[data-mode="dark"] .mon-stop__dot,
+.mon[data-mode="dark"] .mon-track__legend .stop i { background: #14213a; }
 
 @media (prefers-reduced-motion: reduce) {
   .mon-pin__pulse { display: none; }
@@ -700,11 +727,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     <div class="mon-foot">
       <div class="mon-legend">
         <div class="mon-legend__ttl">Легенда: рамка = состояние</div>
-        <div class="mon-legend__row"><i style="box-shadow: 0 0 0 2px #16a34a;"></i><span>Едет по маршруту</span></div>
-        <div class="mon-legend__row"><i style="box-shadow: 0 0 0 2px #e0a32e;"></i><span>Стоит, двигатель работает</span></div>
-        <div class="mon-legend__row"><i style="box-shadow: 0 0 0 2px #94a3b8;"></i><span>Стоит, зажигание не передано</span></div>
-        <div class="mon-legend__row"><i style="box-shadow: 0 0 0 2px #c5362b;"></i><span>GPS давно не обновлялся</span></div>
-        <div class="mon-legend__row"><i style="border: 2px dashed #e0a32e;"></i><span>GPS недостоверный</span></div>
+        <div class="mon-legend__row" data-state="moving"><i></i><span>Едет по маршруту</span></div>
+        <div class="mon-legend__row" data-state="idle"><i></i><span>Стоит, двигатель работает</span></div>
+        <div class="mon-legend__row" data-state="unknown"><i></i><span>Стоит, зажигание не передано</span></div>
+        <div class="mon-legend__row" data-state="stale"><i></i><span>GPS давно не обновлялся</span></div>
+        <div class="mon-legend__row" data-state="invalid"><i></i><span>GPS недостоверный</span></div>
       </div>
       <div class="mon-note">
         <b>GPS может ошибаться.</b> Если сигнал глушится или давно не обновлялся, метку используем как подсказку, а не как окончательное доказательство.
@@ -819,6 +846,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     stale:   { label: 'GPS давно не обновлялся',      short: 'нет связи', color: '#c5362b', rank: 1 },
     invalid: { label: 'GPS недостоверный',            short: 'GPS сбой',  color: '#e0a32e', rank: 0 }
   };
+  // На тёмных тайлах приглушённые цвета светлой темы теряются, поэтому
+  // в тёмной раскладке макета состояния ярче. Роли те же.
+  var STATE_COLORS_DARK = {
+    moving: '#22c55e', idle: '#e0a32e', off: '#94a3b8',
+    unknown: '#94a3b8', stale: '#ef4444', invalid: '#e0a32e'
+  };
+  function stateColor(key) {
+    return (theme === 'dark' && STATE_COLORS_DARK[key]) || STATES[key].color;
+  }
   var ICONS = { refrigerator: 'ph-truck-trailer', truck: 'ph-truck', gazelle: 'ph-van' };
   function iconFor(type) { return ICONS[type] || 'ph-truck'; }
 
@@ -1074,9 +1110,23 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // вращение и наклон мышью в 2.1 не включались — не пугаем ими владельца
       behaviors: ['drag', 'pinchZoom', 'scrollZoom', 'dblClick', 'oneFingerZoom']
     });
-    var schemeLayer = new YMapDefaultSchemeLayer({});
+    // ⚠️ Тему тайлов задаёт СЛОЙ СХЕМЫ, а не только карта.
+    // Свойство theme у YMap выданная Яндексом сборка молча игнорирует: панели
+    // темнели, а карта под ними оставалась светлой. Слой с темой в конструкторе —
+    // единственный путь, проверенный на боевом ключе, поэтому при переключении
+    // слой пересоздаётся. theme у карты оставляем: он красит её собственные
+    // мелочи (копирайт), и в новых сборках лишним не будет.
+    var schemeLayer = null;
     var satelliteLayer = null;
-    ymap.addChild(schemeLayer);
+    var satelliteOn = false;
+    function applyMapTheme() {
+      var next = new YMapDefaultSchemeLayer({ theme: theme });
+      if (schemeLayer) ymap.removeChild(schemeLayer);
+      schemeLayer = next;
+      if (!satelliteOn) ymap.addChild(schemeLayer);
+      ymap.update({ theme: theme });
+    }
+    applyMapTheme();
     ymap.addChild(new YMapDefaultFeaturesLayer({}));
     fit();
 
@@ -1211,7 +1261,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
                               : (v.zone ? st.label + ' · ' + v.zone : st.label);
         return '<button type="button" class="mon-row' + (v.vehicle_id === selected ? ' is-sel' : '') +
             '" data-vid="' + v.vehicle_id + '">' +
-          '<i class="mon-tile" style="' + ringCss(key, st.color, 2) + '">' +
+          '<i class="mon-tile" style="' + ringCss(key, stateColor(key), 2) + '">' +
             '<i class="mon-tile__img mon-truck--' + truckClass(v) + '"></i></i>' +
           '<span class="mon-row__name"><b>' + esc(v.plate) + '</b>' +
             '<small>' + esc(sub) + '</small></span>' +
@@ -1404,7 +1454,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
                : (key === 'stale' ? 'is-bad'
                : ((key === 'off' || key === 'unknown') ? '' : 'is-warn'));
 
-      applyRing(document.getElementById('mon-card-tile'), key, st.color, 2.5);
+      applyRing(document.getElementById('mon-card-tile'), key, stateColor(key), 2.5);
       document.getElementById('mon-card-icon').className = 'mon-tile__img mon-truck--' + truckClass(v);
       document.getElementById('mon-card-photo').className =
         'mon-photo mon-card__photo mon-truck--' + truckClass(v);
@@ -1533,13 +1583,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         el.classList.toggle('is-sel', v.vehicle_id === selected);
         el.classList.toggle('is-late', ms >= STALE_MS);
         var tile = el.querySelector('.mon-pin__tile');
-        applyRing(tile, key, st.color, 2.5, '0 8px 20px -9px rgba(11,31,77,.6)');
+        applyRing(tile, key, stateColor(key), 2.5, '0 8px 20px -9px rgba(11,31,77,.6)');
         var pic = el.querySelector('.mon-pin__img');
         if (pic) pic.className = 'mon-pin__img mon-truck--' + truckClass(v);
         var ring = el.querySelector('.mon-pin__ring');
-        if (ring) ring.style.borderColor = st.color;
+        if (ring) ring.style.borderColor = stateColor(key);
         var pulse = el.querySelector('.mon-pin__pulse');
-        if (pulse) pulse.style.background = st.color;
+        if (pulse) pulse.style.background = stateColor(key);
       });
     }
 
@@ -1892,8 +1942,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var themeBtn = ctlButton('ph-moon', 'Тёмная карта', function () {
       theme = (theme === 'dark') ? 'light' : 'dark';
       mon.dataset.mode = theme;
-      ymap.update({ theme: theme });
+      applyMapTheme();
       paintThemeBtn();
+      // состояния перекрашиваются вслед за темой — в списке, карточке и метках
+      renderList();
+      renderCard();
+      paintPins();
       try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* приватный режим */ }
     });
     function paintThemeBtn() {
@@ -1906,10 +1960,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     paintThemeBtn();
 
     if (YMapDefaultSatelliteLayer) {
-      var satOn = false;
       var satBtn = ctlButton('ph-globe-hemisphere-west', 'Спутник', function () {
-        satOn = !satOn;
-        if (satOn) {
+        satelliteOn = !satelliteOn;
+        if (satelliteOn) {
           satelliteLayer = satelliteLayer || new YMapDefaultSatelliteLayer({});
           ymap.removeChild(schemeLayer);
           ymap.addChild(satelliteLayer);
@@ -1917,8 +1970,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           ymap.removeChild(satelliteLayer);
           ymap.addChild(schemeLayer);
         }
-        satBtn.classList.toggle('is-on', satOn);
-        satBtn.title = satOn ? 'Схема' : 'Спутник';
+        satBtn.classList.toggle('is-on', satelliteOn);
+        satBtn.title = satelliteOn ? 'Схема' : 'Спутник';
       });
     }
 
