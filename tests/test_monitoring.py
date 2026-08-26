@@ -370,6 +370,60 @@ def test_calibration_covers_the_whole_tank():
         assert Decimal("560") < litres < Decimal("585"), f"{raw} → {litres}"
 
 
+# ------------------------------------- новый терминал «СМАРТ» (навтелеком)
+NEW_TERMINAL_PARAMS = {
+    "power": 0.0, "power_reserv": 3.978, "fuel1": 3605, "temp_rs485_1": 17,
+    "generator": 0, "jamming_gnss": 0, "gps_valid": 1, "pdop": 2.6,
+    "odometer": 12.365753, "engineSeconds": 4956, "drain_sensor_ca": "idle",
+}
+OLD_TERMINAL_PARAMS = {
+    "power": 25.11, "ignition": 1, "battery": 4.23,
+    "fuel2": 65535, "fuelTemp2": -128,
+}
+
+
+def test_new_terminal_names_are_understood():
+    """25.08 на Т557ОС178 сменился терминал, и поля поехали.
+
+    Было (FleetGuide): fuel2 / fuelTemp2 / power=25.11 / ignition.
+    Стало (навтелеком «СМАРТ»): fuel1 / temp_rs485_1 / power=0.0, ignition НЕТ.
+    Владелец увидел «нужна тарировка», температуру прочерком и «нет данных»
+    вместо напряжения — потому что имена другие.
+    """
+    assert telemetry_service.fuel_level_raw(NEW_TERMINAL_PARAMS) == Decimal("3605")
+    # температура приезжает по RS-485, а не как fuelTemp
+    assert telemetry_service.fuel_temp_c(NEW_TERMINAL_PARAMS) == Decimal("17")
+    # старый терминал продолжает работать как работал
+    assert telemetry_service.fuel_level_raw(OLD_TERMINAL_PARAMS) is None
+    assert telemetry_service.fuel_temp_c(OLD_TERMINAL_PARAMS) is None
+
+
+def test_engine_state_without_ignition_field():
+    """У нового терминала поля ignition нет вообще — судим по generator.
+
+    Иначе машина навсегда застревает в «стоит, зажигание не передано»:
+    напряжение приходит нулём (масса выключена), а бита зажигания нет.
+    """
+    running = telemetry_service.engine_running_from_params
+    assert running(NEW_TERMINAL_PARAMS) is False          # generator = 0
+    assert running({**NEW_TERMINAL_PARAMS, "generator": 1}) is True
+    # напряжение важнее флага: если бортсеть под генератором — двигатель работает
+    assert running({"power": 28.1, "generator": 0}) is True
+    # нет ни того ни другого — честное «не знаю», а не выдуманное False
+    assert running({"fuel1": 100}) is None
+    assert running(None) is None
+
+
+def test_address_is_trimmed_for_the_card():
+    """Nominatim отдаёт всё дерево — в карточке нужны первые составляющие."""
+    from app.services.geocode_service import _short_address
+
+    long = ("60 к6, Софийская улица, Обухово, Александровский округ, "
+            "Санкт-Петербург, Северо-Западный федеральный округ, 192249, Россия")
+    assert _short_address(long) == "60 к6, Софийская улица, Обухово"
+    assert _short_address(None) is None
+
+
 def test_parked_noise_is_not_consumption():
     """Стоящая машина не должна «расходовать» топливо.
 
@@ -626,7 +680,7 @@ def test_monitoring_screen_has_track_camera_and_voltage():
     # трек грузится с нашего эндпоинта
     assert "/api/vehicles/' + vehicleId + '/track?hours=" in src
     # разрыв связи рисуется пунктиром, а не сплошной
-    assert "strokeStyle: 'dash'" in src
+    assert "dash: [7, 6]" in src
     assert "#c5362b" in src
     # камера едет за выбранной машиной и отпускает карту, если её тронули
     assert "setFollow(selected)" in src
@@ -635,6 +689,75 @@ def test_monitoring_screen_has_track_camera_and_voltage():
     assert "Напряжение" in src
     # метка уменьшается на общем плане
     assert "pinSizeForZoom" in src
+
+
+# ------------------------------------------------------------------ карта 3.0
+def test_map_never_hands_raw_lat_lon_to_yandex_3_0():
+    """В JS API 3.0 координаты — [долгота, широта], наоборот к 2.1 и к серверу.
+
+    Самая дорогая ошибка переноса: где-то забыли перевернуть пару — метка
+    уезжает в другое полушарие, и глазами по коду это не ловится. Поэтому
+    проверяем механически: КАЖДОЕ место, где координаты уходят в карту,
+    названо через общий конвертер.
+    """
+    import re
+
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "function LL(lat, lon) { return [lon, lat]; }" in src
+    assert "function LLp(p) { return [p[1], p[0]]; }" in src
+    allowed = ("LL(", "LLp(", "LLline(", "boundsOf(", "[circleRing(",
+               "c.coords", "lngLat")
+    for field in ("coordinates:", "center:", "bounds:"):
+        for m in re.finditer(re.escape(field) + r"\s*([^,\n}]+)", src):
+            value = m.group(1).strip()
+            assert value.startswith(allowed), f"{field} {value} — мимо конвертера"
+
+
+def test_map_bounds_use_top_left_and_bottom_right():
+    """LngLatBounds в 3.0 — это [верхний левый, нижний правый].
+
+    Не «юго-запад, северо-восток», как в большинстве других карт: перепутать
+    углы = камера уедет мимо машин. Порядок сверен с типами @yandex/ymaps3-types.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "return [[minLon, maxLat], [maxLon, minLat]];" in src
+
+
+def test_map_migrated_off_2_1_api():
+    """Ни одного вызова 2.1 не осталось — иначе карта молча потеряет часть меток."""
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    for banned in ("ymaps.Map", "ymaps.ready", "ymaps.Placemark", "ymaps.Polyline",
+                   "ymaps.Circle", "templateLayoutFactory", "geoObjects",
+                   "iconLayout", "hintContent", "balloonContentBody",
+                   "setBounds", "fitToViewport", "api-maps.yandex.ru/2.1/"):
+        assert banned not in src, f"осталось от 2.1: {banned}"
+    assert "ymaps3.ready" in src
+    assert "new YMapDefaultFeaturesLayer" in src, "без этого слоя меток не будет видно"
+
+
+def test_map_has_dark_theme_switch():
+    """Тёмная карта — то, ради чего переезжали: в 2.1 её нет вообще."""
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    # тема отдаётся самой карте и запоминается между заходами
+    assert "ymap.update({ theme: theme })" in src
+    assert "localStorage.setItem(THEME_KEY, theme)" in src
+    # панели темнеют тем же переключателем, одним блоком стилей
+    assert 'mon.dataset.mode = theme' in src
+    assert '.mon[data-mode="dark"] {' in src
+
+
+def test_map_says_out_loud_when_the_key_is_rejected():
+    """Ключ не приняли — пишем это словами, а не показываем серый прямоугольник.
+
+    2.1 отдавала библиотеку на ЛЮБОЙ ключ и ругалась уже внутри карты — из-за
+    этого опечатку в ключе искали три дня (PROBLEMS.md №23). 3.0 проверяет ключ
+    на выдаче, значит можно сказать владельцу, что именно произошло.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "typeof ymaps3 === 'undefined'" in src
+    assert "Карта не загрузилась" in src
+    assert "Invalid api key" in src
+    assert ".mon-mapfail" in src
 
 
 def test_locations_api_exposes_voltage_and_zone():

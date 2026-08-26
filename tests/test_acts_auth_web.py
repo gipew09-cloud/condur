@@ -771,12 +771,14 @@ def test_map_template_uses_yandex_not_leaflet():
 
     html = _render("map.html", owner=OWNER, active_page="map",
                    yandex_maps_api_key="test-key-123")
-    assert "api-maps.yandex.ru/2.1/?apikey=test-key-123" in html
+    assert "api-maps.yandex.ru/v3/?apikey=test-key-123" in html
+    # 2.1 больше нигде не подключается: она не умеет тёмную схему
+    assert "api-maps.yandex.ru/2.1/" not in html
     # метка машины и авто-обновление при возврате на вкладку
     assert "mon-pin" in html and "visibilitychange" in html
     # пропавшие метки снимаются с карты — и машины, и водители
-    assert "geoObjects.remove(pins[id].pm)" in html
-    assert "geoObjects.remove(drivers[key])" in html
+    assert "ymap.removeChild(pins[id].marker)" in html
+    assert "ymap.removeChild(drivers[key].marker)" in html
     # состояние живёт в обводке метки — все пять состояний из легенды на месте
     for state in ("moving", "idle", "off", "unknown", "stale", "invalid"):
         assert f"{state}:" in html, f"нет состояния {state}"
