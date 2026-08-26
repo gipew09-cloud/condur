@@ -2711,6 +2711,19 @@ def _apply_distribution_center_form(center: DistributionCenter, form: dict) -> N
         center.geofence_radius_m = radius
 
 
+def _origin_key(value: str | None) -> str:
+    """Ключ склада — ровно тот, по которому список группируется на экране.
+
+    ⚠️ Этим ключом ОБЯЗАНЫ пользоваться и показ списка, и перестановка ▲▼.
+    Пока перестановка сравнивала `origin` как есть, а экран — обрезанный,
+    строка с лишним пробелом в названии склада («Соф.60 » вместо «Соф.60»)
+    попадала в группу на экране, но выпадала из неё при перестановке: стрелки
+    у неё нажимались и ничего не делали, а сама она навсегда прилипала к концу
+    списка. Владелец это и увидел как «телепортируется вниз в конец страницы».
+    """
+    return (value or "—").strip()
+
+
 async def _route_templates_view(
     session: AsyncSession, owner_id: int, centers: list
 ) -> tuple[dict[str, list], set[str]]:
@@ -2727,8 +2740,9 @@ async def _route_templates_view(
             .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
             # Порядок задаёт владелец (sort_order). Алфавит — только запасной,
             # чтобы новые маршруты с одинаковым порядком не прыгали.
+            # По origin НЕ сортируем: склады раскладываем ключом уже в Python,
+            # иначе «Соф.60 » и «Соф.60» разъезжаются внутри одной группы.
             .order_by(
-                RouteTemplate.origin,
                 RouteTemplate.sort_order,
                 RouteTemplate.destination,
             )
@@ -2737,7 +2751,9 @@ async def _route_templates_view(
 
     by_origin: dict[str, list] = {}
     for t in rows:
-        by_origin.setdefault((t.origin or "—").strip(), []).append(t)
+        by_origin.setdefault(_origin_key(t.origin), []).append(t)
+    # склады по алфавиту — как было, когда сортировкой занималась база
+    by_origin = dict(sorted(by_origin.items()))
 
     known = {(c.name or "").strip() for c in centers if (c.name or "").strip()}
     stale = {
@@ -2903,17 +2919,21 @@ async def routes_template_move(
         raise HTTPException(status_code=404)
     up = direction == "up"
 
-    siblings = list((
+    # Берём ВСЕ маршруты владельца в том же порядке, в каком их видит экран,
+    # и отбираем группу тем же ключом склада — иначе список и перестановка
+    # считают «соседей» по-разному (см. _origin_key).
+    everything = list((
         await session.execute(
             select(RouteTemplate)
             .where(
                 RouteTemplate.owner_id == owner.id,
-                RouteTemplate.origin == tmpl.origin,
                 RouteTemplate.is_active.is_(True),
             )
             .order_by(RouteTemplate.sort_order, RouteTemplate.destination)
         )
     ).scalars().all())
+    key = _origin_key(tmpl.origin)
+    siblings = [t for t in everything if _origin_key(t.origin) == key]
 
     idx = next((i for i, s in enumerate(siblings) if s.id == tmpl.id), None)
     if idx is None:
@@ -2927,6 +2947,9 @@ async def routes_template_move(
     siblings[idx], siblings[neighbour_idx] = siblings[neighbour_idx], siblings[idx]
     for position, item in enumerate(siblings, start=1):
         item.sort_order = position * 10
+        # заодно лечим данные: убираем пробелы, из-за которых склад двоился
+        if item.origin and item.origin != item.origin.strip():
+            item.origin = item.origin.strip()
     await session.commit()
     return await _render_list()
 

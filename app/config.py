@@ -71,12 +71,16 @@ class Settings(BaseSettings):
     cookie_secure: bool = True
 
     # OCR чека (Блок C). Без ключа функция дормант — водитель вводит сумму руками.
-    # provider: gemini | anthropic | openai | disabled. Ключи — через ENV, в код не пишем.
+    # provider: llamaparse | gemini | anthropic | openai | disabled.
+    # Ключи — через ENV, в код не пишем.
     # Gemini 1.5 Flash — бесплатно 1500 запросов/день: https://aistudio.google.com/app/apikey
     receipt_ocr_provider: str = "gemini"
     gemini_api_key: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    # LlamaParse: 10 000 страниц в месяц бесплатно, файл до ~20 МБ — сжимать
+    # фото не нужно. Ключ в кабинете cloud.llamaindex.ai → API Keys.
+    llama_cloud_api_key: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

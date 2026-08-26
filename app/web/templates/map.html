@@ -508,6 +508,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-ctl button {
   width: 36px; height: 36px; min-height: 36px; padding: 0;
+  /* Pico добавляет кнопкам margin-bottom: 15px. Без этой строки колонка
+     вырастала на 90px и на телефоне наезжала на шторку со списком,
+     закрывая счётчик машин и кнопку сортировки. */
+  margin: 0;
   border: 1px solid var(--mon-border); border-radius: 10px;
   background: var(--mon-surface); color: var(--mon-text-2);
   display: inline-flex; align-items: center; justify-content: center;
@@ -534,7 +538,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-balloon-box__x {
   position: absolute; right: 6px; top: 6px;
-  width: 20px; height: 20px; min-height: 20px; padding: 0;
+  width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 0;
   border: 0; border-radius: 6px; cursor: pointer; box-shadow: none;
   background: var(--mon-fill); color: var(--mon-text-3);
   display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
@@ -580,8 +584,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   --mon-text-4: #6b7c9c;
   --mon-accent: #9dc0ff;
   --mon-panel-shadow: 0 24px 60px -24px rgba(0, 0, 0, .85);
-  --mon-pin-bg: #14213a;
-  --mon-pin-ink: #dfe9fb;
+  /* Плитка машины остаётся СВЕТЛОЙ и в тёмной теме — как в приложении
+     Ставтрэка. Причина не в моде: рисунок грузовика перекрашивается только
+     в светлых местах, тёмные детали (резина, рама, стёкла) остаются чёрными.
+     На тёмной плитке чёрная машина просто исчезала. */
+  --mon-pin-bg: #f4f7fb;
+  --mon-pin-ink: #0e1b3a;
   background: #0a1120;
 }
 .mon[data-mode="dark"] .mon-panel,
@@ -603,12 +611,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon[data-mode="dark"] .mon-sort,
 .mon[data-mode="dark"] .mon-card__close,
 .mon[data-mode="dark"] .mon-track__x,
-.mon[data-mode="dark"] .mon-track__periods button,
-.mon[data-mode="dark"] .mon-tile { color: var(--mon-text-2); }
+.mon[data-mode="dark"] .mon-track__periods button { color: var(--mon-text-2); }
+/* та же светлая плитка в строке списка и в шапке карточки */
+.mon[data-mode="dark"] .mon-tile { background: var(--mon-pin-bg); color: var(--mon-pin-ink); }
 .mon[data-mode="dark"] .mon-track__periods button.is-on {
   background: rgba(37, 99, 235, .22); color: #9dc0ff;
 }
 .mon[data-mode="dark"] .mon-legend__row span { color: #a9bcda; }
+/* --mon-accent в тёмной теме — светло-голубой: он хорош как ЦВЕТ ТЕКСТА, но
+   как фон под белыми буквами не читается. Заливкам возвращаем плотный синий. */
+.mon[data-mode="dark"] .mon-follow,
+.mon[data-mode="dark"] .mon-ctl button.is-on {
+  background: #2563eb; color: #fff; border-color: #2563eb;
+}
+/* точка стоянки лежит на тёмных тайлах — обводка нужна светлее */
+.mon[data-mode="dark"] .mon-stop__dot { border-color: #5b8cff; }
 /* состояния на тёмных тайлах ярче — те же роли, что в светлой */
 .mon[data-mode="dark"] .mon-legend__row[data-state="moving"] i { box-shadow: 0 0 0 2px #22c55e; }
 .mon[data-mode="dark"] .mon-legend__row[data-state="stale"] i  { box-shadow: 0 0 0 2px #ef4444; }
@@ -635,7 +652,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   background: var(--mon-fill); color: var(--mon-text-2); border-color: var(--mon-border);
 }
 .mon[data-mode="dark"] .mon-btn--ghost:hover { background: var(--mon-sel); color: var(--mon-accent); }
-.mon[data-mode="dark"] .mon-track { border-color: rgba(255, 255, 255, .09); }
+/* Панель трека рисует фон числом, а не переменной, — без этой строки в тёмной
+   теме получалась белая плашка со светлым текстом, то есть пустое место. */
+.mon[data-mode="dark"] .mon-track {
+  background: rgba(13, 21, 36, .88);
+  border-color: rgba(255, 255, 255, .09);
+}
 .mon[data-mode="dark"] .mon-track__facts .bad { color: #f58b7f; }
 /* подписи поверх карты: белая обводка на тёмных тайлах превращалась в кляксу */
 .mon[data-mode="dark"] .mon-stop__label {
@@ -686,6 +708,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   /* правый край оставлен колонке кнопок карты (.mon-ctl) */
   .mon-track { left: 8px; right: 54px; top: 8px; transform: none; width: auto; }
   .mon-ctl { right: 8px; top: 8px; }
+  /* Полный экран на телефоне не нужен: карта и так во весь экран, а Safari
+     на iPhone разворачивать произвольный блок вообще не умеет. Заодно
+     колонка становится короче и перестаёт спорить со шторкой. */
+  .mon-ctl button[data-role="fullscreen"] { display: none; }
   .mon-follow { left: 12px; bottom: auto; top: 12px; }
   .mon-row { padding: 12px 14px; min-height: 44px; }
   /* 16px — иначе iOS зумит страницу при фокусе на поле */
@@ -697,6 +723,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   .mon-panel--list.is-tall { max-height: 88%; }
   .mon-note { margin: 0 10px 6px; padding: 8px 10px; font-size: 11px; }
   .mon-lag { margin: 0 10px 10px; }
+  /* На телефоне шторка не выше 60% экрана, и две длинные приписки съедали
+     список: из трёх машин помещалась полторы. Приписки показываем, когда
+     шторку подняли тапом по шапке. */
+  .mon-panel--list:not(.is-tall) .mon-lag { display: none; }
   .mon-sheet-hide { display: none !important; }
 }
 </style>
@@ -1123,11 +1153,23 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var next = new YMapDefaultSchemeLayer({ theme: theme });
       if (schemeLayer) ymap.removeChild(schemeLayer);
       schemeLayer = next;
-      if (!satelliteOn) ymap.addChild(schemeLayer);
+      if (!satelliteOn) { ymap.addChild(schemeLayer); raiseFeatures(); }
       ymap.update({ theme: theme });
     }
+    // ⚠️ zIndex обязателен. По умолчанию любой слой в 3.0 идёт с zIndex 1500 —
+    // ровно как подложка. При равном zIndex выигрывает тот, кого добавили
+    // позже, поэтому включение спутника накрывало собой все метки, и машины
+    // с карты исчезали. 1800 — значение из документации Яндекса для слоя,
+    // который должен лежать НАД подложкой.
+    var featuresLayer = new YMapDefaultFeaturesLayer({ zIndex: 1800 });
+    ymap.addChild(featuresLayer);
+    // Подложку меняем только вместе с подъёмом слоя меток наверх: порядок
+    // потомков — вторая половина того же правила.
+    function raiseFeatures() {
+      ymap.removeChild(featuresLayer);
+      ymap.addChild(featuresLayer);
+    }
     applyMapTheme();
-    ymap.addChild(new YMapDefaultFeaturesLayer({}));
     fit();
 
     var listEl = document.getElementById('mon-list');
@@ -1748,8 +1790,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // Трек рисуется градиентом, как в макете: дальний конец пути бледный,
     // ближний к машине — насыщенный. Яндекс не умеет градиент на линии,
     // поэтому линия режется на куски с плавно меняющимся цветом.
-    var TRACK_FAR = [147, 197, 253];   // #93c5fd — где машина была давно
-    var TRACK_NEAR = [29, 78, 216];    // #1d4ed8 — где она сейчас
+    var TRACK_FAR = [147, 197, 253];        // #93c5fd — где машина была давно
+    var TRACK_NEAR_LIGHT = [29, 78, 216];   // #1d4ed8 — где она сейчас
+    var TRACK_NEAR_DARK = [37, 99, 235];    // #2563eb — на тёмных тайлах ярче
     // «2026-08-22T10:15:00+00:00» → «10:15» в часовом поясе владельца
     function hhmm(iso) {
       if (!iso) return '—';
@@ -1758,8 +1801,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     }
 
     function trackColor(t) {
+      var near = (theme === 'dark') ? TRACK_NEAR_DARK : TRACK_NEAR_LIGHT;
       var c = TRACK_FAR.map(function (v, i) {
-        return Math.round(v + (TRACK_NEAR[i] - v) * t);
+        return Math.round(v + (near[i] - v) * t);
       });
       return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('');
     }
@@ -1921,9 +1965,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     ctl.className = 'mon-ctl';
     mon.appendChild(ctl);
 
-    function ctlButton(icon, title, onClick) {
+    function ctlButton(icon, title, onClick, role) {
       var b = document.createElement('button');
       b.type = 'button';
+      if (role) b.dataset.role = role;
       b.title = title;
       b.setAttribute('aria-label', title);
       b.innerHTML = '<i class="ph ' + icon + '"></i>';
@@ -1970,6 +2015,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           ymap.removeChild(satelliteLayer);
           ymap.addChild(schemeLayer);
         }
+        raiseFeatures();
         satBtn.classList.toggle('is-on', satelliteOn);
         satBtn.title = satelliteOn ? 'Схема' : 'Спутник';
       });
@@ -1979,7 +2025,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       ctlButton('ph-arrows-out', 'Во весь экран', function () {
         if (document.fullscreenElement) document.exitFullscreen();
         else if (mon.requestFullscreen) mon.requestFullscreen();
-      });
+      }, 'fullscreen');
       document.addEventListener('fullscreenchange', function () {
         if (document.fullscreenElement !== mon) mon.style.height = '';
         fit();
