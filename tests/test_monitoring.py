@@ -218,7 +218,7 @@ def test_monitoring_screen_draws_truck_picture_and_address():
     assert "key: 'reefer'" in src
     assert "artFor(v.type).key" in src
     # обводка состояния осталась носителем состояния (теперь через ringCss/applyRing)
-    assert "applyRing(tile, key, st.color, 2.5" in src
+    assert "applyRing(tile, key, stateColor(key), 2.5" in src
     # адрес берётся у своего эндпоинта (он кэширует и сам выбирает геокодер);
     # ymaps.geocode использовать нельзя — для него нужен ОТДЕЛЬНЫЙ ключ Яндекса,
     # и без него вызов молча падал, а карточка навсегда писала «определяю адрес…»
@@ -529,9 +529,9 @@ def test_invalid_gps_ring_is_dashed_everywhere():
     # ни одно из трёх мест не задаёт кольцо в обход общей функции
     assert "box-shadow: 0 0 0 2px ' + st.color" not in src, "строка списка мимо ringCss"
     assert "boxShadow = '0 0 0 2.5px ' + st.color" not in src, "карточка мимо applyRing"
-    assert "ringCss(key, st.color, 2)" in src
+    assert "ringCss(key, stateColor(key), 2)" in src
     assert "applyRing(document.getElementById('mon-card-tile')" in src
-    assert "applyRing(tile, key, st.color, 2.5" in src
+    assert "applyRing(tile, key, stateColor(key), 2.5" in src
     # рамка не должна менять размер плитки
     assert src.count("box-sizing: border-box; border: 0;") >= 2
     # у метки внутреннее кольцо гасим, иначе два пунктира друг на друге
@@ -744,6 +744,27 @@ def test_map_has_dark_theme_switch():
     # панели темнеют тем же переключателем, одним блоком стилей
     assert 'mon.dataset.mode = theme' in src
     assert '.mon[data-mode="dark"] {' in src
+
+
+def test_dark_map_theme_is_set_on_the_scheme_layer():
+    """Тему ТАЙЛОВ задаёт слой схемы, а не свойство theme у карты.
+
+    26.08 на боевом было ровно так: панели потемнели, а карта под ними
+    осталась светлой. Выданная Яндексом сборка 3.0 молча игнорирует theme
+    у YMap; работает только theme в конструкторе YMapDefaultSchemeLayer —
+    этот путь и был проверен на боевом ключе.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "new YMapDefaultSchemeLayer({ theme: theme })" in src
+    assert "function applyMapTheme()" in src
+    # переключатель зовёт ту же функцию, а не красит панели в обход карты
+    assert src.count("applyMapTheme()") >= 2
+    # состояния на тёмных тайлах ярче и перекрашиваются вслед за темой
+    assert "STATE_COLORS_DARK" in src
+    assert "function stateColor(key)" in src
+    assert "st.color" not in src, "где-то остался цвет состояния мимо stateColor"
+    # цвет в легенде живёт в стилях: инлайновый стиль тёмная тема не перебьёт
+    assert 'data-state="invalid"><i></i>' in src
 
 
 def test_map_says_out_loud_when_the_key_is_rejected():
