@@ -229,6 +229,38 @@ def test_monitoring_screen_draws_truck_picture_and_address():
     assert "адрес не определился" in src
 
 
+def test_monitoring_has_tail_and_direction_arrow_like_the_app():
+    """Хвост и стрелка направления есть и в кабинете, не только в приложении.
+
+    Владелец 27.08.2026: «причём тут приложение, когда я говорю — вообще в
+    целом проект, надо делать везде, на сайте этого нет». Функция, сделанная
+    в одной поверхности, для него не сделана.
+
+    ⚠️ Правила продублированы в Dart (`lib/geo.dart`, `DirectionRing`) и здесь.
+    Разъедутся — телефон и кабинет покажут про одну машину разное.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+
+    # хвост: только куски «ехал», окно 15 минут, потолок точек
+    assert "TAIL_WINDOW_MS = 15 * 60 * 1000" in src
+    assert "TAIL_MAX_POINTS = 30" in src
+    assert "if (seg.kind !== 'move') return;" in src
+    assert "#93c5fd" in src            # тот же бледно-синий, что в приложении
+
+    # хвост появляется сам по выбору машины и обновляется вместе с опросом
+    assert "syncTail()" in src
+    # полный трек и хвост одновременно не рисуем — две линии по одному пути
+    assert "clearTail();" in src
+
+    # стрелка направления: порог как в приложении, курс считаем сами
+    assert "HEADING_MIN_MOVE_M = 15" in src
+    assert "Math.atan2(dLon, dLat)" in src
+    # поправка на сходимость меридианов — иначе все направления косят к востоку
+    assert "Math.cos(v.lat * Math.PI / 180)" in src
+    # стрелка только у ЕДУЩЕЙ машины и только при известном направлении
+    assert "key === 'moving' && course !== undefined" in src
+
+
 def test_monitoring_track_is_a_gradient_like_the_design():
     """Трек — градиент от бледного к насыщенному, как в макете редизайна."""
     src = open("app/web/templates/map.html", encoding="utf-8").read()
