@@ -1830,7 +1830,10 @@ async def _finalize_expense(
     source_bot: Bot,
     owner_bot: Bot,
     reply_target: Message,
+    extra_note: str | None = None,
 ) -> None:
+    """extra_note — строка владельцу под сообщением о расходе (например,
+    расхождение суммы на чеке с той, что ввёл водитель)."""
     data = await state.get_data()
     # Смена не обязательна (Правка 3): расход может быть вне смены — shift_id=None.
     shift = await shift_service.get_active_shift(session, driver.id)
@@ -1891,6 +1894,8 @@ async def _finalize_expense(
     )
     if description:
         caption += f"\nОписание: {description}"
+    if extra_note:
+        caption += f"\n{extra_note}"
     markup = kb.expense_decision_keyboard(expense.id)
 
     if receipt_file_id is not None:
@@ -1919,21 +1924,41 @@ async def expense_receipt_photo(
         await message.answer(msg.SOMETHING_WRONG)
         return
 
-    # (Дормант) распознавание суммы с чека. Активно только при включённом
+    # Распознавание суммы с чека. Активно только при включённом
     # FEATURE_RECEIPT_OCR и заданном ключе — иначе остаётся сумма от водителя.
+    #
+    # ⚠️ Распознанная сумма НЕ подменяет введённую водителем. Раньше подменяла
+    # молча: OCR ошибся — расход уехал с неверной цифрой, и никто об этом не
+    # узнал. Теперь расхождение уходит владельцу отдельной строкой, а решает
+    # он. Правило то же, что в разборе чека: лучше не распознать, чем
+    # распознать неправильно.
+    ocr_note = None
     if receipt_ocr.is_enabled() and file_id is not None:
         try:
             buf = await bot.download(file_id)
             reading = await receipt_ocr.recognize(buf.read())
+            typed = receipt_ocr.parse_amount((await state.get_data()).get("amount"))
             if reading and reading.amount_rub:
-                await state.update_data(amount=str(reading.amount_rub))
+                logger.info(
+                    "OCR чека: распознано %s ₽, водитель ввёл %s ₽",
+                    reading.amount_rub, typed if typed is not None else "—",
+                )
+                if typed is None or abs(reading.amount_rub - typed) > Decimal("1"):
+                    ocr_note = (
+                        f"🧾 На чеке распознано <b>{reading.amount_rub:.2f} ₽</b>, "
+                        f"водитель ввёл {typed:.0f} ₽. Проверьте."
+                        if typed is not None
+                        else f"🧾 На чеке распознано <b>{reading.amount_rub:.2f} ₽</b>."
+                    )
+            else:
+                logger.info("OCR чека: сумма не распозналась, оставляем введённую водителем")
         except Exception as exc:  # noqa: BLE001 — OCR не критичен
-            logger.debug("receipt OCR skipped: %s", exc)
+            logger.warning("OCR чека не отработал: %s", exc)
 
     await _finalize_expense(
         state=state, session=session, driver=driver,
         receipt_file_id=file_id, source_bot=bot, owner_bot=owner_bot,
-        reply_target=message,
+        reply_target=message, extra_note=ocr_note,
     )
 
 

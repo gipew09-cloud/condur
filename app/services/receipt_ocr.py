@@ -14,7 +14,11 @@
              Ключ: OPENAI_API_KEY
 
 Фоллбэк: без ключа / при ошибке бот спрашивает сумму у водителя вручную.
-Намеренно без тяжёлых SDK — только httpx (уже есть в зависимостях aiogram).
+Намеренно без тяжёлых SDK — HTTP через aiohttp. ⚠️ Именно aiohttp: aiogram
+тянет за собой его, а вот HTTPX в зависимостях НЕТ и не было. Из-за
+неверной строчки в этом самом комментарии распознавание падало на
+импорте при каждом вызове — и молчало, потому что ключей всё равно не
+было. Поймано только 27.08.2026, когда ключ наконец появился.
 """
 import asyncio
 import base64
@@ -58,6 +62,34 @@ def _get_provider() -> str:
 # Провайдеры, которые возвращают просто текст со снимка, а не готовый JSON.
 # Для них сумму и литры вытаскивает наш разбор, а не модель.
 _TEXT_PROVIDERS = {"llamaparse"}
+
+# Имена, которые вообще допустимы в RECEIPT_OCR_PROVIDER.
+_KNOWN_PROVIDERS = ("llamaparse", "gemini", "anthropic", "openai", "disabled")
+
+
+def provider_status() -> str:
+    """Строка для лога: что настроено и работает ли OCR.
+
+    ⚠️ Секрет сюда попасть не может — и это не теория. 26.08.2026 владелец
+    вписал ключ LlamaParse в RECEIPT_OCR_PROVIDER вместо имени провайдера,
+    и прежняя версия этой строки напечатала ключ в лог Railway целиком.
+    Поэтому чужое значение НИКОГДА не печатаем: только длину и подсказку.
+    """
+    provider = _get_provider()
+    if not provider:
+        shown = "не задан"
+    elif provider in _KNOWN_PROVIDERS:
+        shown = provider
+    elif provider.startswith("llx-") or len(provider) > 24:
+        shown = "ПОХОЖЕ, СЮДА ВПИСАН КЛЮЧ (значение скрыто) — имя провайдера ждём тут, ключ в своей переменной"
+    else:
+        shown = f"неизвестный (значение скрыто, {len(provider)} символов)"
+    return (
+        f"OCR чека: провайдер={shown}, "
+        f"ключ={'есть' if _get_provider_key() else 'НЕТ'}, "
+        f"флаг={'on' if settings.feature_receipt_ocr else 'off'} → "
+        + ("РАБОТАЕТ" if is_enabled() else "выключен, водитель вводит сумму вручную")
+    )
 
 
 def _get_provider_key() -> str:
@@ -160,8 +192,6 @@ async def _call_vision(image_bytes: bytes, prompt: str) -> str | None:
 # Ключ: GEMINI_API_KEY из https://aistudio.google.com/app/apikey
 # -------------------------------------------------------------------------
 async def _gemini(image_bytes: bytes, prompt: str) -> str | None:
-    import httpx
-
     api_key = _get_provider_key()
     if not api_key:
         return None
@@ -185,10 +215,11 @@ async def _gemini(image_bytes: bytes, prompt: str) -> str | None:
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-1.5-flash:generateContent?key={api_key}"
     )
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-    data = resp.json()
+    status, body = await _request("POST", url, json_body=payload, timeout_s=15.0)
+    if status >= 400:
+        logger.warning("Gemini: HTTP %s, ответ: %s", status, body[:300])
+        return None
+    data = _json(body)
     # Путь к тексту ответа в Gemini API
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]
@@ -201,8 +232,6 @@ async def _gemini(image_bytes: bytes, prompt: str) -> str | None:
 # Anthropic Claude Haiku — платно, ~$0.001/фото
 # -------------------------------------------------------------------------
 async def _anthropic(image_bytes: bytes, prompt: str) -> str | None:
-    import httpx
-
     api_key = _get_provider_key()
     if not api_key:
         return None
@@ -228,18 +257,20 @@ async def _anthropic(image_bytes: bytes, prompt: str) -> str | None:
             }
         ],
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            json=payload,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-        )
-        resp.raise_for_status()
-    data = resp.json()
+    status, body = await _request(
+        "POST",
+        "https://api.anthropic.com/v1/messages",
+        json_body=payload,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        timeout_s=15.0,
+    )
+    if status >= 400:
+        logger.warning("Anthropic: HTTP %s, ответ: %s", status, body[:300])
+        return None
     try:
         return data["content"][0]["text"]
     except (KeyError, IndexError):
@@ -250,8 +281,6 @@ async def _anthropic(image_bytes: bytes, prompt: str) -> str | None:
 # OpenAI GPT-4o-mini — платно, ~$0.002/фото
 # -------------------------------------------------------------------------
 async def _openai(image_bytes: bytes, prompt: str) -> str | None:
-    import httpx
-
     api_key = _get_provider_key()
     if not api_key:
         return None
@@ -273,17 +302,20 @@ async def _openai(image_bytes: bytes, prompt: str) -> str | None:
             }
         ],
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-        resp.raise_for_status()
-    data = resp.json()
+    status, body = await _request(
+        "POST",
+        "https://api.openai.com/v1/chat/completions",
+        json_body=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        timeout_s=15.0,
+    )
+    if status >= 400:
+        logger.warning("OpenAI: HTTP %s, ответ: %s", status, body[:300])
+        return None
+    data = _json(body)
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError):
@@ -303,12 +335,62 @@ _LLAMA_POLL_S = 1.5          # как часто спрашивать «гото
 _LLAMA_TIMEOUT_S = 20.0      # дольше водитель ждать не будет — уйдём на ручной ввод
 
 
+async def _request(
+    method: str,
+    url: str,
+    *,
+    headers: dict | None = None,
+    json_body: dict | None = None,
+    form=None,
+    params: list | None = None,
+    timeout_s: float = 30.0,
+) -> tuple[int, str]:
+    """Один HTTP-запрос. Возвращает (код ответа, тело текстом).
+
+    Через aiohttp — он уже стоит вместе с aiogram, лишней зависимости не
+    появляется. Тело возвращаем всегда, даже при ошибке: без него по одному
+    коду 4xx не понять, чего API не хватило, а проверить вживую нечем —
+    ключ владельца я не беру.
+    """
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.request(
+            method, url, headers=headers, json=json_body, data=form, params=params
+        ) as response:
+            return response.status, await response.text()
+
+
+def _ok(status: int, body: str, step: str) -> bool:
+    """Успешен ли ответ. Если нет — пишем в лог и код, и тело."""
+    if status < 400:
+        return True
+    logger.warning("LlamaParse, %s: HTTP %s, ответ: %s", step, status, body[:400])
+    return False
+
+
+def _json(body: str) -> dict:
+    """Тело ответа как словарь. Мусор не роняет вызов."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 async def _call_text_ocr(image_bytes: bytes) -> str | None:
     """Текстовый OCR выбранного провайдера. Никогда не бросает наружу."""
     if _get_provider() == "llamaparse":
         return await _llamaparse(image_bytes)
     logger.warning("Неизвестный текстовый OCR провайдер: %s", _get_provider())
     return None
+
+
+# Как называется распознанный текст в ответе. В официальном примере из
+# кабинета LlamaParse это `markdown_full`, в REST-документации — `markdown`.
+# Берём все варианты: угадывать один и молча получать пустоту — плохой размен.
+_TEXT_KEYS = ("markdown_full", "markdown", "text_full", "text", "md")
 
 
 def _collect_text(node) -> list[str]:
@@ -321,7 +403,7 @@ def _collect_text(node) -> list[str]:
     found: list[str] = []
     if isinstance(node, dict):
         for key, value in node.items():
-            if key in ("markdown", "text", "md") and isinstance(value, str) and value.strip():
+            if key in _TEXT_KEYS and isinstance(value, str) and value.strip():
                 found.append(value)
             else:
                 found.extend(_collect_text(value))
@@ -332,50 +414,52 @@ def _collect_text(node) -> list[str]:
 
 
 async def _llamaparse(image_bytes: bytes) -> str | None:
-    import httpx
+    import aiohttp
 
     api_key = _get_provider_key()
     if not api_key:
         return None
     headers = {"Authorization": f"Bearer {api_key}", "accept": "application/json"}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        upload = await client.post(
-            f"{_LLAMA_BASE}/upload",
-            headers=headers,
-            files={"file": ("receipt.jpg", image_bytes, "image/jpeg")},
-        )
-        upload.raise_for_status()
-        job_id = (upload.json() or {}).get("id")
-        if not job_id:
-            logger.warning("LlamaParse не вернул id задания: %s", upload.text[:200])
+    form = aiohttp.FormData()
+    form.add_field("file", image_bytes, filename="receipt.jpg", content_type="image/jpeg")
+    status, body = await _request("POST", f"{_LLAMA_BASE}/upload", headers=headers, form=form)
+    if not _ok(status, body, "загрузка файла"):
+        return None
+    job_id = _json(body).get("id")
+    if not job_id:
+        logger.warning("LlamaParse не вернул id задания: %s", body[:200])
+        return None
+
+    # ждём, пока задание отработает
+    waited = 0.0
+    while waited < _LLAMA_TIMEOUT_S:
+        await asyncio.sleep(_LLAMA_POLL_S)
+        waited += _LLAMA_POLL_S
+        status, body = await _request("GET", f"{_LLAMA_BASE}/{job_id}", headers=headers)
+        if not _ok(status, body, "проверка задания"):
             return None
-
-        # ждём, пока задание отработает
-        waited = 0.0
-        while waited < _LLAMA_TIMEOUT_S:
-            await asyncio.sleep(_LLAMA_POLL_S)
-            waited += _LLAMA_POLL_S
-            state = await client.get(f"{_LLAMA_BASE}/{job_id}", headers=headers)
-            state.raise_for_status()
-            body = state.json() or {}
-            status = str((body.get("job") or body).get("status") or "").upper()
-            if status in ("SUCCESS", "COMPLETED", "PARTIAL_SUCCESS"):
-                break
-            if status in ("ERROR", "FAILED", "CANCELLED"):
-                logger.warning("LlamaParse вернул статус %s", status)
-                return None
-        else:
-            logger.info("LlamaParse не успел за %s с — уходим на ручной ввод", _LLAMA_TIMEOUT_S)
+        payload = _json(body)
+        state = str((payload.get("job") or payload).get("status") or "").upper()
+        if state in ("SUCCESS", "COMPLETED", "PARTIAL_SUCCESS"):
+            break
+        if state in ("ERROR", "FAILED", "CANCELLED"):
+            logger.warning("LlamaParse вернул статус %s", state)
             return None
+    else:
+        logger.info("LlamaParse не успел за %s с — уходим на ручной ввод", _LLAMA_TIMEOUT_S)
+        return None
 
-        result = await client.get(
-            f"{_LLAMA_BASE}/{job_id}", headers=headers, params={"expand": "markdown"}
-        )
-        result.raise_for_status()
+    status, body = await _request(
+        "GET",
+        f"{_LLAMA_BASE}/{job_id}",
+        headers=headers,
+        params=[("expand", "markdown_full"), ("expand", "markdown")],
+    )
+    if not _ok(status, body, "получение результата"):
+        return None
 
-    chunks = _collect_text(result.json())
-    text = "\n".join(chunks).strip()
+    text = "\n".join(_collect_text(_json(body))).strip()
     # видно в логах Railway: заработал ключ или нет, и сколько текста пришло
     logger.info("LlamaParse: задание %s, распознано %s символов", job_id, len(text))
     return text or None
