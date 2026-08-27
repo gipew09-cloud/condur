@@ -1001,9 +1001,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   // Исходник обязан быть СВЕТЛЫМ: перекраска трогает только светлый кузов,
   // тёмные детали (резина, рама, стёкла) остаются как нарисованы.
   var TRUCK_ART = {
-    refrigerator: { key: 'reefer', src: '/static/truck-reefer.png' },
-    truck:        { key: 'reefer', src: '/static/truck-reefer.png' },
-    gazelle:      { key: 'reefer', src: '/static/truck-reefer.png' }
+    refrigerator: { key: 'reefer', src: '/static/truck-reefer.png?v={{ asset_v }}' },
+    truck:        { key: 'reefer', src: '/static/truck-reefer.png?v={{ asset_v }}' },
+    gazelle:      { key: 'reefer', src: '/static/truck-reefer.png?v={{ asset_v }}' }
   };
   var TRUCK_ART_DEFAULT = TRUCK_ART.refrigerator;
 

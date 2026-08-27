@@ -331,6 +331,15 @@ async def _openai(image_bytes: bytes, prompt: str) -> str | None:
 # загрузить → дождаться → забрать разметку.
 # -------------------------------------------------------------------------
 _LLAMA_BASE = "https://api.cloud.llamaindex.ai/api/v2/parse"
+# ⚠️ Поле configuration ОБЯЗАТЕЛЬНО. Без него загрузка отвечает
+# HTTP 400: "configuration field is required for multipart requests."
+# (поймано на боевом 27.08.2026).
+#
+# Порядок попыток осмысленный: сначала пустая настройка — тогда работает
+# тариф по умолчанию и тратится меньше страниц из бесплатных 10 000. Если её
+# не примут, идёт та, что показана в примере в кабинете LlamaParse: она
+# заведомо валидна, но режим «agentic» дороже по расходу страниц.
+_LLAMA_CONFIGS = ("{}", '{"tier": "agentic", "version": "latest"}')
 _LLAMA_POLL_S = 1.5          # как часто спрашивать «готово?»
 _LLAMA_TIMEOUT_S = 20.0      # дольше водитель ждать не будет — уйдём на ручной ввод
 
@@ -421,9 +430,21 @@ async def _llamaparse(image_bytes: bytes) -> str | None:
         return None
     headers = {"Authorization": f"Bearer {api_key}", "accept": "application/json"}
 
-    form = aiohttp.FormData()
-    form.add_field("file", image_bytes, filename="receipt.jpg", content_type="image/jpeg")
-    status, body = await _request("POST", f"{_LLAMA_BASE}/upload", headers=headers, form=form)
+    # FormData одноразовая — на каждую попытку собираем заново
+    status, body = 0, ""
+    for attempt, configuration in enumerate(_LLAMA_CONFIGS, start=1):
+        form = aiohttp.FormData()
+        form.add_field("file", image_bytes, filename="receipt.jpg", content_type="image/jpeg")
+        form.add_field("configuration", configuration)
+        status, body = await _request(
+            "POST", f"{_LLAMA_BASE}/upload", headers=headers, form=form
+        )
+        if status < 400:
+            break
+        logger.info(
+            "LlamaParse: настройка %s из %s не подошла (HTTP %s), пробуем следующую",
+            attempt, len(_LLAMA_CONFIGS), status,
+        )
     if not _ok(status, body, "загрузка файла"):
         return None
     job_id = _json(body).get("id")

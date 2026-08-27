@@ -7,9 +7,9 @@
   <title>{% block title %}TMS{% endblock %} — кабинет</title>
 
   <!-- Иконки бренда: вкладка браузера и «на экран Домой» на телефоне -->
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
-  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png?v={{ asset_v }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png?v={{ asset_v }}">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v={{ asset_v }}">
 
   <!-- Шрифты: Onest для интерфейса (дизайн «Свежий путь»), JetBrains Mono для цифр -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -22,8 +22,8 @@
        бренда лежал на старой синей подложке). Меняем номер версии при каждой
        правке стилей — тогда браузер гарантированно берёт свежие. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  <link rel="stylesheet" href="/static/cabinet.css?v=4">
-  <link rel="stylesheet" href="/static/mobile.css?v=4">
+  <link rel="stylesheet" href="/static/cabinet.css?v={{ asset_v }}">
+  <link rel="stylesheet" href="/static/mobile.css?v={{ asset_v }}">
 
   <!-- HTMX и Phosphor Icons -->
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -63,7 +63,7 @@
   <nav class="topbar">
     <ul>
       <li class="brand-lockup">
-        <img class="brand-mark" src="/static/logo-mark.png" alt="Condur" width="55" height="44">
+        <img class="brand-mark" src="/static/logo-mark.png?v={{ asset_v }}" alt="Condur" width="55" height="44">
         <span class="brand-copy">
           <strong>Condur</strong>
           <small>{{ owner.company_name if owner else 'TMS' }}</small>

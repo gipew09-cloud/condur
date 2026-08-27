@@ -19,6 +19,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+import os
 from pathlib import Path
 from typing import Annotated, AsyncIterator
 from urllib.parse import quote
@@ -185,6 +186,34 @@ def _backdated(obj) -> bool:
 
 templates.env.filters["vtype"] = _vehicle_type_label
 templates.env.globals["VEHICLE_COLORS"] = VEHICLE_COLORS
+
+
+def _asset_version() -> str:
+    """Метка версии для ссылок на /static — чтобы браузер не подсовывал старое.
+
+    Раньше версия проставлялась руками (`cabinet.css?v=4`), и о ней забывали:
+    стили менялись, номер оставался, браузер отдавал файл из кэша, и правка
+    «не выкатывалась». Теперь метка считается сама:
+
+    1. по коммиту, из которого собран деплой (Railway кладёт его в окружение) —
+       новый деплой = новая ссылка = браузер идёт за свежим файлом;
+    2. если переменной нет (локальный запуск) — по времени последней правки
+       файлов в /static.
+    """
+    for name in ("RAILWAY_GIT_COMMIT_SHA", "RAILWAY_DEPLOYMENT_ID"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value[:8]
+    try:
+        files = (BASE_DIR / "static").rglob("*")
+        newest = max(f.stat().st_mtime for f in files if f.is_file())
+        return str(int(newest))
+    except (ValueError, OSError):
+        return "dev"
+
+
+# Считается один раз при старте: файлы внутри одного деплоя не меняются.
+templates.env.globals["asset_v"] = _asset_version()
 templates.env.filters["tstatus"] = _trip_status_label
 templates.env.filters["pillclass"] = _pill_class
 templates.env.filters["statusru"] = _status_ru
