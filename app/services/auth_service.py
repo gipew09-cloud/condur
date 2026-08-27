@@ -133,6 +133,20 @@ def session_token_hash(token: str) -> str:
 def device_label_from_user_agent(user_agent: str | None) -> str:
     """Короткая подпись устройства для списка «Устройства»: «Chrome · Windows»."""
     ua = (user_agent or "").lower()
+    # ⚠️ Приложение Condur ставится файлом на телефон и браузером не является.
+    # Свой признак ему нужен потому, что оно шлёт «Condur App (android)»: ни
+    # одного знакомого браузера в строке нет, и без этой ветки телефон попадал
+    # в список как «Браузер · Android» — не отличить от кабинета, открытого в
+    # Chrome на том же телефоне. Проверка идёт первой: строка приложения не
+    # должна случайно совпасть с браузерной веткой.
+    if "condur app" in ua:
+        # Приложение подставляет сюда своё название системы: «android», «iOS».
+        # У «ios» нет знакомого браузерам следа, поэтому разбираем отдельно —
+        # общую проверку трогать нельзя, там «ios» встретится в чужих строках.
+        system = _os_from_user_agent(ua)
+        if system == "?" and "ios" in ua:
+            system = "iPhone"
+        return f"Приложение Condur · {system}"
     if "edg/" in ua or "edge" in ua:
         browser = "Edge"
     elif "opr/" in ua or "opera" in ua:
@@ -147,18 +161,21 @@ def device_label_from_user_agent(user_agent: str | None) -> str:
         browser = "Safari"
     else:
         browser = "Браузер"
+    return f"{browser} · {_os_from_user_agent(ua)}"
+
+
+def _os_from_user_agent(ua: str) -> str:
+    """Система устройства по уже приведённой к нижнему регистру строке."""
     if "iphone" in ua:
-        os_name = "iPhone"
-    elif "ipad" in ua:
-        os_name = "iPad"
-    elif "android" in ua:
-        os_name = "Android"
-    elif "mac os" in ua or "macintosh" in ua:
-        os_name = "macOS"
-    elif "windows" in ua:
-        os_name = "Windows"
-    elif "linux" in ua:
-        os_name = "Linux"
-    else:
-        os_name = "?"
-    return f"{browser} · {os_name}"
+        return "iPhone"
+    if "ipad" in ua:
+        return "iPad"
+    if "android" in ua:
+        return "Android"
+    if "mac os" in ua or "macintosh" in ua:
+        return "macOS"
+    if "windows" in ua:
+        return "Windows"
+    if "linux" in ua:
+        return "Linux"
+    return "?"

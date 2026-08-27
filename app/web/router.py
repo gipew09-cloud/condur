@@ -58,7 +58,7 @@ from app.models import (
 from app.config import settings
 from app.services import act_service, auth_service, billing, geocode_service, rc_service, telemetry_service
 from app.services.event_service import log_event
-from app.services.textsanitize import clean_user_text
+from app.services.textsanitize import clean_user_text, origin_key
 from app.services.timeutil import (
     RU_MONTHS_SHORT,
     add_months,
@@ -2741,16 +2741,15 @@ def _apply_distribution_center_form(center: DistributionCenter, form: dict) -> N
 
 
 def _origin_key(value: str | None) -> str:
-    """Ключ склада — ровно тот, по которому список группируется на экране.
+    """Ключ склада — тот же, что у бота водителя (`origin_key`).
 
-    ⚠️ Этим ключом ОБЯЗАНЫ пользоваться и показ списка, и перестановка ▲▼.
-    Пока перестановка сравнивала `origin` как есть, а экран — обрезанный,
-    строка с лишним пробелом в названии склада («Соф.60 » вместо «Соф.60»)
-    попадала в группу на экране, но выпадала из неё при перестановке: стрелки
-    у неё нажимались и ничего не делали, а сама она навсегда прилипала к концу
-    списка. Владелец это и увидел как «телепортируется вниз в конец страницы».
+    ⚠️ Этим ключом ОБЯЗАНЫ пользоваться показ списка, перестановка ▲▼ и
+    добавление маршрута. Пока перестановка сравнивала `origin` как есть, а
+    экран — обрезанный, строка с лишним пробелом попадала в группу на экране,
+    но выпадала из неё при перестановке: стрелки нажимались и ничего не делали.
+    Пустое название показываем прочерком, чтобы группа не осталась безымянной.
     """
-    return (value or "—").strip()
+    return origin_key(value) or "—"
 
 
 async def _route_templates_view(
@@ -2875,16 +2874,36 @@ async def routes_template_add(
     destination = clean_user_text(destination)
     if not origin or not destination:
         raise HTTPException(status_code=400, detail="Укажите склад и РЦ")
-    # не плодим дубли: тот же склад+РЦ обновляем/оставляем
-    existing = (
+
+    # Все маршруты владельца нужны целиком: и чтобы найти дубль, и чтобы
+    # подобрать УЖЕ ЗАВЕДЁННОЕ написание склада.
+    mine = list((
         await session.execute(
-            select(RouteTemplate).where(
-                RouteTemplate.owner_id == owner.id,
-                RouteTemplate.origin == origin,
-                RouteTemplate.destination == destination,
-            )
+            select(RouteTemplate).where(RouteTemplate.owner_id == owner.id)
         )
-    ).scalar_one_or_none()
+    ).scalars().all())
+
+    # ⚠️ Новый маршрут обязан встать в существующую папку склада, а не завести
+    # свою. Владелец набирает название руками: лишний пробел внутри — и на
+    # экране появлялись две одинаковые с виду группы по одному маршруту.
+    # Поэтому ищем склад по ключу и берём его написание как образец.
+    key = _origin_key(origin)
+    canonical = next(
+        (t.origin for t in mine if t.is_active and _origin_key(t.origin) == key),
+        None,
+    ) or next((t.origin for t in mine if _origin_key(t.origin) == key), None)
+    if canonical:
+        origin = canonical
+
+    # не плодим дубли: тот же склад+РЦ обновляем/оставляем
+    existing = next(
+        (
+            t for t in mine
+            if _origin_key(t.origin) == key
+            and (t.destination or "").strip() == destination
+        ),
+        None,
+    )
     if existing is None:
         session.add(RouteTemplate(
             owner_id=owner.id,
@@ -2976,9 +2995,11 @@ async def routes_template_move(
     siblings[idx], siblings[neighbour_idx] = siblings[neighbour_idx], siblings[idx]
     for position, item in enumerate(siblings, start=1):
         item.sort_order = position * 10
-        # заодно лечим данные: убираем пробелы, из-за которых склад двоился
-        if item.origin and item.origin != item.origin.strip():
-            item.origin = item.origin.strip()
+        # Заодно лечим данные: приводим написание склада к ключу. Лишний
+        # пробел — снаружи или внутри названия — и склад двоился на экране.
+        healed = _origin_key(item.origin)
+        if item.origin and healed != "—" and item.origin != healed:
+            item.origin = healed
     await session.commit()
     return await _render_list()
 

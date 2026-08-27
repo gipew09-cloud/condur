@@ -7,6 +7,7 @@
   на FSM. /status — главная защита: пересоздаёт правильное UI-состояние
   из БД и сбрасывает залипший FSM.
 """
+import asyncio
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -29,6 +30,7 @@ from app.bots.notifications import (
     transfer_photo_to_owner,
 )
 from app.config import settings
+from app.database import async_session
 from app.bots.states import (
     AddManualShift,
     AddManualTrip,
@@ -55,7 +57,7 @@ from app.services import (
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
-from app.services.textsanitize import clean_user_text
+from app.services.textsanitize import clean_user_text, origin_key
 from app.services.timeutil import fmt_time, owner_tz
 
 logger = logging.getLogger(__name__)
@@ -96,10 +98,14 @@ async def _driver_runtime_state(session: AsyncSession, driver_id: int) -> str:
 
 
 def _pick_photo_file_id(message: Message) -> str | None:
+    """Самый КРУПНЫЙ размер, который прислал Telegram.
+
+    Раньше брался предпоследний — и владелец получал чек в мыле, а
+    распознаванию доставалась картинка хуже, чем есть. Экономия трафика тут
+    не стоит нечитаемого чека: Telegram и так отдаёт сжатые размеры.
+    """
     if not message.photo:
         return None
-    if len(message.photo) >= 2:
-        return message.photo[-2].file_id
     return message.photo[-1].file_id
 
 
@@ -590,26 +596,25 @@ async def shift_start_odometer_photo(
         await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
         return
 
-    # OCR одометра: если читаем успешно — показываем водителю и сохраняем
-    # значение (владелец всё равно получит фото и сможет поправить).
-    ocr_km: int | None = None
-    if receipt_ocr.is_enabled() and file_id is not None:
-        try:
-            buf = await bot.download(file_id)
-            reading = await receipt_ocr.recognize_odometer(buf.read())
-            if reading and reading.km:
-                ocr_km = reading.km
-                await message.answer(
-                    f"🤖 Распознал одометр: <b>{ocr_km:,} км</b> — передаю владельцу."
-                    .replace(",", " ")
-                )
-        except Exception as exc:
-            logger.debug("Odometer OCR skipped: %s", exc)
+    # ⚠️ Число км тут НЕ ждём. Смена открывается сразу, фото уходит владельцу
+    # с кнопкой «Указать пробег», а распознавание догоняет в фоне — водителю
+    # нельзя стоять у машины и смотреть в экран, пока отвечает LlamaParse.
+    owner_id = driver.owner_id
+    driver_name = driver.full_name
+    plate = vehicle.license_plate
 
     await _do_start_shift(
         message, state, session, owner_bot, driver, vehicle,
-        odometer_start=ocr_km, photo_file_id=file_id, source_bot=bot,
+        odometer_start=None, photo_file_id=file_id, source_bot=bot,
     )
+
+    shift = await shift_service.get_active_shift(session, driver.id)
+    if _odometer_ocr_on() and file_id is not None and shift is not None:
+        asyncio.create_task(_odometer_followup(
+            bot=bot, owner_bot=owner_bot, file_id=file_id, shift_id=shift.id,
+            owner_id=owner_id, driver_name=driver_name, plate=plate,
+            closing=False,
+        ))
 
 
 @driver_router.message(StartShift.waiting_for_odometer_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
@@ -663,10 +668,28 @@ async def shift_end_odometer_photo(
         await _refresh_ui(message, session, driver, msg.SHIFT_NO_ACTIVE)
         return
     await state.update_data(odometer_photo=file_id)
+    shift_id = shift.id
+    owner_id = driver.owner_id
+    driver_name = driver.full_name
+    # Номер берём отдельным запросом: связи `shift.vehicle` в модели нет, а
+    # после закрытия смены сессия обработчика нам уже не поможет.
+    shift_vehicle = await session.get(Vehicle, shift.vehicle_id)
+    plate = shift_vehicle.license_plate if shift_vehicle is not None else "—"
+
     await _do_end_shift(
         message, state, session, owner_bot, driver, shift,
         odometer_end=None, source_bot=bot,
     )
+
+    # Одометр в конце смены раньше не распознавался вообще — владелец вписывал
+    # обе цифры руками. Пробег в смене считается базой как разница, так что
+    # хватает того, чтобы обе цифры доехали.
+    if _odometer_ocr_on() and file_id is not None:
+        asyncio.create_task(_odometer_followup(
+            bot=bot, owner_bot=owner_bot, file_id=file_id, shift_id=shift_id,
+            owner_id=owner_id, driver_name=driver_name, plate=plate,
+            closing=True,
+        ))
 
 
 @driver_router.message(EndShift.waiting_for_odometer_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
@@ -928,7 +951,10 @@ async def _route_origins(session: AsyncSession, owner_id: int) -> list[str]:
         .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
         .distinct()
     )
-    origins = sorted({(o or "").strip() for o in rows.scalars().all() if (o or "").strip()})
+    # Ключ склада общий с сайтом: два написания одного склада («Соф.60. 24.10»
+    # с лишним пробелом внутри) обязаны стать ОДНОЙ папкой, иначе водитель
+    # видит два одинаковых пункта, и в каждом — половина маршрутов.
+    origins = sorted({origin_key(o) for o in rows.scalars().all() if origin_key(o)})
     return origins
 
 
@@ -938,13 +964,16 @@ async def _templates_for_origin(session: AsyncSession, owner_id: int, origin: st
         .where(
             RouteTemplate.owner_id == owner_id,
             RouteTemplate.is_active.is_(True),
-            RouteTemplate.origin == origin,
         )
         # Порядок задаёт владелец на сайте (sort_order) — водитель видит
         # частые маршруты сверху. Алфавит остаётся запасным.
         .order_by(RouteTemplate.sort_order, RouteTemplate.destination, RouteTemplate.name)
     )
-    return list(res.scalars().all())
+    # Сравниваем ключом, а не строкой: точное сравнение отбрасывало маршруты
+    # того же склада, записанного с другим пробелом, — папка открывалась
+    # наполовину пустой.
+    key = origin_key(origin)
+    return [t for t in res.scalars().all() if origin_key(t.origin) == key]
 
 
 @driver_router.callback_query(F.data == "rt:origins")
@@ -1830,10 +1859,7 @@ async def _finalize_expense(
     source_bot: Bot,
     owner_bot: Bot,
     reply_target: Message,
-    extra_note: str | None = None,
 ) -> None:
-    """extra_note — строка владельцу под сообщением о расходе (например,
-    расхождение суммы на чеке с той, что ввёл водитель)."""
     data = await state.get_data()
     # Смена не обязательна (Правка 3): расход может быть вне смены — shift_id=None.
     shift = await shift_service.get_active_shift(session, driver.id)
@@ -1894,8 +1920,6 @@ async def _finalize_expense(
     )
     if description:
         caption += f"\nОписание: {description}"
-    if extra_note:
-        caption += f"\n{extra_note}"
     markup = kb.expense_decision_keyboard(expense.id)
 
     if receipt_file_id is not None:
@@ -1907,6 +1931,117 @@ async def _finalize_expense(
         )
     else:
         await notify_owner(owner_bot, session, owner, caption, reply_markup=markup)
+
+
+async def _receipt_amount_followup(
+    *,
+    bot: Bot,
+    owner_bot: Bot,
+    file_id: str,
+    owner_id: int,
+    driver_name: str,
+    typed: Decimal | None,
+) -> None:
+    """Распознать чек и, если сумма разошлась, догнать владельца сообщением.
+
+    Работает уже после ответа водителю, поэтому:
+    — своя сессия БД: та, что была у обработчика, к этому моменту закрыта;
+    — ничего не бросает наружу: сбой распознавания не должен всплывать нигде,
+      расход уже сохранён с суммой водителя.
+
+    Распознанная сумма НЕ подменяет введённую: OCR ошибётся — расход уедет с
+    неверной цифрой, и никто не заметит. Решает владелец.
+    """
+    try:
+        buf = await bot.download(file_id)
+        reading = await receipt_ocr.recognize(buf.read())
+        if not (reading and reading.amount_rub):
+            logger.info("OCR чека: сумма не распозналась, оставляем введённую водителем")
+            return
+        logger.info(
+            "OCR чека: распознано %s ₽, водитель ввёл %s ₽",
+            reading.amount_rub, typed if typed is not None else "—",
+        )
+        if typed is not None and abs(reading.amount_rub - typed) <= Decimal("1"):
+            return  # сходится — владельца не дёргаем
+
+        text = (
+            f"🧾 Чек от <b>{driver_name}</b>: на чеке распознано "
+            f"<b>{reading.amount_rub:.2f} ₽</b>"
+        )
+        text += f", водитель ввёл {typed:.0f} ₽. Проверьте." if typed is not None else "."
+        async with async_session() as ocr_session:
+            owner = await ocr_session.get(Owner, owner_id)
+            if owner is not None:
+                await notify_owner(owner_bot, ocr_session, owner, text)
+                await ocr_session.commit()
+    except Exception as exc:  # noqa: BLE001 — распознавание не критично
+        logger.warning("OCR чека не отработал: %s", exc)
+
+
+def _odometer_ocr_on() -> bool:
+    """Распознавать ли одометр. Две проверки, и обе обязательны.
+
+    `feature_odometer_ocr` — выключатель владельца. `receipt_ocr.is_enabled()` —
+    есть ли вообще ключ распознавания: без него задача просто зря разбудит
+    сеть и упадёт в лог.
+    """
+    return settings.feature_odometer_ocr and receipt_ocr.is_enabled()
+
+
+async def _odometer_followup(
+    *,
+    bot: Bot,
+    owner_bot: Bot,
+    file_id: str,
+    shift_id: int,
+    owner_id: int,
+    driver_name: str,
+    plate: str,
+    closing: bool,
+) -> None:
+    """Прочитать одометр с фото уже ПОСЛЕ того, как водитель отпущен.
+
+    ⚠️ Почему в фоне. Раньше распознавание шло прямо в обработчике: водитель
+    отправлял фото и сидел перед экраном, пока отвечает LlamaParse — на чеке
+    это заняло 18 секунд. Смена (или её закрытие) уже сохранена, фото владельцу
+    ушло, кнопка «Указать пробег» под ним есть. Цифра догоняет отдельно.
+
+    ⚠️ Распознанное НЕ затирает то, что владелец успел вписать руками.
+    Человек здесь главнее машины: OCR ошибётся — пробег уедет неверный, и
+    никто не заметит, потому что цифра выглядит правдоподобно.
+
+    Наружу ничего не бросаем: сбой распознавания не должен ронять смену.
+    """
+    field = "odometer_end" if closing else "odometer_start"
+    try:
+        buf = await bot.download(file_id)
+        reading = await receipt_ocr.recognize_odometer(buf.read())
+        if not (reading and reading.km):
+            logger.info("OCR одометра (%s): не распозналось, ждём владельца", field)
+            return
+
+        async with async_session() as ocr_session:
+            shift = await ocr_session.get(Shift, shift_id)
+            if shift is None:
+                return
+            if getattr(shift, field) is not None:
+                logger.info("OCR одометра (%s): владелец уже вписал, не трогаем", field)
+                return
+            setattr(shift, field, reading.km)
+            owner = await ocr_session.get(Owner, owner_id)
+            if owner is not None:
+                km = f"{reading.km:,}".replace(",", " ")
+                when = "в конце смены" if closing else "в начале смены"
+                await notify_owner(
+                    owner_bot, ocr_session, owner,
+                    f"🤖 Одометр {when} — <b>{plate}</b>, {driver_name}: "
+                    f"<b>{km} км</b>. Вписал автоматически с фото. "
+                    f"Неверно — поправьте кнопкой «Указать пробег» под фото.",
+                )
+            await ocr_session.commit()
+    except Exception as exc:  # noqa: BLE001 — распознавание не критично
+        logger.warning("OCR одометра (%s) не отработал: %s", field, exc)
 
 
 @driver_router.message(NewExpense.waiting_for_receipt, F.photo)
@@ -1924,42 +2059,26 @@ async def expense_receipt_photo(
         await message.answer(msg.SOMETHING_WRONG)
         return
 
-    # Распознавание суммы с чека. Активно только при включённом
-    # FEATURE_RECEIPT_OCR и заданном ключе — иначе остаётся сумма от водителя.
-    #
-    # ⚠️ Распознанная сумма НЕ подменяет введённую водителем. Раньше подменяла
-    # молча: OCR ошибся — расход уехал с неверной цифрой, и никто об этом не
-    # узнал. Теперь расхождение уходит владельцу отдельной строкой, а решает
-    # он. Правило то же, что в разборе чека: лучше не распознать, чем
-    # распознать неправильно.
-    ocr_note = None
-    if receipt_ocr.is_enabled() and file_id is not None:
-        try:
-            buf = await bot.download(file_id)
-            reading = await receipt_ocr.recognize(buf.read())
-            typed = receipt_ocr.parse_amount((await state.get_data()).get("amount"))
-            if reading and reading.amount_rub:
-                logger.info(
-                    "OCR чека: распознано %s ₽, водитель ввёл %s ₽",
-                    reading.amount_rub, typed if typed is not None else "—",
-                )
-                if typed is None or abs(reading.amount_rub - typed) > Decimal("1"):
-                    ocr_note = (
-                        f"🧾 На чеке распознано <b>{reading.amount_rub:.2f} ₽</b>, "
-                        f"водитель ввёл {typed:.0f} ₽. Проверьте."
-                        if typed is not None
-                        else f"🧾 На чеке распознано <b>{reading.amount_rub:.2f} ₽</b>."
-                    )
-            else:
-                logger.info("OCR чека: сумма не распозналась, оставляем введённую водителем")
-        except Exception as exc:  # noqa: BLE001 — OCR не критичен
-            logger.warning("OCR чека не отработал: %s", exc)
+    # Сумму, которую ввёл водитель, забираем ДО очистки состояния.
+    typed_amount = receipt_ocr.parse_amount((await state.get_data()).get("amount"))
+    owner_id = driver.owner_id
+    driver_name = driver.full_name
 
     await _finalize_expense(
         state=state, session=session, driver=driver,
         receipt_file_id=file_id, source_bot=bot, owner_bot=owner_bot,
-        reply_target=message, extra_note=ocr_note,
+        reply_target=message,
     )
+
+    # ⚠️ Распознавание уходит В ФОН и НИКОГО не задерживает.
+    # На боевом чеке оно заняло 18 секунд: водитель всё это время смотрел в
+    # экран и не понимал, отправилось ли. Расход уже сохранён и уведомление
+    # владельцу ушло — распознанная сумма догонит отдельным сообщением.
+    if receipt_ocr.is_enabled() and file_id is not None:
+        asyncio.create_task(_receipt_amount_followup(
+            bot=bot, owner_bot=owner_bot, file_id=file_id,
+            owner_id=owner_id, driver_name=driver_name, typed=typed_amount,
+        ))
 
 
 @driver_router.callback_query(NewExpense.waiting_for_receipt, F.data == "exp_receipt:skip")

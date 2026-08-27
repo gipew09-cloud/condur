@@ -92,16 +92,24 @@ def provider_status() -> str:
     )
 
 
+def _clean_key(value: str | None) -> str:
+    """Убрать то, что цепляется при вставке ключа в поле: пробелы, перевод
+    строки, кавычки. С хвостовым переводом строки заголовок авторизации
+    становится недействительным, а на вид переменная заполнена правильно.
+    """
+    return (value or "").strip().strip("\"'").strip()
+
+
 def _get_provider_key() -> str:
     provider = _get_provider()
     if provider == "llamaparse":
-        return getattr(settings, "llama_cloud_api_key", "") or ""
+        return _clean_key(getattr(settings, "llama_cloud_api_key", ""))
     if provider == "gemini":
-        return getattr(settings, "gemini_api_key", "") or ""
+        return _clean_key(getattr(settings, "gemini_api_key", ""))
     if provider == "anthropic":
-        return settings.anthropic_api_key or ""
+        return _clean_key(settings.anthropic_api_key)
     if provider == "openai":
-        return settings.openai_api_key or ""
+        return _clean_key(settings.openai_api_key)
     return ""
 
 
@@ -335,13 +343,14 @@ _LLAMA_BASE = "https://api.cloud.llamaindex.ai/api/v2/parse"
 # HTTP 400: "configuration field is required for multipart requests."
 # (поймано на боевом 27.08.2026).
 #
-# Порядок попыток осмысленный: сначала пустая настройка — тогда работает
-# тариф по умолчанию и тратится меньше страниц из бесплатных 10 000. Если её
-# не примут, идёт та, что показана в примере в кабинете LlamaParse: она
-# заведомо валидна, но режим «agentic» дороже по расходу страниц.
-_LLAMA_CONFIGS = ("{}", '{"tier": "agentic", "version": "latest"}')
+# Первой идёт та, что проверена на боевом чеке 27.08.2026 и сработала.
+# Пустую `{}` пробовали — отвечает 400, поэтому её тут нет: лишний запрос
+# добавлял секунду ожидания на каждый чек и путал лог.
+_LLAMA_CONFIGS = ('{"tier": "agentic", "version": "latest"}', '{"version": "latest"}')
 _LLAMA_POLL_S = 1.5          # как часто спрашивать «готово?»
-_LLAMA_TIMEOUT_S = 20.0      # дольше водитель ждать не будет — уйдём на ручной ввод
+# Распознавание идёт В ФОНЕ, водитель его не ждёт (на боевом чеке ушло 18 с).
+# Поэтому лимит щедрый: лучше дождаться ответа, чем бросить на полпути.
+_LLAMA_TIMEOUT_S = 90.0
 
 
 async def _request(
@@ -377,6 +386,19 @@ def _ok(status: int, body: str, step: str) -> bool:
         return True
     logger.warning("LlamaParse, %s: HTTP %s, ответ: %s", step, status, body[:400])
     return False
+
+
+def _key_hint() -> str:
+    """Безопасная примета ключа для лога: длина и последние 4 символа.
+
+    Ровно то, что показывает сам кабинет LlamaParse (`llx-•••••mJaJ`), —
+    сравнить можно, а восстановить ключ нельзя. Целиком его в лог не пишем
+    никогда: один раз так уже утекло (PROBLEMS.md №26).
+    """
+    key = _get_provider_key()
+    if not key:
+        return "ключа нет"
+    return f"длина {len(key)}, оканчивается на …{key[-4:]}"
 
 
 def _json(body: str) -> dict:
@@ -440,6 +462,16 @@ async def _llamaparse(image_bytes: bytes) -> str | None:
             "POST", f"{_LLAMA_BASE}/upload", headers=headers, form=form
         )
         if status < 400:
+            break
+        if status in (401, 403):
+            # Дело не в настройке, а в ключе — вторая попытка ничего не изменит.
+            logger.warning(
+                "LlamaParse не принял ключ (HTTP %s): %s. "
+                "Проверьте, что в LLAMA_CLOUD_API_KEY лежит ДЕЙСТВУЮЩИЙ ключ "
+                "из cloud.llamaindex.ai → API Keys: старый мог быть отозван "
+                "при перевыпуске, а новый — скопирован не полностью.",
+                status, _key_hint(),
+            )
             break
         logger.info(
             "LlamaParse: настройка %s из %s не подошла (HTTP %s), пробуем следующую",

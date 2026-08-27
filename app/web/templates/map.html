@@ -1406,7 +1406,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         metric('Температура топлива', temp, '');
     }
 
-    // Расход за последние сутки. Считается на сервере по кривой уровня:
+    // Расход за последние 24 часа. Именно СКОЛЬЗЯЩИЕ сутки: окно всегда
+    // «от сейчас минус 24 часа», в полночь оно не обнуляется. Владелец 27.08
+    // принял это за «за всё время» — отсюда и название с числом, а не «сутки».
+    // Считается на сервере по кривой уровня:
     // отдельно спуски (расход) и отдельно подъёмы (заправки) — иначе заправка
     // посреди периода съела бы весь расход.
     var fuelCache = {};
@@ -1417,7 +1420,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var hit = fuelCache[v.vehicle_id];
       if (hit && Date.now() - hit.at < 120000) { paintFuelSummary(hit.data); return; }
       box.hidden = false;
-      box.innerHTML = '<div class="mon-metric__k">Расход за сутки</div>' +
+      box.innerHTML = '<div class="mon-metric__k">Расход за 24 часа</div>' +
         '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">считаю…</div>';
       fetch('/api/vehicles/' + v.vehicle_id + '/fuel?hours=24')
         .then(function (r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
@@ -1428,7 +1431,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         .catch(function (err) {
           console.warn('Расход не посчитался:', err);
           if (selected === v.vehicle_id) {
-            box.innerHTML = '<div class="mon-metric__k">Расход за сутки</div>' +
+            box.innerHTML = '<div class="mon-metric__k">Расход за 24 часа</div>' +
               '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">не посчитался</div>';
           }
         });
@@ -1439,11 +1442,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (!box) return;
       var sum = data && data.summary;
       if (!sum) {
-        box.innerHTML = '<div class="mon-metric__k">Расход за сутки</div>' +
+        box.innerHTML = '<div class="mon-metric__k">Расход за 24 часа</div>' +
           '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">данных мало</div>';
         return;
       }
-      var html = '<div class="mon-metric__k">Расход за сутки</div>' +
+      var html = '<div class="mon-metric__k">Расход за 24 часа</div>' +
         '<div class="mon-metric__v">' + Math.round(sum.spent_l) + ' л';
       if (sum.refuelled_l > 0) {
         html += '<small style="color:var(--mon-text-3)"> · заправлено ' +
