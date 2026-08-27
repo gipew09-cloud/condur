@@ -365,3 +365,26 @@ def test_expense_note_reaches_the_owner_caption():
     body = src[start:start + 4000]
     assert "extra_note: str | None = None" in body
     assert 'caption += f"\\n{extra_note}"' in body
+
+
+def test_upload_always_sends_the_configuration_field():
+    """Без поля configuration загрузка отвечает HTTP 400.
+
+    Боевой ответ 27.08.2026:
+    «configuration field is required for multipart requests.»
+    Поле обязательное — и по одной попытке этого было не видно, потому что
+    в примерах документации оно выглядит необязательным.
+    """
+    from app.services.receipt_ocr import _LLAMA_CONFIGS
+
+    src = open("app/services/receipt_ocr.py", encoding="utf-8").read()
+    start = src.index("async def _llamaparse")
+    body = src[start:start + 2000]
+    assert 'form.add_field("configuration", configuration)' in body
+    # запасная настройка нужна: если пустую не примут, вторая заведомо валидна
+    assert len(_LLAMA_CONFIGS) >= 2
+    assert _LLAMA_CONFIGS[0] == "{}", "сначала пробуем тариф по умолчанию — он дешевле"
+    assert "agentic" in _LLAMA_CONFIGS[1], "запасная — та, что показана в кабинете"
+    # каждая попытка собирает FormData заново: она одноразовая
+    assert body.count("aiohttp.FormData()") == 1
+    assert "for attempt, configuration in enumerate(_LLAMA_CONFIGS" in body
