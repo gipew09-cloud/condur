@@ -201,3 +201,19 @@ def test_reminder_goes_to_the_driver_who_actually_drives_that_vehicle():
         loop.run_until_complete(scenario())
     finally:
         loop.close()
+
+
+def test_session_cookie_name_is_frozen():
+    """Имя cookie сессии — это контракт с мобильным приложением.
+
+    Приложение (~/Downloads/condur-app) входит тем же способом, что браузер:
+    шлёт код на POST /login и забирает ключ сессии из ответа. Имя ключа оно
+    знает наизусть. 27.08.2026 имя было угадано неверно — сервер код принимал,
+    а приложение сессию не находило и писало «вход прошёл, но сессии нет».
+
+    Переименуете cookie — обновите `_cookieName` в `lib/api.dart` приложения,
+    иначе войти в него станет невозможно.
+    """
+    from app.services import auth_service
+
+    assert auth_service.SESSION_COOKIE == "session"

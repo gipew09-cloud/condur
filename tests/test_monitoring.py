@@ -826,3 +826,20 @@ def test_receiver_stores_voltage_from_both_protocols():
     assert "rec.state.main_power_v" in src and "rec.state.backup_battery_v" in src
     # и то, и другое попадает в «быстрый слой» для карты
     assert "voltage=last_good.voltage" in src
+
+
+def test_fuel_period_is_named_by_hours_not_by_the_word_day():
+    """«Расход за сутки» читалось как «за календарные сутки» или «за всё время».
+
+    На деле окно скользящее: всегда последние 24 часа от текущего момента,
+    в полночь оно не обнуляется. Владелец 27.08.2026 засомневался в цифре
+    именно из-за названия — пишем число часов, а не слово «сутки».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "Расход за 24 часа" in src
+    assert "Расход за сутки" not in src
+    # и запрашиваем ровно те же 24 часа, что обещаем в подписи
+    assert "/fuel?hours=24" in src
+
+    router = open("app/web/router.py", encoding="utf-8").read()
+    assert "since = datetime.now(timezone.utc) - timedelta(hours=hours)" in router

@@ -343,28 +343,45 @@ def test_ocr_never_silently_replaces_the_amount_the_driver_typed():
     """Распознанная сумма НЕ подменяет введённую водителем.
 
     Раньше подменяла молча: OCR ошибся — расход уехал с неверной цифрой, и об
-    этом никто не узнавал. Теперь расхождение уходит владельцу строкой, а
-    решает он. То же правило, что и в разборе текста: лучше не распознать,
-    чем распознать неправильно.
+    этом никто не узнавал. Теперь расхождение уходит владельцу отдельным
+    сообщением, а решает он. То же правило, что и в разборе текста: лучше не
+    распознать, чем распознать неправильно.
     """
     src = open("app/bots/driver_bot.py", encoding="utf-8").read()
-    start = src.index("async def expense_receipt_photo")
-    body = src[start:start + 2500]
-    assert 'state.update_data(amount=' not in body, "OCR снова подменяет сумму водителя"
-    assert "На чеке распознано" in body, "расхождение должно уходить владельцу"
-    assert "extra_note=ocr_note" in body
+    start = src.index("async def _receipt_amount_followup")
+    body = src[start:src.index("@driver_router.message(NewExpense.waiting_for_receipt, F.photo)")]
+    assert "state.update_data(amount=" not in body, "OCR снова подменяет сумму водителя"
+    assert "на чеке распознано" in body, "расхождение должно уходить владельцу"
+    assert "notify_owner(" in body
+    # своя сессия: сессия обработчика к этому моменту закрыта
+    assert "async with async_session() as ocr_session:" in body
     # и это должно быть видно в логах Railway, а не в debug
     assert "logger.info(" in body
     assert "logger.debug(" not in body, "ошибку OCR не прячем в debug — её не видно в Railway"
 
 
-def test_expense_note_reaches_the_owner_caption():
-    """Строка про чек должна дойти до сообщения владельцу, а не потеряться."""
+def test_driver_never_waits_for_recognition():
+    """Водитель не ждёт распознавания: на боевом чеке оно заняло 18 секунд.
+
+    Расход сохраняется и уведомление владельцу уходит СРАЗУ, а распознанная
+    сумма догоняет отдельным сообщением.
+    """
     src = open("app/bots/driver_bot.py", encoding="utf-8").read()
-    start = src.index("async def _finalize_expense")
-    body = src[start:start + 4000]
-    assert "extra_note: str | None = None" in body
-    assert 'caption += f"\\n{extra_note}"' in body
+    start = src.index("async def expense_receipt_photo")
+    body = src[start:start + 2500]
+    finalize = body.index("await _finalize_expense(")
+    background = body.index("asyncio.create_task(_receipt_amount_followup(")
+    assert finalize < background, "расход должен сохраняться ДО распознавания"
+    assert "await receipt_ocr.recognize(" not in body, "распознавание не должно держать водителя"
+
+
+def test_owner_gets_the_full_size_photo():
+    """Владельцу и распознаванию — самый крупный размер, что прислал Telegram."""
+    src = open("app/bots/driver_bot.py", encoding="utf-8").read()
+    start = src.index("def _pick_photo_file_id")
+    body = src[start:start + 700]
+    assert "message.photo[-1].file_id" in body
+    assert "message.photo[-2]" not in body, "предпоследний размер — чек в мыле"
 
 
 def test_upload_always_sends_the_configuration_field():
@@ -383,8 +400,59 @@ def test_upload_always_sends_the_configuration_field():
     assert 'form.add_field("configuration", configuration)' in body
     # запасная настройка нужна: если пустую не примут, вторая заведомо валидна
     assert len(_LLAMA_CONFIGS) >= 2
-    assert _LLAMA_CONFIGS[0] == "{}", "сначала пробуем тариф по умолчанию — он дешевле"
-    assert "agentic" in _LLAMA_CONFIGS[1], "запасная — та, что показана в кабинете"
+    # первой идёт проверенная на боевом чеке: пустая `{}` отвечает 400
+    assert "agentic" in _LLAMA_CONFIGS[0], "первой — та, что сработала на боевом"
+    assert "{}" not in _LLAMA_CONFIGS, "пустую настройку API не принимает"
     # каждая попытка собирает FormData заново: она одноразовая
     assert body.count("aiohttp.FormData()") == 1
     assert "for attempt, configuration in enumerate(_LLAMA_CONFIGS" in body
+
+
+# ------------------------------------------------------------------ ключ
+def test_key_survives_stray_spaces_and_quotes():
+    """Пробел или кавычки при вставке ключа не должны ломать авторизацию.
+
+    Боевой ответ 27.08.2026 — HTTP 401 «Not authenticated» при том, что
+    переменная заполнена. Хвостовой перевод строки делает заголовок
+    авторизации недействительным, а на вид всё правильно.
+    """
+    from app.services.receipt_ocr import _clean_key
+
+    assert _clean_key(" llx-abc123\n") == "llx-abc123"
+    assert _clean_key('"llx-abc123"') == "llx-abc123"
+    assert _clean_key("'llx-abc123' ") == "llx-abc123"
+    assert _clean_key(None) == ""
+    assert _clean_key("   ") == ""
+
+
+def test_key_hint_shows_the_tail_but_never_the_key():
+    """В лог идёт только примета ключа — длина и последние 4 символа.
+
+    Столько же показывает сам кабинет LlamaParse: сравнить можно,
+    восстановить нельзя.
+    """
+    from app.config import settings
+    from app.services.receipt_ocr import _key_hint
+
+    secret = "llx-bl5fe7o4nq7z5lij55qqhpn71m5battjffol2fcrptcbmJaJ"
+    old_provider, old_key = settings.receipt_ocr_provider, settings.llama_cloud_api_key
+    try:
+        settings.receipt_ocr_provider = "llamaparse"
+        settings.llama_cloud_api_key = secret
+        hint = _key_hint()
+        assert secret not in hint
+        assert "mJaJ" in hint and str(len(secret)) in hint
+        settings.llama_cloud_api_key = ""
+        assert _key_hint() == "ключа нет"
+    finally:
+        settings.receipt_ocr_provider, settings.llama_cloud_api_key = old_provider, old_key
+
+
+def test_bad_key_does_not_trigger_a_pointless_second_attempt():
+    """При 401 перебирать настройки бессмысленно — дело не в них."""
+    src = open("app/services/receipt_ocr.py", encoding="utf-8").read()
+    start = src.index("async def _llamaparse")
+    body = src[start:start + 2500]
+    assert "if status in (401, 403):" in body
+    assert "не принял ключ" in body
+    assert "_key_hint()" in body

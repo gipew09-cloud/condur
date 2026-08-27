@@ -404,6 +404,15 @@ def test_session_token_hash_and_device_label():
     assert AU.device_label_from_user_agent(ua_iphone) == "Safari · iPhone"
     assert AU.device_label_from_user_agent(None) == "Браузер · ?"
 
+    # Приложение на телефоне — не браузер. Владелец не должен гадать, что за
+    # «Браузер · Android» стоит в списке: это приложение или Chrome на том же
+    # телефоне. Строку шлёт lib/api.dart приложения — менять её нельзя, не
+    # поправив здесь.
+    assert (AU.device_label_from_user_agent("Condur App (android)")
+            == "Приложение Condur · Android")
+    assert (AU.device_label_from_user_agent("Condur App (iOS)")
+            == "Приложение Condur · iPhone")
+
 
 def test_render_expenses_donut():
     exp = NS(id=1, created_at=None, category="fuel", amount_rub=Decimal("5000"),

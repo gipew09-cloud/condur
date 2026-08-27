@@ -31,6 +31,7 @@ from app.models import Base, Owner, RouteTemplate  # noqa: E402
 from app.web.router import (  # noqa: E402
     _origin_key,
     _route_templates_view,
+    routes_template_add,
     routes_template_move,
 )
 
@@ -95,6 +96,19 @@ def test_origin_key_merges_stray_spaces():
     assert _origin_key("") == "—"
 
 
+def test_origin_key_merges_spaces_inside_the_name():
+    """Пробел ВНУТРИ названия — тот же склад.
+
+    Владелец 27.08.2026 увидел на /routes две одинаковые с виду папки
+    «Соф.60. 24.10», в каждой по одному маршруту. Отличались они невидимо:
+    в одной двойной пробел, в другой неразрывный — он приезжает копипастом.
+    """
+    same = _origin_key("Соф.60. 24.10")
+    assert _origin_key("Соф.60.  24.10") == same        # двойной пробел
+    assert _origin_key("Соф.60.\u00a024.10") == same    # неразрывный пробел
+    assert _origin_key(" Соф.60.\t24.10 ") == same      # табуляция и края
+
+
 def test_move_works_in_every_warehouse_not_only_the_first():
     """Второй склад должен переставляться так же, как первый."""
     async def scenario():
@@ -152,5 +166,39 @@ def test_move_never_leaks_into_a_neighbouring_warehouse():
         await _press(session, owner, "а2", "down")     # уже последняя в своём складе
         assert await _order(session, owner.id, "А") == ["а1", "а2"]
         assert await _order(session, owner.id, "Б") == ["б1", "б2"]
+        await session.close()
+    _run(scenario)
+
+
+def test_new_route_joins_the_existing_warehouse_folder():
+    """Новый маршрут встаёт в существующую папку, а не заводит вторую.
+
+    Это ровно то, что увидел владелец: «при создании нового маршрута он не
+    добавляется, а создаётся новый». Склад он набирал руками, лишний пробел
+    внутри названия — и на экране появлялась вторая папка с тем же именем.
+    """
+    async def scenario():
+        session, owner = await _db_with([("Соф.60. 24.10", "7 шагов")])
+
+        # склад набран с двойным пробелом — на глаз не отличить
+        await routes_template_add(owner, session, "Соф.60.  24.10", "Верный")
+
+        by_origin, _ = await _route_templates_view(session, owner.id, [])
+        assert list(by_origin) == ["Соф.60. 24.10"], "папка склада раздвоилась"
+        assert [t.destination for t in by_origin["Соф.60. 24.10"]] == ["7 шагов", "Верный"]
+        # написание склада берётся у существующего — в базе тоже одна строка
+        assert {t.origin for t in by_origin["Соф.60. 24.10"]} == {"Соф.60. 24.10"}
+        await session.close()
+    _run(scenario)
+
+
+def test_adding_the_same_route_twice_does_not_duplicate_it():
+    """Тот же склад+РЦ, записанный иначе, обновляет строку, а не плодит вторую."""
+    async def scenario():
+        session, owner = await _db_with([("Соф.60. 24.10", "Верный")])
+        await routes_template_add(owner, session, "Соф.60.\u00a024.10", "Верный")
+
+        by_origin, _ = await _route_templates_view(session, owner.id, [])
+        assert [t.destination for t in by_origin["Соф.60. 24.10"]] == ["Верный"]
         await session.close()
     _run(scenario)
