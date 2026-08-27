@@ -137,7 +137,10 @@ def test_llamaparse_is_wired_as_a_text_provider():
     assert src.count("if provider in _TEXT_PROVIDERS:") == 2, "и чек, и одометр"
     # ключ читается из настроек, а не зашит в код
     assert 'getattr(settings, "llama_cloud_api_key", "")' in src
-    assert "llx-" not in src, "ключ не должен попасть в репозиторий"
+    # настоящий ключ в коде: префикс плюс длинный хвост. Сам по себе префикс
+    # разрешён — по нему мы узнаём ключ, вписанный не в ту переменную.
+    import re as _re
+    assert not _re.search(r"llx-[a-z0-9]{20,}", src), "ключ не должен попасть в репозиторий"
 
 
 def test_ocr_is_off_without_a_key():
@@ -219,9 +222,146 @@ def test_startup_log_says_whether_ocr_is_alive():
     не понять — он выключен, не тот провайдер, нет ключа или он сломался.
     Теперь это видно первой же строкой, без отправки фото чека.
     """
+    from app.services.receipt_ocr import provider_status
+
     src = open("app/main.py", encoding="utf-8").read()
-    assert "OCR чека: провайдер=%s" in src
-    assert "_ocr.is_enabled()" in src
-    # сам ключ в лог не пишем — там только «есть»/«НЕТ»
-    assert "_get_provider_key()" in src
-    assert '"есть" if _ocr._get_provider_key() else "НЕТ"' in src
+    assert "_ocr.provider_status()" in src
+    line = provider_status()
+    assert line.startswith("OCR чека: провайдер=")
+    assert "ключ=" in line and "флаг=" in line
+
+
+def test_log_never_prints_a_secret_even_if_it_lands_in_the_wrong_variable():
+    """Ключ не должен попасть в лог, куда бы его ни вписали.
+
+    26.08.2026 ключ LlamaParse оказался в RECEIPT_OCR_PROVIDER вместо имени
+    провайдера, и строка состояния напечатала его в лог Railway целиком.
+    Логи выгружают и пересылают — значит секрет утёк. Больше чужое значение
+    этой переменной в лог не попадает никогда.
+    """
+    from app.config import settings
+    from app.services.receipt_ocr import provider_status
+
+    secret = "llx-bl5fe7o4nq7z5lij55qqhpn71m5battjffol2fcrptcbzs1y"
+    old = settings.receipt_ocr_provider
+    try:
+        settings.receipt_ocr_provider = secret
+        line = provider_status()
+        assert secret not in line, "ключ утёк в лог"
+        assert "ВПИСАН КЛЮЧ" in line, "надо прямо сказать, в чём ошибка"
+
+        # и любое другое незнакомое значение тоже не печатаем
+        settings.receipt_ocr_provider = "какая-то-секретная-строка"
+        line = provider_status()
+        assert "какая-то-секретная-строка" not in line
+        assert "значение скрыто" in line
+    finally:
+        settings.receipt_ocr_provider = old
+
+
+def test_known_provider_names_are_printed_as_is():
+    """У правильного имени скрывать нечего — его видно в логе."""
+    from app.config import settings
+    from app.services.receipt_ocr import provider_status
+
+    old = settings.receipt_ocr_provider
+    try:
+        settings.receipt_ocr_provider = "llamaparse"
+        assert "провайдер=llamaparse" in provider_status()
+    finally:
+        settings.receipt_ocr_provider = old
+
+
+# ------------------------------------------------- разбор ответа LlamaParse
+def test_result_is_found_whatever_the_field_is_called():
+    """Текст забираем из любого известного поля ответа.
+
+    В официальном примере из кабинета это `markdown_full`, в REST-документации
+    `markdown`. Завязаться на одно имя — значит однажды молча получать пустоту
+    вместо распознанного чека.
+    """
+    from app.services.receipt_ocr import _collect_text
+
+    assert _collect_text({"markdown_full": "ИТОГО 100,00"}) == ["ИТОГО 100,00"]
+    assert _collect_text({"markdown": "ИТОГО 100,00"}) == ["ИТОГО 100,00"]
+    # ответ бывает вложенным: страницы внутри задания
+    nested = {"job": {"result": {"pages": [{"markdown": "стр1"}, {"text": "стр2"}]}}}
+    assert _collect_text(nested) == ["стр1", "стр2"]
+    # пустое и не-текстовое игнорируем
+    assert _collect_text({"markdown": "   ", "id": 5, "status": "SUCCESS"}) == []
+
+
+def test_failed_request_is_logged_with_the_body(caplog):
+    """При ошибке в лог обязано попасть ТЕЛО ответа, а не только код.
+
+    Проверить вызов вживую нечем — ключ владельца я не беру. Значит первая же
+    неудачная отправка чека должна сама объяснить, что API не понравилось.
+    """
+    import logging as _logging
+
+    from app.services.receipt_ocr import _ok
+
+    with caplog.at_level(_logging.WARNING):
+        assert _ok(422, '{"detail":"configuration field required"}', "загрузка файла") is False
+    assert "configuration field required" in caplog.text
+    assert "422" in caplog.text
+    assert _ok(200, "{}", "загрузка файла") is True
+
+
+def test_ocr_uses_only_libraries_that_are_actually_installed():
+    """Каждая сторонняя библиотека модуля обязана быть в requirements.txt.
+
+    27.08.2026 OCR падал на `import httpx` при каждом вызове: в комментарии
+    было написано, что httpx приходит вместе с aiogram, а приходит aiohttp.
+    Полгода это не всплывало, потому что ключей не было и до вызова не
+    доходило. Теперь такое ловится тестом, а не логом с боевого сервера.
+    """
+    import ast
+    import sys
+
+    src = open("app/services/receipt_ocr.py", encoding="utf-8").read()
+    requirements = open("requirements.txt", encoding="utf-8").read().lower()
+
+    modules = set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Import):
+            modules.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules.add(node.module.split(".")[0])
+
+    for name in sorted(modules):
+        if name == "app" or name in sys.stdlib_module_names:
+            continue
+        assert name.lower() in requirements, (
+            f"{name} импортируется, но его нет в requirements.txt — "
+            "на сервере вызов упадёт на импорте"
+        )
+
+
+# ------------------------------------------------- поведение в боте
+def test_ocr_never_silently_replaces_the_amount_the_driver_typed():
+    """Распознанная сумма НЕ подменяет введённую водителем.
+
+    Раньше подменяла молча: OCR ошибся — расход уехал с неверной цифрой, и об
+    этом никто не узнавал. Теперь расхождение уходит владельцу строкой, а
+    решает он. То же правило, что и в разборе текста: лучше не распознать,
+    чем распознать неправильно.
+    """
+    src = open("app/bots/driver_bot.py", encoding="utf-8").read()
+    start = src.index("async def expense_receipt_photo")
+    body = src[start:start + 2500]
+    assert 'state.update_data(amount=' not in body, "OCR снова подменяет сумму водителя"
+    assert "На чеке распознано" in body, "расхождение должно уходить владельцу"
+    assert "extra_note=ocr_note" in body
+    # и это должно быть видно в логах Railway, а не в debug
+    assert "logger.info(" in body
+    assert "logger.debug(" not in body, "ошибку OCR не прячем в debug — её не видно в Railway"
+
+
+def test_expense_note_reaches_the_owner_caption():
+    """Строка про чек должна дойти до сообщения владельцу, а не потеряться."""
+    src = open("app/bots/driver_bot.py", encoding="utf-8").read()
+    start = src.index("async def _finalize_expense")
+    body = src[start:start + 4000]
+    assert "extra_note: str | None = None" in body
+    assert 'caption += f"\\n{extra_note}"' in body
