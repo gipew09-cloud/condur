@@ -424,6 +424,18 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-pin:not([data-state="moving"]) .mon-pin__ring { animation: none; opacity: 1; }
 .mon-pin[data-state="invalid"] .mon-pin__ring { border-color: transparent; }
+/* Стрелка направления — катается вокруг плитки. Показываем только у едущей
+   машины и только когда направление ИЗВЕСТНО: стрелка «в никуда» читается как
+   факт, куда машина повёрнута. То же правило в приложении (DirectionRing). */
+.mon-pin__dir {
+  position: absolute; left: 0; top: 0; display: none;
+  width: 0; height: 0; border-left: 6px solid transparent;
+  border-right: 6px solid transparent; border-bottom: 11px solid currentColor;
+  filter: drop-shadow(0 0 1.5px rgba(5, 11, 22, .8));
+  transition: transform .7s cubic-bezier(.22, 1, .36, 1);
+  pointer-events: none;
+}
+.mon-pin[data-dir] .mon-pin__dir { display: block; }
 .mon-pin__plate {
   position: absolute; left: 0; top: 0;
   margin-top: calc(var(--pin) * .62);
@@ -1207,6 +1219,26 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     }
 
     var vehicles = [];               // последние данные с сервера
+
+    // Куда повёрнута каждая машина и где она была в прошлый раз.
+    // ⚠️ Сервер курс НЕ отдаёт: в «быстром слое» (VehicleState) поля course
+    // нет, оно есть только в истории точек. Поэтому считаем по перемещению —
+    // ровно тем же правилом, что в приложении (lib/geo.dart::headingBetween).
+    // Разъедутся — телефон и кабинет покажут разное направление одной машины.
+    var headings = {}, lastSeen = {};
+    var HEADING_MIN_MOVE_M = 15;   // меньше — это дрожание GPS у стоящей машины
+
+    function updateHeadings(list) {
+      (list || []).forEach(function (v) {
+        var was = lastSeen[v.vehicle_id];
+        lastSeen[v.vehicle_id] = [v.lat, v.lon];
+        if (!was) return;
+        var dLat = v.lat - was[0];
+        var dLon = (v.lon - was[1]) * Math.cos(v.lat * Math.PI / 180);
+        if (Math.sqrt(dLat * dLat + dLon * dLon) * 111320 < HEADING_MIN_MOVE_M) return;
+        headings[v.vehicle_id] = (Math.atan2(dLon, dLat) * 180 / Math.PI + 360) % 360;
+      });
+    }
     var pins = {};                   // vehicle_id → { marker, el, anim, lat, lon }
     var drivers = {};
     var rcsAdded = false;
@@ -1571,6 +1603,67 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       }, { passive: true });
     });
 
+    // ================= хвост =================
+    // Короткий след за выбранной машиной: где она была последние минуты.
+    // Появляется САМ по нажатию на машину — в отличие от «Показать трек»,
+    // где владелец выбирает период. Пока открыт полный трек, хвост прячем:
+    // две синие линии по одному пути читаются как две разные поездки.
+    var TAIL_WINDOW_MS = 15 * 60 * 1000;
+    var TAIL_MAX_POINTS = 30;   // точки идут раз в 30-60 сек — это те же ~15 мин
+    var tail = { vehicleId: null, obj: null, loading: false };
+
+    function clearTail() {
+      if (tail.obj) { ymap.removeChild(tail.obj); tail.obj = null; }
+      tail.vehicleId = null;
+    }
+
+    function tailPoints(data) {
+      var now = Date.now();
+      var pts = [];
+      (data.segments || []).forEach(function (seg) {
+        if (seg.kind !== 'move') return;   // стоянки и разрывы в хвост не идут
+        var end = new Date(seg.end).getTime();
+        if (isNaN(end) || now - end > TAIL_WINDOW_MS) return;
+        seg.points.forEach(function (p) { pts.push(p); });
+      });
+      return pts.length > TAIL_MAX_POINTS ? pts.slice(-TAIL_MAX_POINTS) : pts;
+    }
+
+    async function loadTail(id) {
+      if (tail.loading) return;
+      tail.loading = true;
+      try {
+        var r = await fetch('/api/vehicles/' + id + '/track?hours=1');
+        if (!r.ok) return;
+        var pts = tailPoints(await r.json());
+        if (selected !== id) return;     // пока ждали — выбрали другую машину
+        if (tail.obj) { ymap.removeChild(tail.obj); tail.obj = null; }
+        if (pts.length < 2) { tail.vehicleId = null; return; }
+        tail.obj = new YMapFeature({
+          geometry: { type: 'LineString', coordinates: LLline(pts) },
+          style: {
+            stroke: [
+              { color: '#050b16', width: 6.5, opacity: 0.55 },
+              { color: '#93c5fd', width: 4, opacity: 0.95 }
+            ],
+            zIndex: 40,
+            interactive: false
+          }
+        });
+        ymap.addChild(tail.obj);
+        tail.vehicleId = id;
+      } catch (e) {
+        // Хвост — подсказка. Не загрузился — карта работает дальше.
+      } finally {
+        tail.loading = false;
+      }
+    }
+
+    function syncTail() {
+      if (selected === null || track.vehicleId !== null) { clearTail(); return; }
+      loadTail(selected);
+    }
+
     function select(id, moveCamera) {
       var was = selected;
       selected = (selected === id) ? null : id;
@@ -1595,6 +1688,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         }
       }
       if (was !== selected && track.vehicleId !== null && track.vehicleId !== selected) hideTrack();
+      if (was !== selected) clearTail();
+      syncTail();
     }
 
     // ================= метки =================
@@ -1610,6 +1705,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       el.innerHTML =
         '<i class="mon-pin__pulse"></i>' +
         '<span class="mon-pin__tile"><i class="mon-pin__img"></i><i class="mon-pin__ring"></i></span>' +
+        '<i class="mon-pin__dir"></i>' +
         '<b class="mon-pin__plate"></b>' +
         '<i class="mon-pin__age"></i>';
       el.querySelector('.mon-pin__plate').textContent = v.plate || '';
@@ -1635,6 +1731,23 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         if (ring) ring.style.borderColor = stateColor(key);
         var pulse = el.querySelector('.mon-pin__pulse');
         if (pulse) pulse.style.background = stateColor(key);
+
+        var dir = el.querySelector('.mon-pin__dir');
+        var course = headings[v.vehicle_id];
+        if (dir) {
+          if (key === 'moving' && course !== undefined) {
+            var rad = course * Math.PI / 180;
+            el.dataset.dir = '1';
+            dir.style.color = stateColor(key);
+            // Плитка шире, чем выше, поэтому стрелка ходит по эллипсу —
+            // иначе сбоку она налезала бы на рисунок машины.
+            dir.style.transform =
+              'translate(' + (Math.sin(rad) * 30 - 6) + 'px,' +
+              (-Math.cos(rad) * 24 - 5) + 'px) rotate(' + course + 'deg)';
+          } else {
+            delete el.dataset.dir;
+          }
+        }
       });
     }
 
@@ -1773,6 +1886,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       trackEl.hidden = true;
       cardEl.classList.remove('mon-sheet-hide');
       applyMargin();
+      // Полный трек убрали — короткий хвост возвращается.
+      syncTail();
     }
 
     document.getElementById('mon-track-close').addEventListener('click', hideTrack);
@@ -1933,6 +2048,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         if (!r.ok) { facts.textContent = 'Не удалось загрузить трек.'; return; }
         var data = await r.json();
         track.vehicleId = vehicleId;
+        // Полный трек и хвост по одному пути — две синие линии, читаются как
+        // две разные поездки. Пока открыт трек, хвост убираем.
+        clearTail();
         if (!data.segments.length) {
           clearTrackObjects();
           facts.innerHTML = 'За этот период точек нет — машина не выходила на связь.';
@@ -2068,8 +2186,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         if (!r.ok) return;
         var data = await r.json();
         vehicles = data.vehicles || [];
+        updateHeadings(vehicles);
         addRcs(data.rcs);
         syncPins();
+        syncTail();
         syncDrivers(data.drivers);
         renderList();
         renderCard();
