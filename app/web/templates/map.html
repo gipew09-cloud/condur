@@ -71,8 +71,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-panel--list {
   left: 16px; top: 16px; bottom: 16px;
   width: 356px;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* ⚠️ КОЛОНКА FLEX, а не grid. Раньше здесь было
+     `grid-template-rows: auto auto minmax(0,1fr) auto` — ровно под четыре
+     тогдашних блока. Появились вкладки и панель треков, детей стало шесть, и
+     строка поиска уехала в чужую строку сетки: сплющилась до 11 пикселей и
+     легла под список. Владелец 30.08: «всё криво».
+     У flex такой привязки к числу детей нет: растёт только тот, у кого
+     `flex: 1`, а скрытые вкладки просто выпадают из раскладки. */
+  display: flex;
+  flex-direction: column;
 }
 .mon-panel--card {
   right: 16px; top: 16px;
@@ -373,8 +380,18 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 
 /* ---------- вкладки панели: Объекты · Треки ---------- */
+/* ⚠️ flex-shrink: 0 обязателен ВСЕМ строкам панели, кроме прокручиваемого
+   списка. Панель — колонка flex, и когда содержимого стало больше (появились
+   вкладки), flex начал давить соседей: строка поиска сжалась до 11 пикселей и
+   легла под список. Владелец 30.08: «поиск обрезанный, всё криво».
+   Тянуться имеет право только список, всё остальное держит свою высоту. */
+.mon-head, .mon-tabs, .mon-tools, .mon-foot,
+.mon-period, .mon-quick { flex: none; }
+/* Растягиваются только прокручиваемые области — список машин и список смен. */
+.mon-list, .mon-tracks { flex: 1; min-height: 0; }
 .mon-tabs {
-  display: flex; gap: 4px; padding: 0 12px 10px;
+  display: flex; gap: 4px; padding: 0 12px 10px; height: 44px;
+  box-sizing: content-box;
 }
 .mon-tab {
   flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -391,7 +408,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
    .mon-tools свой display, а он специфичнее браузерного [hidden] — атрибут
    молча перестаёт работать, и обе вкладки видны одновременно. */
 .mon-panel--list [data-pane][hidden] { display: none; }
-.mon-tracks { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.mon-tracks { display: flex; flex-direction: column; }
 .mon-period { display: flex; gap: 8px; padding: 0 12px 8px; }
 /* ⚠️ min-width: 0 обязателен обоим. У datetime-local своя огромная
    «естественная» ширина, и flex-элемент по умолчанию ниже неё не сжимается:
@@ -434,7 +451,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   background: rgba(37, 99, 235, .18); color: #1d4ed8; font-size: 15px;
 }
 .mon[data-mode="dark"] .mon-shift__go { color: #9dc0ff; }
-.mon-shift b { display: block; font-size: 13px; font-weight: 800; }
+/* ⚠️ min-width: 0 — иначе длинный маршрут «Софиевская 60. 29.2 → Верный →
+   Перекрёсток (ЗТЛ)» распирает строку, и список смен уезжает вбок. */
+.mon-shift > span { min-width: 0; }
+.mon-shift b {
+  display: block; font-size: 13px; font-weight: 800;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .mon-shift small {
   display: block; font-size: 11.5px; color: var(--mon-text-2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -971,8 +994,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     <div class="mon-play__row">
       <button type="button" class="mon-play__go" id="mon-play-toggle" aria-label="Пауза"><i class="ph ph-pause"></i></button>
       <div class="mon-play__speeds" id="mon-play-speeds">
-        <button type="button" data-speed="1">×1</button>
-        <button type="button" data-speed="5" class="is-on">×5</button>
+        <button type="button" data-speed="0.5">×½</button>
+        <button type="button" data-speed="1" class="is-on">×1</button>
+        <button type="button" data-speed="3">×3</button>
         <button type="button" data-speed="10">×10</button>
         <button type="button" data-speed="30">×30</button>
       </div>
@@ -2458,11 +2482,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // своего отрезка. Для проигрывателя этого достаточно: порядок точек и
     // границы отрезков — правда, а секунда туда-сюда на часах ничего не
     // решает. Выдавать это за точное время точки нельзя.
+    // Во сколько раз время трека идёт быстрее настоящего при скорости ×1.
+    var PLAY_BASE = 10;
+    var PLAY_MAX_STEP = 3;
+
     var play = {
       shift: null,      // строка смены, которую смотрим
       frames: [],       // [{lat, lon, t, km}] по возрастанию времени
       at: 0,            // текущий кадр
-      speed: 5,         // во сколько раз быстрее реального времени
+      speed: 1,         // множитель к PLAY_BASE
       running: false,
       raf: null,
       ghost: null,      // весь трек бледной линией
@@ -2731,7 +2759,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     document.getElementById('mon-play-speeds').addEventListener('click', function (e) {
       var b = e.target.closest('button[data-speed]');
       if (!b) return;
-      play.speed = parseInt(b.dataset.speed, 10);
+      play.speed = parseFloat(b.dataset.speed);
       Array.prototype.forEach.call(this.querySelectorAll('button'), function (x) {
         x.classList.toggle('is-on', x === b);
       });
@@ -2749,11 +2777,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.lastTick = now;
       // Ускорение считается по ВРЕМЕНИ трека, а не по числу точек: иначе
       // стоянка пролетала бы так же быстро, как езда, и наоборот.
-      var trackMs = realMs * play.speed * 60;
+      //
+      // ⚠️ База 10, а не 60. При 60 даже ×1 гнал час трека за минуту —
+      // владелец 30.08: «слишком быстро, непонятно, нужно чуть медленнее».
+      // Теперь ×1 — это десять минут трека за минуту просмотра.
+      var trackMs = realMs * play.speed * PLAY_BASE;
       var target = play.frames[play.at].t + trackMs;
       var i = play.at;
       while (i < play.frames.length - 1 && play.frames[i].t < target) i++;
-      seekTo(i);
+      // Больше нескольких точек за кадр не перескакиваем: машина должна ехать
+      // по треку, а не телепортироваться через перекрёстки.
+      seekTo(Math.min(i, play.at + PLAY_MAX_STEP));
       if (play.at >= play.frames.length - 1) { setRunning(false); return; }
       play.raf = requestAnimationFrame(step);
     }
