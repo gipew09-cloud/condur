@@ -602,8 +602,18 @@ def _leg_is_unknown(prev, cur) -> bool:
     return (metres / seconds) * 3.6 > TRACK_LEG_MAX_KMH
 
 
-def _push_move(out: list[dict], coords: list[list[float]], start, end) -> None:
-    """Добавить кусок поездки, если в нём есть что рисовать."""
+def _push_move(
+    out: list[dict], coords: list[list[float]], start, end,
+    times: list | None = None,
+) -> None:
+    """Добавить кусок поездки, если в нём есть что рисовать.
+
+    ⚠️ `times` — время КАЖДОЙ точки, по одному на каждую пару координат.
+    Оно есть в базе (`VehicleTelemetryPoint.observed_at`) и обязано доезжать
+    до карты: проигрыватель трека показывает часы и считает скорость по нему.
+    Пока времени не было, плеер раскладывал точки равномерно внутри отрезка —
+    и врал: стоянка проигрывалась так же быстро, как езда.
+    """
     from app.services import rc_service
 
     if len(coords) < 2:
@@ -619,6 +629,7 @@ def _push_move(out: list[dict], coords: list[list[float]], start, end) -> None:
         "start": start.isoformat(),
         "end": end.isoformat(),
         "points": coords,
+        "times": [t.isoformat() for t in (times or [])],
         "distance_km": round(dist / 1000, 2),
         "duration_label": duration_label(start, end),
     })
@@ -666,10 +677,11 @@ def build_track_segments(
             # Иначе две далёкие точки соединяются прямой, и трек «едет через
             # дома» — владелец увидел это 22.08 на реальных данных.
             run: list[list[float]] = [[inside[0][1], inside[0][2]]]
+            run_times = [inside[0][0]]
             run_start = inside[0][0]
             for prev, cur in zip(inside, inside[1:]):
                 if _leg_is_unknown(prev, cur):
-                    _push_move(out, run, run_start, prev[0])
+                    _push_move(out, run, run_start, prev[0], run_times)
                     out.append({
                         "kind": "nosignal",
                         "start": prev[0].isoformat(),
@@ -679,10 +691,12 @@ def build_track_segments(
                         "reason": "no_points",
                     })
                     run = [[cur[1], cur[2]]]
+                    run_times = [cur[0]]
                     run_start = cur[0]
                     continue
                 run.append([cur[1], cur[2]])
-            _push_move(out, run, run_start, inside[-1][0])
+                run_times.append(cur[0])
+            _push_move(out, run, run_start, inside[-1][0], run_times)
         elif seg["kind"] == "stop":
             # Стоянку показываем одной точкой — последней известной внутри
             # отрезка (там машина и осталась стоять).

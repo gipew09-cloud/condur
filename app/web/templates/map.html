@@ -39,6 +39,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   /* размер метки: задаётся скриптом по зуму — на общем плане квадраты
      не должны закрывать пол-города */
   --pin: 34px;
+  /* Легенда ужата: владелец 30.08 попросил больше места под список и смены. */
+  --mon-legend-gap: 5px;
 
   position: relative;
   height: 620px;
@@ -178,17 +180,18 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
 /* ---------- легенда и честные приписки ---------- */
 .mon-foot { border-top: 1px solid var(--mon-divider); }
-.mon-legend { display: grid; gap: 7px; padding: 12px 14px 10px; }
+/* Легенда ужата: владелец 30.08 попросил больше места под список и смены. */
+.mon-legend { display: grid; gap: var(--mon-legend-gap); padding: 9px 14px 7px; }
 .mon-legend__ttl {
   font-size: 11px; font-weight: 800; color: var(--mon-text-4);
   text-transform: uppercase; letter-spacing: .06em;
 }
 .mon-legend__row {
   display: grid; grid-template-columns: auto minmax(0, 1fr);
-  gap: 9px; align-items: center;
+  gap: 8px; align-items: center;
 }
 .mon-legend__row i {
-  width: 14px; height: 14px; border-radius: 5px; background: var(--mon-surface);
+  width: 12px; height: 12px; border-radius: 4px; background: var(--mon-surface);
   box-sizing: border-box; border: 0;
 }
 /* Цвет состояния — из стилей, а не из разметки: инлайновый стиль тёмная тема
@@ -198,7 +201,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-legend__row[data-state="unknown"] i { box-shadow: 0 0 0 2px #94a3b8; }
 .mon-legend__row[data-state="stale"] i   { box-shadow: 0 0 0 2px #c5362b; }
 .mon-legend__row[data-state="invalid"] i { border: 2px dashed #e0a32e; box-shadow: none; }
-.mon-legend__row span { font-size: 12px; font-weight: 600; color: #3a4453; }
+.mon-legend__row span { font-size: 11.5px; font-weight: 600; color: #3a4453; }
 .mon-note {
   margin: 0 12px 6px; padding: 10px 12px;
   border-radius: 11px; background: #fff8eb; border: 1px solid #f9d18b;
@@ -390,10 +393,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-panel--list [data-pane][hidden] { display: none; }
 .mon-tracks { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .mon-period { display: flex; gap: 8px; padding: 0 12px 8px; }
+/* ⚠️ min-width: 0 обязателен обоим. У datetime-local своя огромная
+   «естественная» ширина, и flex-элемент по умолчанию ниже неё не сжимается:
+   поля вылезали за панель, а вместе с ними уезжали вкладки и поиск.
+   Владелец 30.08: «поиск какой-то обрезанный». */
 .mon-period label {
-  flex: 1; display: flex; align-items: center; gap: 6px;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
   font-size: 11.5px; font-weight: 700; color: var(--mon-text-2);
 }
+.mon-tracks, .mon-tabs, .mon-period, .mon-quick { max-width: 100%; }
+.mon-tab { min-width: 0; }
 .mon-period input {
   flex: 1; min-width: 0; height: 38px; padding: 0 8px; box-sizing: border-box;
   font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px;
@@ -2456,9 +2465,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       speed: 5,         // во сколько раз быстрее реального времени
       running: false,
       raf: null,
-      objs: [],         // отрисованное: пройденная линия и метка
-      marker: null,
-      lastTick: 0
+      ghost: null,      // весь трек бледной линией
+      line: null,       // пройденная часть
+      marker: null,     // машина на треке
+      lastTick: 0,
+      drawn: -1         // какой кадр уже нарисован
     };
 
     var playEl = document.getElementById('mon-play');
@@ -2570,7 +2581,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       startPlayback(row, btn);
     });
 
-    // Разворачиваем отрезки в ровный список кадров со временем и пробегом.
+    // Разворачиваем отрезки в ровный список кадров: точка, ЕЁ время, пробег.
+    //
+    // ⚠️ Время берём у сервера — по одному на каждую точку (`seg.times`).
+    // Раскладывать точки равномерно внутри отрезка нельзя: стоянка на
+    // светофоре проигрывалась бы так же быстро, как езда по трассе, и владелец
+    // читал бы по часам неправду. Запасной путь (равномерно) оставлен только
+    // на случай ответа из старого кэша браузера.
     function framesFrom(data) {
       var out = [];
       var km = 0;
@@ -2581,23 +2598,63 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         if (isNaN(t0) || isNaN(t1) || t1 < t0) return;
         var n = seg.points.length;
         var segKm = seg.distance_km || 0;
+        var times = seg.times || [];
         seg.points.forEach(function (pt, i) {
           var share = n > 1 ? i / (n - 1) : 1;
+          var own = times[i] ? new Date(times[i]).getTime() : NaN;
           out.push({
             lat: pt[0], lon: pt[1],
-            t: t0 + (t1 - t0) * share,
+            t: isNaN(own) ? t0 + (t1 - t0) * share : own,
             km: km + segKm * share
           });
         });
         km += segKm;
       });
+      // На всякий случай по возрастанию времени: пачки от Ставтрэка приходят
+      // с задержкой и иногда вперемешку.
+      out.sort(function (a, b) { return a.t - b.t; });
       return out;
     }
 
+    // ⚠️ Объекты карты создаются ОДИН раз на просмотр и дальше только
+    // обновляются. Первая версия пересоздавала линию и метку на каждом кадре —
+    // по 60 раз в секунду снимала с карты и вешала заново. Владелец 30.08:
+    // «всё моргает и лагает». Пересоздавать объекты в цикле анимации нельзя.
     function clearPlayObjects() {
-      play.objs.forEach(function (o) { ymap.removeChild(o); });
-      play.objs = [];
-      if (play.marker) { ymap.removeChild(play.marker); play.marker = null; }
+      ['ghost', 'line', 'marker'].forEach(function (key) {
+        if (play[key]) { ymap.removeChild(play[key]); play[key] = null; }
+      });
+    }
+
+    function makePlayObjects(all) {
+      // Весь трек — бледной линией, чтобы сразу видеть, куда машина поедет.
+      play.ghost = new YMapFeature({
+        geometry: { type: 'LineString', coordinates: LLline(all) },
+        style: { stroke: [{ color: '#2563eb', width: 3, opacity: 0.22 }], zIndex: 42, interactive: false }
+      });
+      ymap.addChild(play.ghost);
+
+      // Пройденная часть — поверх бледной.
+      play.line = new YMapFeature({
+        geometry: { type: 'LineString', coordinates: LLline(all.slice(0, 2)) },
+        style: {
+          stroke: [
+            { color: '#050b16', width: 7, opacity: 0.45 },
+            { color: '#2563eb', width: 4.5, opacity: 0.95 }
+          ],
+          zIndex: 45, interactive: false
+        }
+      });
+      ymap.addChild(play.line);
+
+      var dot = document.createElement('div');
+      dot.style.cssText = 'width:16px;height:16px;border-radius:50%;background:#93c5fd;' +
+        'border:3px solid #1d4ed8;box-shadow:0 6px 16px -6px rgba(0,0,0,.8);' +
+        'transform:translate(-50%,-50%);';
+      play.marker = new YMapMarker(
+        { coordinates: LL(all[0][0], all[0][1]), zIndex: 900 }, dot
+      );
+      ymap.addChild(play.marker);
     }
 
     async function startPlayback(row, btn) {
@@ -2623,6 +2680,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           return;
         }
         play.at = 0;
+        play.drawn = -1;
+        makePlayObjects(play.frames.map(function (f) { return [f.lat, f.lon]; }));
         seekTo(0);
         setRunning(true);
       } catch (e) {
@@ -2636,6 +2695,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.shift = null;
       play.frames = [];
       play.at = 0;
+      play.drawn = -1;
       if (!quiet) {
         playEl.hidden = true;
         Array.prototype.forEach.call(shiftsEl.querySelectorAll('.mon-shift'), function (b) {
@@ -2699,37 +2759,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     }
 
     function seekTo(index) {
-      if (!play.frames.length) return;
+      if (!play.frames.length || !play.line) return;
       play.at = Math.min(Math.max(0, index), play.frames.length - 1);
+      if (play.at === play.drawn) return;      // кадр тот же — карту не трогаем
+      play.drawn = play.at;
+
       var frame = play.frames[play.at];
-      var passed = play.frames.slice(0, play.at + 1).map(function (f) {
+      var passed = play.frames.slice(0, Math.max(2, play.at + 1)).map(function (f) {
         return [f.lat, f.lon];
       });
 
-      clearPlayObjects();
-      if (passed.length > 1) {
-        play.objs.push(new YMapFeature({
-          geometry: { type: 'LineString', coordinates: LLline(passed) },
-          style: {
-            stroke: [
-              { color: '#050b16', width: 7, opacity: 0.45 },
-              { color: '#2563eb', width: 4.5, opacity: 0.95 }
-            ],
-            zIndex: 45,
-            interactive: false
-          }
-        }));
-        play.objs.forEach(function (o) { ymap.addChild(o); });
-      }
-
-      var dot = document.createElement('div');
-      dot.className = 'mon-play-dot';
-      dot.style.cssText = 'width:16px;height:16px;border-radius:50%;background:#93c5fd;' +
-        'border:3px solid #1d4ed8;box-shadow:0 6px 16px -6px rgba(0,0,0,.8);' +
-        'transform:translate(-50%,-50%);';
-      play.marker = new YMapMarker({ coordinates: LL(frame.lat, frame.lon), zIndex: 900 }, dot);
-      ymap.addChild(play.marker);
-      ymap.setLocation({ center: LL(frame.lat, frame.lon), duration: 180 });
+      play.line.update({ geometry: { type: 'LineString', coordinates: LLline(passed) } });
+      play.marker.update({ coordinates: LL(frame.lat, frame.lon) });
+      // Камера едет за машиной БЕЗ анимации: своя анимация на каждый кадр
+      // догоняла бы предыдущую, и карта дёргалась.
+      ymap.setLocation({ center: LL(frame.lat, frame.lon) });
 
       var share = play.at / (play.frames.length - 1);
       playFill.style.width = (share * 100).toFixed(1) + '%';
