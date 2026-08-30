@@ -4334,14 +4334,55 @@ async def api_vehicle_fuel(
 # =========================================================================
 # /api/vehicles/{id}/track — трек машины за период для карты мониторинга
 # =========================================================================
+def _period_bounds(
+    frm: str | None, to: str | None, hours: int, now_utc: datetime
+) -> tuple[datetime, datetime]:
+    """Границы периода для трека: либо «с… по…», либо «последние N часов».
+
+    ⚠️ Потолок 31 день. Трек за год — это миллионы точек: браузер владельца
+    ляжет, а пользы ноль. Просит больше — отдаём последний месяц периода,
+    а не пустой ответ: пустой экран читается как «данных нет».
+    """
+    start = _parse_moment(frm)
+    end = _parse_moment(to)
+    if start is None or end is None:
+        hours = max(1, min(int(hours or 12), 72))
+        return now_utc - timedelta(hours=hours), now_utc
+    if end < start:
+        start, end = end, start
+    if end - start > timedelta(days=31):
+        start = end - timedelta(days=31)
+    return start, end
+
+
+def _parse_moment(value: str | None) -> datetime | None:
+    """«2026-08-20T07:00» из поля браузера → момент времени в UTC.
+
+    Браузер шлёт местное время БЕЗ часового пояса — своего он не знает.
+    Считаем его временем владельца: он выбирал период, глядя на свои часы.
+    """
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
 @app.get("/api/vehicles/{vehicle_id}/track")
 async def api_vehicle_track(
     vehicle_id: int,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     hours: int = 12,
+    frm: Annotated[str | None, Query(alias="from")] = None,
+    to: Annotated[str | None, Query()] = None,
 ):
     """Трек одной машины: отрезки «ехал / стоял / нет связи» с координатами.
+
+    Период задаётся либо парой «from/to», либо «последние N часов». Пара
+    сильнее: во вкладке «Треки» владелец выбирает произвольный интервал.
 
     Разрыв связи отдаётся отдельным отрезком и на карте рисуется пунктиром:
     соединять сплошной линией две точки в разных концах города — значит
@@ -4351,9 +4392,8 @@ async def api_vehicle_track(
     if vehicle is None or vehicle.owner_id != owner.id:
         raise HTTPException(status_code=404, detail="Not found")
 
-    hours = max(1, min(int(hours or 12), 72))
     now_utc = datetime.now(timezone.utc)
-    since = now_utc - timedelta(hours=hours)
+    since, until = _period_bounds(frm, to, hours, now_utc)
     rows = (
         await session.execute(
             select(
@@ -4368,6 +4408,7 @@ async def api_vehicle_track(
                 VehicleTelemetryPoint.is_valid.is_(True),
                 VehicleTelemetryPoint.observed_at.is_not(None),
                 VehicleTelemetryPoint.observed_at >= since,
+                VehicleTelemetryPoint.observed_at <= until,
                 VehicleTelemetryPoint.latitude.is_not(None),
                 VehicleTelemetryPoint.longitude.is_not(None),
             )
@@ -4377,7 +4418,9 @@ async def api_vehicle_track(
     ).all()
     segments = telemetry_service.build_track_segments(
         [(t, lat, lon, speed) for t, lat, lon, speed in rows],
-        window_end=now_utc,
+        # ⚠️ Конец окна — конец ПЕРИОДА, а не «сейчас». Иначе у трека за
+        # прошлый вторник последняя стоянка тянулась бы до текущей минуты.
+        window_end=min(until, now_utc),
     )
     moved = [seg for seg in segments if seg["kind"] == "move"]
     stops = [seg for seg in segments if seg["kind"] == "stop"]
@@ -4385,15 +4428,90 @@ async def api_vehicle_track(
     return {
         "vehicle_id": vehicle_id,
         "plate": vehicle.license_plate,
-        "hours": hours,
         "from": since.isoformat(),
-        "to": now_utc.isoformat(),
+        "to": until.isoformat(),
         "points": len(rows),
         "distance_km": round(sum(seg["distance_km"] for seg in moved), 1),
         "stops": len(stops),
         "gaps": len(gaps),
         "segments": segments,
     }
+
+
+@app.get("/api/vehicles/{vehicle_id}/shifts")
+async def api_vehicle_shifts(
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    frm: Annotated[str | None, Query(alias="from")] = None,
+    to: Annotated[str | None, Query()] = None,
+    hours: int = 24,
+):
+    """Смены машины за период — строки для вкладки «Треки».
+
+    Владелец выбирает не «последние 12 часов», а рабочий день: «Смена 20 авг,
+    07:12 → 19:47, склад 5.18 → РЦ 7 шагов, 214 км» — и проигрывает её.
+
+    ⚠️ Пробег берём из одометра (`distance_km`), а не из GPS. По точкам путь
+    всегда короче: они идут раз в 40 секунд, повороты срезаются. Два разных
+    пробега в одном кабинете — прямой путь к спорам с водителем.
+    Одометра нет — отдаём null, а не ноль: ноль читается как «никуда не ездил».
+    """
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    now_utc = datetime.now(timezone.utc)
+    since, until = _period_bounds(frm, to, hours, now_utc)
+
+    rows = (
+        await session.execute(
+            select(Shift, Driver.full_name)
+            .join(Driver, Driver.id == Shift.driver_id, isouter=True)
+            .where(
+                Shift.owner_id == owner.id,
+                Shift.vehicle_id == vehicle_id,
+                Shift.started_at <= until,
+                # Открытая смена в период тоже попадает: её конец ещё впереди.
+                or_(Shift.ended_at.is_(None), Shift.ended_at >= since),
+            )
+            .order_by(desc(Shift.started_at))
+            .limit(60)
+        )
+    ).all()
+    if not rows:
+        return {"vehicle_id": vehicle_id, "shifts": []}
+
+    trips_res = await session.execute(
+        select(Trip)
+        .where(Trip.shift_id.in_([shift.id for shift, _ in rows]))
+        .order_by(Trip.id)
+    )
+    by_shift: dict[int, list[Trip]] = {}
+    for trip in trips_res.scalars().all():
+        by_shift.setdefault(trip.shift_id, []).append(trip)
+
+    tz = owner.timezone
+    shifts = []
+    for shift, driver_name in rows:
+        trips = by_shift.get(shift.id, [])
+        # Маршрут смены: откуда уехали первым рейсом и где закончили последним.
+        route = [t.origin for t in trips[:1]] + [t.destination for t in trips]
+        route = [r for r in route if r]
+        shifts.append({
+            "shift_id": shift.id,
+            "driver": driver_name,
+            "started_at": shift.started_at.isoformat() if shift.started_at else None,
+            "ended_at": shift.ended_at.isoformat() if shift.ended_at else None,
+            "started_label": fmt_dt(shift.started_at, tz, "%d.%m, %H:%M"),
+            "ended_label": fmt_dt(shift.ended_at, tz, "%H:%M") if shift.ended_at else None,
+            "is_open": shift.ended_at is None,
+            "is_manual": bool(shift.is_manual),
+            "trips": len(trips),
+            "route": " → ".join(route) if route else None,
+            "distance_km": shift.distance_km,
+        })
+    return {"vehicle_id": vehicle_id, "shifts": shifts}
 
 
 # =========================================================================
