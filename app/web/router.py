@@ -4370,6 +4370,104 @@ def _parse_moment(value: str | None) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+# Потолок точек за один ответ. Упёрлись — в ответе поднимается `truncated`:
+# молча обрезанный трек владелец примет за настоящий и сделает неверный вывод.
+_TRACK_POINT_LIMIT = 20000
+
+# Разрыв, начиная с которого считаем, что GPS пропал. Точки идут раз в 40 секунд
+# (ретрансляция Ставтрэка), поэтому 5 минут — это уже не «пачка задержалась».
+_GPS_GAP_SECONDS = 300
+
+
+def _period_quality(rows, segments, since, until, now_utc) -> dict:
+    """Честный ответ на вопрос «а есть ли вообще данные за этот период».
+
+    ⚠️ Пустой экран владелец читает как поломку программы. Надпись «GPS: данных
+    нет с 09:12 до 11:40» — это уже факт, который можно предъявить.
+
+    ⚠️ Пробег здесь ТОЛЬКО одометровый. GPS-путь лежит рядом отдельным полем с
+    другим именем и никогда его не подменяет: по точкам путь всегда короче,
+    повороты срезаются.
+    """
+    gaps: list[dict] = []
+
+    def add_gap(start, end, reason):
+        seconds = int((end - start).total_seconds())
+        if seconds < _GPS_GAP_SECONDS:
+            return
+        gaps.append({
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "seconds": seconds,
+            "duration_label": telemetry_service.duration_label(start, end),
+            "reason": reason,
+        })
+
+    if not rows:
+        return {
+            "gps": {"status": "missing", "points": 0, "gaps": [],
+                    "reason": "no_points_in_period"},
+            "odometer": {"status": "missing", "reason": "no_points_in_period"},
+        }
+
+    times = [_utc_moment(r[0]) for r in rows]
+    # Хвосты периода: до первой точки и после последней. Конец окна не может
+    # быть в будущем — иначе «нет сигнала» показывалось бы всегда.
+    add_gap(since, times[0], "before_first_point")
+    add_gap(times[-1], min(until, now_utc), "after_last_point")
+    for segment in segments:
+        if segment["kind"] != "nosignal":
+            continue
+        add_gap(
+            datetime.fromisoformat(segment["start"]),
+            datetime.fromisoformat(segment["end"]),
+            segment.get("reason") or "no_points",
+        )
+    gaps.sort(key=lambda g: g["from"])
+
+    return {
+        "gps": {
+            "status": "partial" if gaps else "ok",
+            "points": len(rows),
+            "gaps": gaps,
+            "reason": None,
+        },
+        "odometer": _odometer_for_period(rows),
+    }
+
+
+def _utc_moment(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _odometer_for_period(rows) -> dict:
+    """Пробег по одометру трекера за период — или честная причина, почему его нет.
+
+    ⚠️ Ноль не выводим никогда: ноль читается как «никуда не ездил», а это
+    совсем не то же самое, что «прибор не прислал показания».
+    Показание уменьшилось — значит либо сброс, либо замену трекера; склеивать
+    такие числа нельзя, отдаём `reset_detected`.
+    """
+    values = [(t, float(m)) for t, _, _, _, m in rows if m is not None]
+    if not values:
+        return {"status": "missing", "reason": "no_odometer_readings"}
+    if len(values) < 2:
+        return {"status": "partial", "reason": "single_reading",
+                "start_km": values[0][1], "end_km": None, "distance_km": None}
+
+    start_km, end_km = values[0][1], values[-1][1]
+    if end_km < start_km:
+        return {"status": "reset_detected", "reason": "odometer_went_backwards",
+                "start_km": start_km, "end_km": end_km, "distance_km": None}
+    return {
+        "status": "ok",
+        "reason": None,
+        "start_km": round(start_km, 1),
+        "end_km": round(end_km, 1),
+        "odometer_distance_km": round(end_km - start_km, 1),
+    }
+
+
 @app.get("/api/vehicles/{vehicle_id}/track")
 async def api_vehicle_track(
     vehicle_id: int,
@@ -4401,6 +4499,10 @@ async def api_vehicle_track(
                 VehicleTelemetryPoint.latitude,
                 VehicleTelemetryPoint.longitude,
                 VehicleTelemetryPoint.speed_kmh,
+                # Пробег прибора — для одометровой сводки периода. Он НЕ участвует
+                # в геометрии трека, поэтому берётся отдельной колонкой и никогда
+                # не подменяет путь по точкам.
+                VehicleTelemetryPoint.mileage_km,
             )
             .where(
                 VehicleTelemetryPoint.vehicle_id == vehicle_id,
@@ -4413,11 +4515,11 @@ async def api_vehicle_track(
                 VehicleTelemetryPoint.longitude.is_not(None),
             )
             .order_by(VehicleTelemetryPoint.observed_at)
-            .limit(20000)
+            .limit(_TRACK_POINT_LIMIT)
         )
     ).all()
     segments = telemetry_service.build_track_segments(
-        [(t, lat, lon, speed) for t, lat, lon, speed in rows],
+        [(t, lat, lon, speed) for t, lat, lon, speed, _ in rows],
         # ⚠️ Конец окна — конец ПЕРИОДА, а не «сейчас». Иначе у трека за
         # прошлый вторник последняя стоянка тянулась бы до текущей минуты.
         window_end=min(until, now_utc),
@@ -4425,17 +4527,30 @@ async def api_vehicle_track(
     moved = [seg for seg in segments if seg["kind"] == "move"]
     stops = [seg for seg in segments if seg["kind"] == "stop"]
     gaps = [seg for seg in segments if seg["kind"] == "nosignal"]
+    # ⚠️ Имя поля обязано называть ИСТОЧНИК километров. Раньше и трек, и смены
+    # отдавали просто `distance_km`, но в треке это путь по GPS, а в сменах —
+    # показания одометра. Одно имя на два разных смысла — вопрос времени, когда
+    # интерфейс покажет одно вместо другого, а владелец предъявит это водителю.
     return {
         "vehicle_id": vehicle_id,
         "plate": vehicle.license_plate,
         "from": since.isoformat(),
         "to": until.isoformat(),
         "points": len(rows),
-        "distance_km": round(sum(seg["distance_km"] for seg in moved), 1),
+        "gps_path_distance_km": round(sum(seg["distance_km"] for seg in moved), 1),
         "stops": len(stops),
         "gaps": len(gaps),
+        "truncated": len(rows) >= _TRACK_POINT_LIMIT,
+        "quality": _period_quality(rows, segments, since, until, now_utc),
         "segments": segments,
     }
+
+
+def _same_day(a: datetime | None, b: datetime | None, tz: str | None) -> bool:
+    """Один ли это день в часовом поясе владельца."""
+    if a is None or b is None:
+        return False
+    return fmt_dt(a, tz, "%d.%m.%Y") == fmt_dt(b, tz, "%d.%m.%Y")
 
 
 @app.get("/api/vehicles/{vehicle_id}/shifts")
@@ -4504,12 +4619,24 @@ async def api_vehicle_shifts(
             "started_at": shift.started_at.isoformat() if shift.started_at else None,
             "ended_at": shift.ended_at.isoformat() if shift.ended_at else None,
             "started_label": fmt_dt(shift.started_at, tz, "%d.%m, %H:%M"),
-            "ended_label": fmt_dt(shift.ended_at, tz, "%H:%M") if shift.ended_at else None,
+            # ⚠️ Дата конца нужна, когда смена перешла за полночь: «09:42 →
+            # 20:15» без даты читается как один день, а водитель мог сдать
+            # груз следующим утром. Владелец 30.08: «даты нету там».
+            "ended_label": (
+                fmt_dt(
+                    shift.ended_at, tz,
+                    "%H:%M" if _same_day(shift.started_at, shift.ended_at, tz)
+                    else "%d.%m, %H:%M",
+                )
+                if shift.ended_at else None
+            ),
             "is_open": shift.ended_at is None,
             "is_manual": bool(shift.is_manual),
             "trips": len(trips),
             "route": " → ".join(route) if route else None,
-            "distance_km": shift.distance_km,
+            # Имя называет источник: это одометр из фото начала и конца смены,
+            # а не путь по GPS. См. комментарий в ответе трека.
+            "odometer_distance_km": shift.distance_km,
         })
     return {"vehicle_id": vehicle_id, "shifts": shifts}
 

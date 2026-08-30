@@ -389,6 +389,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-period, .mon-quick { flex: none; }
 /* Растягиваются только прокручиваемые области — список машин и список смен. */
 .mon-list, .mon-tracks { flex: 1; min-height: 0; }
+.mon-period, .mon-quick { flex: 0 0 auto; }
 .mon-tabs {
   display: flex; gap: 4px; padding: 0 12px 10px; height: 44px;
   box-sizing: content-box;
@@ -408,7 +409,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
    .mon-tools свой display, а он специфичнее браузерного [hidden] — атрибут
    молча перестаёт работать, и обе вкладки видны одновременно. */
 .mon-panel--list [data-pane][hidden] { display: none; }
-.mon-tracks { display: flex; flex-direction: column; }
+/* ⚠️ Прокрутка ОДНА на всю вкладку, а не отдельная у карточки и у списка.
+   Пробовал давать каждому блоку свой скролл и минимальную высоту — на низком
+   окне список смен всё равно вылезал за панель и обрезался. Одна прокрутка
+   ведёт себя предсказуемо при любой высоте окна. */
+.mon-tracks { display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 .mon-period { display: flex; gap: 8px; padding: 0 12px 8px; }
 /* ⚠️ min-width: 0 обязателен обоим. У datetime-local своя огромная
    «естественная» ширина, и flex-элемент по умолчанию ниже неё не сжимается:
@@ -435,7 +440,35 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-quick button.is-on { background: rgba(37, 99, 235, .22); color: #1d4ed8; }
 .mon[data-mode="dark"] .mon-quick button.is-on { color: #9dc0ff; }
 
-.mon-shifts { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; }
+/* ---------- качество данных за период ---------- */
+/* Владелец 30.08: за выбранный период должны быть видны И одометр, И GPS, а
+   если данных нет — так и написано. Пустой экран он читает как поломку. */
+.mon-quality {
+  margin: 0 12px 10px; padding: 10px 12px; border-radius: 12px;
+  background: var(--mon-fill); border: 1px solid var(--mon-border);
+  display: grid; gap: 8px;
+  /* ⚠️ Карточка не имеет права съедать список смен. На коротком окне она
+     вырастала до 165 px и выдавливала список за пределы панели — ровно та же
+     ошибка, что была со строкой поиска. Больше 42% высоты не занимает,
+     остальное прокручивается внутри себя. */
+  flex: 0 0 auto;
+}
+.mon-quality[hidden] { display: none; }
+.mon-quality__row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; align-items: baseline; }
+.mon-quality__tag {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  padding: 3px 6px; border-radius: 6px; white-space: nowrap;
+}
+.mon-quality__tag[data-s="ok"] { background: rgba(22,163,74,.16); color: #16a34a; }
+.mon-quality__tag[data-s="partial"] { background: rgba(224,163,46,.18); color: #9a5b00; }
+.mon-quality__tag[data-s="missing"] { background: rgba(197,54,43,.16); color: #c5362b; }
+.mon[data-mode="dark"] .mon-quality__tag[data-s="partial"] { color: #e0a32e; }
+.mon[data-mode="dark"] .mon-quality__tag[data-s="missing"] { color: #f26666; }
+.mon-quality__val { font-size: 12.5px; font-weight: 600; color: var(--mon-text); }
+.mon-quality__val small { display: block; font-weight: 500; color: var(--mon-text-2); font-size: 11.5px; }
+.mon-quality__gaps { margin: 0; padding-left: 14px; color: var(--mon-text-2); font-size: 11.5px; }
+.mon-shifts { flex: 0 0 auto; padding: 0 12px 12px; }
 .mon-shift {
   width: 100%; display: grid; grid-template-columns: 30px 1fr auto;
   gap: 10px; align-items: center; text-align: left;
@@ -502,6 +535,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   display: grid; place-items: center; font-size: 15px;
   background: #1d4ed8; color: #fff;
 }
+/* Значок ▶ у шрифта иконок сидит на базовой линии и съезжал вниз-вправо. */
+.mon-play__go i { line-height: 1; display: block; }
 .mon-play__speeds { display: flex; gap: 4px; flex: 1; }
 .mon-play__speeds button {
   height: 28px; padding: 0 9px; border: 0; cursor: pointer; font: inherit;
@@ -937,6 +972,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         <button type="button" data-quick="yesterday">Вчера</button>
         <button type="button" data-quick="week">7 дней</button>
       </div>
+      <div class="mon-quality" id="mon-quality" hidden></div>
       <div class="mon-shifts" id="mon-shifts">
         <div class="mon-empty">Выберите машину — покажу её смены за период.</div>
       </div>
@@ -1388,12 +1424,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       } else if (previous) {
         ymap.removeChild(previous);
       }
-      // ⚠️ raiseFeatures() тут НЕ зовём. Он снимает и заново вешает слой со
-      // ВСЕМИ метками, геозонами и хвостом — их приходится строить заново, и
-      // владелец видел это как «геозоны при смене темы долго прогружаются».
-      // Порядок и так гарантирован: у слоя меток zIndex 1800, у подложки 1500.
-      // Подъём нужен только при равном zIndex — то есть при спутнике, там он
-      // и остался.
+      // ⚠️ Подъём слоя меток ВЕРНУЛСЯ. Я убирал его ради скорости — геозоны
+      // перестали перестраиваться при каждой смене темы. Но владелец 30.08:
+      // «когда выбираешь трек и делаешь белую карту, карта белой не
+      // становится». Правильность важнее: без подъёма новая подложка иногда
+      // остаётся под старой, и тема не меняется вовсе.
+      // Пауза на перестроение вернулась — это меньшее зло.
+      raiseFeatures();
       ymap.update({ theme: theme });
     }
     // ⚠️ zIndex обязателен. По умолчанию любой слой в 3.0 идёт с zIndex 1500 —
@@ -2330,7 +2367,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           return;
         }
         facts.innerHTML =
-          '<span>Пробег <b>' + data.distance_km + ' км</b></span>' +
+          '<span>Путь по GPS <b>' + data.gps_path_distance_km + ' км</b></span>' +
           '<span>Стоянок <b>' + data.stops + '</b></span>' +
           '<span class="' + (data.gaps ? 'bad' : '') + '">Разрывов связи <b>' + data.gaps + '</b></span>' +
           '<span>Точек <b>' + data.points + '</b></span>';
@@ -2560,6 +2597,70 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     fromEl.addEventListener('change', loadShifts);
     toEl.addEventListener('change', loadShifts);
 
+    var qualityEl = document.getElementById('mon-quality');
+
+    // Подписи причин. ⚠️ «Задержана доставка» и «машина стояла» — РАЗНЫЕ вещи,
+    // и путать их нельзя: за пропуском связи машина могла ехать куда угодно.
+    var GAP_REASONS = {
+      before_first_point: 'до первой точки периода',
+      after_last_point: 'после последней точки',
+      no_points: 'точек не было',
+      nosignal: 'связи не было'
+    };
+
+    function qualityRow(tag, status, value, extra) {
+      return '<div class="mon-quality__row">' +
+        '<i class="mon-quality__tag" data-s="' + status + '">' + tag + '</i>' +
+        '<span class="mon-quality__val">' + value +
+        (extra ? '<small>' + extra + '</small>' : '') + '</span></div>';
+    }
+
+    function renderQuality(data) {
+      if (!data || !data.quality) { qualityEl.hidden = true; return; }
+      var gps = data.quality.gps, odo = data.quality.odometer;
+      var html = '';
+
+      if (gps.status === 'missing') {
+        html += qualityRow('GPS', 'missing', 'Данных нет за период',
+          'Трекер не прислал ни одной точки.');
+      } else {
+        var gpsText = 'Путь по GPS ' + data.gps_path_distance_km + ' км';
+        if (gps.gaps.length) {
+          html += qualityRow('GPS', 'partial', gpsText,
+            'Связи не было ' + gps.gaps.length + ' раз — путь на этих участках неизвестен.');
+          html += '<ul class="mon-quality__gaps">' + gps.gaps.slice(0, 4).map(function (g) {
+            return '<li>' + hhmm(g.from) + ' — ' + hhmm(g.to) + ', ' + esc(g.duration_label) +
+              ' <span style="opacity:.75">(' + esc(GAP_REASONS[g.reason] || g.reason) + ')</span></li>';
+          }).join('') + '</ul>';
+        } else {
+          html += qualityRow('GPS', 'ok', gpsText, 'Связь не пропадала.');
+        }
+      }
+
+      // ⚠️ Одометр и GPS-путь рядом, но НИКОГДА не подменяют друг друга:
+      // по точкам путь всегда короче, повороты срезаются.
+      if (odo.status === 'ok') {
+        html += qualityRow('Одометр', 'ok', 'Пробег ' + odo.odometer_distance_km + ' км',
+          odo.start_km + ' → ' + odo.end_km + ' км');
+      } else if (odo.status === 'reset_detected') {
+        html += qualityRow('Одометр', 'missing', 'Показания уменьшились',
+          'Сброс прибора или замена трекера — складывать такие числа нельзя.');
+      } else if (odo.status === 'partial') {
+        html += qualityRow('Одометр', 'partial', 'Данные неполные',
+          'Есть только одно показание за период.');
+      } else {
+        html += qualityRow('Одометр', 'missing', 'Нет данных',
+          'Прибор не прислал показаний пробега.');
+      }
+
+      if (data.truncated) {
+        html += qualityRow('Внимание', 'partial', 'Показано не всё',
+          'Период слишком большой: отдано первые ' + data.points + ' точек. Сузьте интервал.');
+      }
+      qualityEl.innerHTML = html;
+      qualityEl.hidden = false;
+    }
+
     async function loadShifts() {
       if (selected === null) {
         shiftsEl.innerHTML = '<div class="mon-empty">Выберите машину — покажу её смены за период.</div>';
@@ -2567,6 +2668,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       }
       var v = byId(selected);
       shiftsEl.innerHTML = '<div class="mon-empty">Загружаю смены…</div>';
+      loadQuality();
       try {
         var r = await fetch('/api/vehicles/' + selected + '/shifts?from=' +
           encodeURIComponent(fromEl.value) + '&to=' + encodeURIComponent(toEl.value));
@@ -2580,8 +2682,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         }
         shiftsEl.innerHTML = data.shifts.map(function (sh) {
           // Пробега нет — так и пишем. Ноль читался бы как «никуда не ездил».
-          var km = sh.distance_km === null || sh.distance_km === undefined
-            ? '—' : sh.distance_km + ' км';
+          var km = sh.odometer_distance_km === null || sh.odometer_distance_km === undefined
+            ? '—' : sh.odometer_distance_km + ' км';
           var when = 'Смена ' + esc(sh.started_label) +
             (sh.ended_label ? ' → ' + esc(sh.ended_label) : ' → сейчас');
           var sub = sh.route ? esc(sh.route)
@@ -2595,6 +2697,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         shiftsEl._rows = data.shifts;
       } catch (e) {
         shiftsEl.innerHTML = '<div class="mon-empty">Не удалось загрузить смены.</div>';
+      }
+    }
+
+    async function loadQuality() {
+      if (selected === null) { qualityEl.hidden = true; return; }
+      var id = selected;
+      try {
+        var r = await fetch('/api/vehicles/' + id + '/track?from=' +
+          encodeURIComponent(fromEl.value) + '&to=' + encodeURIComponent(toEl.value));
+        if (!r.ok) { qualityEl.hidden = true; return; }
+        var data = await r.json();
+        if (selected !== id) return;      // успели выбрать другую машину
+        renderQuality(data);
+      } catch (e) {
+        qualityEl.hidden = true;
       }
     }
 
