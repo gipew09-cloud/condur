@@ -323,14 +323,18 @@ def test_tracks_tab_has_a_player_like_the_design():
 
     # плеер: пауза, скорости, полоса прогресса, часы по треку
     assert 'id="mon-play-toggle"' in src
-    for speed in (1, 5, 10, 30):
-        assert 'data-speed="%d"' % speed in src
+    for speed in ("0.5", "1", "3", "10", "30"):
+        assert 'data-speed="%s"' % speed in src
     assert "linear-gradient(90deg, #2563eb, #93c5fd)" in src
     assert "Просмотр трека — линия за машиной по всей смене" in src
 
     # ⚠️ Ускорение считается по ВРЕМЕНИ трека, а не по числу точек: иначе
     # стоянка пролетала бы так же быстро, как езда.
-    assert "realMs * play.speed * 60" in src
+    assert "realMs * play.speed * PLAY_BASE" in src
+    # ⚠️ База 10, а не 60: при 60 даже ×1 гнал час трека за минуту
+    assert "var PLAY_BASE = 10;" in src
+    # и не больше нескольких точек за кадр — иначе машина телепортируется
+    assert "play.at + PLAY_MAX_STEP" in src
 
     # ⚠️ Время каждой точки приходит с сервера (seg.times). Раскладывать точки
     # равномерно внутри отрезка нельзя — часы плеера будут врать.
