@@ -245,7 +245,19 @@ def test_monitoring_has_tail_and_direction_arrow_like_the_app():
     assert "TAIL_WINDOW_MS = 15 * 60 * 1000" in src
     assert "TAIL_MAX_POINTS = 30" in src
     assert "if (seg.kind !== 'move') return;" in src
-    assert "#93c5fd" in src            # тот же бледно-синий, что в приложении
+    # Хвост ВСЕГДА синий и от цвета машины не зависит: это след, а не машина.
+    # Оттенок — по теме: бледный на тёмной карте, насыщенный на светлой, где
+    # бледно-синий теряется среди дорог того же тона.
+    assert "function tailColor()" in src
+    assert "#93c5fd" in src            # тёмная карта — как в приложении
+    assert "#2f7bf6" in src            # светлая карта
+    assert "0.18 + t * 0.82" in src    # яркости прибавлено по просьбе владельца
+
+    # Хвост ТАЕТ к дальнему концу, а не обрывается: у машины плотный, там где
+    # она была 15 минут назад — сходит на нет. Владелец 27.08: «пусть
+    # живучесть будет 15 минут, и она постепенно уходит».
+    assert "TAIL_CHUNKS = 12" in src   # столько же ступеней, сколько в приложении
+    assert "2.2 + t * 2.8" in src      # и толщина растёт к машине
 
     # хвост появляется сам по выбору машины и обновляется вместе с опросом
     assert "syncTail()" in src
@@ -259,6 +271,77 @@ def test_monitoring_has_tail_and_direction_arrow_like_the_app():
     assert "Math.cos(v.lat * Math.PI / 180)" in src
     # стрелка только у ЕДУЩЕЙ машины и только при известном направлении
     assert "key === 'moving' && course !== undefined" in src
+
+
+def test_map_theme_follows_the_system_and_does_not_blank_out():
+    """Тема сама идёт за системой, а карта не гаснет при переключении.
+
+    Владелец 27.08.2026: «машины долго загружаются, когда меняется тема» и
+    «почему-то автоматически не делается».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+
+    # следуем за системой, пока владелец не выбрал тему кнопкой
+    assert "prefers-color-scheme: dark" in src
+    assert "if (savedTheme) return;" in src   # ручной выбор сильнее системы
+
+    # ⚠️ новый слой добавляем ДО удаления старого: иначе карта на секунду
+    # пустая, и это читается как «машины пропали»
+    add_at = src.index("ymap.addChild(schemeLayer);\n        if (previous)")
+    assert add_at > 0
+
+    # ⚠️ Смена темы НЕ пересобирает слой меток: raiseFeatures() снимает и
+    # заново вешает всё — метки, геозоны, хвост, — и владелец видел это как
+    # «геозоны при смене темы долго прогружаются». Порядок держит zIndex:
+    # у слоя меток 1800, у подложки 1500. Подъём остался только у спутника,
+    # где zIndex может совпасть.
+    assert "YMapDefaultFeaturesLayer({ zIndex: 1800 })" in src
+    theme_fn = src[src.index("function applyMapTheme()"):src.index("function raiseFeatures()")]
+    # комментарии не считаем: там подъём как раз объясняется словами
+    code = [ln for ln in theme_fn.splitlines() if not ln.strip().startswith("//")]
+    assert "raiseFeatures()" not in "\n".join(code)
+
+
+def test_tracks_tab_has_a_player_like_the_design():
+    """Вкладка «Треки» с плеером — по макету «Редизайн системы мониторинга».
+
+    Владелец 27.08.2026: «треки недоделаны», нужен плеер как в Ставтрэке —
+    пауза, ускорение, ползунок и произвольный период «с… по…».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+
+    # вкладки панели: Объекты · Треки
+    assert 'data-tab="objects"' in src and 'data-tab="tracks"' in src
+
+    # период «с… по…» и быстрые чипы из макета
+    assert 'id="mon-from"' in src and 'id="mon-to"' in src
+    for quick in ("today", "yesterday", "week"):
+        assert 'data-quick="%s"' % quick in src
+
+    # смены за период тянем у своего эндпоинта
+    assert "/api/vehicles/' + selected + '/shifts?from=" in src
+
+    # плеер: пауза, скорости, полоса прогресса, часы по треку
+    assert 'id="mon-play-toggle"' in src
+    for speed in (1, 5, 10, 30):
+        assert 'data-speed="%d"' % speed in src
+    assert "linear-gradient(90deg, #2563eb, #93c5fd)" in src
+    assert "Просмотр трека — линия за машиной по всей смене" in src
+
+    # ⚠️ Ускорение считается по ВРЕМЕНИ трека, а не по числу точек: иначе
+    # стоянка пролетала бы так же быстро, как езда.
+    assert "realMs * play.speed * 60" in src
+
+    # камера едет за машиной по треку
+    assert "ymap.setLocation({ center: LL(frame.lat, frame.lon)" in src
+
+    # ⚠️ У панелей свой display, он специфичнее браузерного [hidden] — без
+    # этого правила «Объекты» и «Треки» видны одновременно
+    assert ".mon-panel--list [data-pane][hidden] { display: none; }" in src
+
+    # тёмная версия есть: акценты вкладок и плеера переопределены
+    assert '.mon[data-mode="dark"] .mon-tab.is-on' in src
+    assert '.mon[data-mode="dark"] .mon-play__speeds button.is-on' in src
 
 
 def test_monitoring_track_is_a_gradient_like_the_design():
