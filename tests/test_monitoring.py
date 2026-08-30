@@ -290,16 +290,14 @@ def test_map_theme_follows_the_system_and_does_not_blank_out():
     add_at = src.index("ymap.addChild(schemeLayer);\n        if (previous)")
     assert add_at > 0
 
-    # ⚠️ Смена темы НЕ пересобирает слой меток: raiseFeatures() снимает и
-    # заново вешает всё — метки, геозоны, хвост, — и владелец видел это как
-    # «геозоны при смене темы долго прогружаются». Порядок держит zIndex:
-    # у слоя меток 1800, у подложки 1500. Подъём остался только у спутника,
-    # где zIndex может совпасть.
+    # ⚠️ Подъём слоя меток при смене темы ОБЯЗАТЕЛЕН. Я убирал его ради
+    # скорости, и владелец 30.08 поймал регресс: «когда выбираешь трек и
+    # делаешь белую карту, карта белой не становится» — новая подложка
+    # оставалась под старой. Правильность важнее паузы на перестроение.
     assert "YMapDefaultFeaturesLayer({ zIndex: 1800 })" in src
     theme_fn = src[src.index("function applyMapTheme()"):src.index("function raiseFeatures()")]
-    # комментарии не считаем: там подъём как раз объясняется словами
     code = [ln for ln in theme_fn.splitlines() if not ln.strip().startswith("//")]
-    assert "raiseFeatures()" not in "\n".join(code)
+    assert "raiseFeatures()" in "\n".join(code)
 
 
 def test_tracks_tab_has_a_player_like_the_design():
@@ -347,6 +345,21 @@ def test_tracks_tab_has_a_player_like_the_design():
     assert "if (play.at === play.drawn) return;" in src
     seek = src[src.index("function seekTo(index)"):src.index("async function refresh()")]
     assert "new YMapFeature" not in seek and "new YMapMarker" not in seek
+
+    # Карточка качества периода: одометр и GPS рядом, «нет данных» вслух.
+    assert 'id="mon-quality"' in src
+    assert "Данных нет за период" in src
+    assert "Показания уменьшились" in src        # сброс одометра не склеиваем
+    assert "Показано не всё" in src              # упёрлись в лимит точек
+    # ⚠️ имена полей называют источник километров
+    assert "data.gps_path_distance_km" in src
+    assert "sh.odometer_distance_km" in src
+    assert "data.distance_km" not in src
+
+    # ⚠️ Прокрутка ОДНА на всю вкладку «Треки». Отдельные скроллы у карточки и
+    # списка на низком окне выпихивали список за пределы панели — измерено в
+    # браузере, не на глаз.
+    assert ".mon-tracks { display: flex; flex-direction: column; overflow-y: auto;" in src
 
     # поля периода обязаны сжиматься, иначе панель распирает и режет поиск
     assert "flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;" in src

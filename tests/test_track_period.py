@@ -148,7 +148,7 @@ def test_open_shift_shows_up_and_mileage_is_not_faked():
         assert row["is_open"] is True
         assert row["ended_label"] is None
         # ⚠️ ноль читался бы как «никуда не ездил»
-        assert row["distance_km"] is None
+        assert row["odometer_distance_km"] is None
         assert row["route"] is None
         await session.close()
     _run(scenario)
@@ -202,3 +202,94 @@ def test_every_point_carries_its_own_time():
     assert len(seg["times"]) == len(seg["points"])
     assert seg["times"][0] == points[0][0].isoformat()
     assert seg["times"][-1] == points[-1][0].isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Качество данных за период: честный ответ вместо пустого экрана
+# ---------------------------------------------------------------------------
+# Владелец 30.08.2026: «за выбранный период должны быть видны и пробег по
+# одометру, и GPS-пробег; а если данных нет — так и написано». Пустой экран он
+# читает как поломку программы.
+
+def test_names_say_where_the_kilometres_came_from():
+    """⚠️ Одно имя `distance_km` значило РАЗНОЕ в двух эндпоинтах.
+
+    В треке это был путь по GPS, в сменах — показания одометра. Рано или поздно
+    интерфейс показал бы одно вместо другого, а владелец предъявил бы это
+    водителю. Имя обязано называть источник.
+    """
+    import inspect
+
+    from app.web import router
+
+    track = inspect.getsource(router.api_vehicle_track)
+    shifts = inspect.getsource(router.api_vehicle_shifts)
+    assert '"gps_path_distance_km"' in track
+    assert '"distance_km": round(' not in track
+    assert '"odometer_distance_km"' in shifts
+    assert '"distance_km": shift.distance_km' not in shifts
+
+
+def test_no_points_is_said_out_loud():
+    quality = router_quality([], [], NOW - timedelta(hours=2), NOW)
+    assert quality["gps"]["status"] == "missing"
+    assert quality["gps"]["reason"] == "no_points_in_period"
+    assert quality["odometer"]["status"] == "missing"
+
+
+def test_gap_at_the_edges_is_reported():
+    """Молчание до первой точки и после последней — тоже пропуск."""
+    start = NOW - timedelta(hours=3)
+    rows = [
+        (start + timedelta(hours=1), 59.93, 30.33, 40, None),
+        (start + timedelta(hours=1, minutes=1), 59.94, 30.34, 40, None),
+    ]
+    quality = router_quality(rows, [], start, NOW)
+    reasons = {g["reason"] for g in quality["gps"]["gaps"]}
+    assert "before_first_point" in reasons
+    assert "after_last_point" in reasons
+    assert quality["gps"]["status"] == "partial"
+
+
+def test_future_is_not_a_gap():
+    """Конец периода в будущем не должен превращаться в «нет сигнала»."""
+    rows = [
+        (NOW - timedelta(minutes=2), 59.93, 30.33, 40, None),
+        (NOW - timedelta(minutes=1), 59.94, 30.34, 40, None),
+    ]
+    quality = router_quality(rows, [], NOW - timedelta(minutes=10), NOW + timedelta(days=1))
+    assert not [g for g in quality["gps"]["gaps"] if g["reason"] == "after_last_point"]
+
+
+def test_odometer_never_shows_zero_instead_of_nothing():
+    """⚠️ Ноль читается как «никуда не ездил». Это не то же, что «нет данных»."""
+    rows = [(NOW, 59.93, 30.33, 0, None), (NOW, 59.93, 30.33, 0, None)]
+    odo = router_quality(rows, [], NOW - timedelta(hours=1), NOW)["odometer"]
+    assert odo["status"] == "missing"
+    assert "odometer_distance_km" not in odo
+
+
+def test_odometer_going_backwards_is_not_glued_together():
+    """Сброс прибора или замена трекера — складывать такие показания нельзя."""
+    rows = [
+        (NOW - timedelta(hours=1), 59.93, 30.33, 40, 958_700),
+        (NOW, 59.94, 30.34, 40, 120),
+    ]
+    odo = router_quality(rows, [], NOW - timedelta(hours=2), NOW)["odometer"]
+    assert odo["status"] == "reset_detected"
+    assert odo.get("odometer_distance_km") is None
+
+
+def test_odometer_pair_gives_the_distance():
+    rows = [
+        (NOW - timedelta(hours=1), 59.93, 30.33, 40, 958_700.0),
+        (NOW, 59.94, 30.34, 40, 958_731.0),
+    ]
+    odo = router_quality(rows, [], NOW - timedelta(hours=2), NOW)["odometer"]
+    assert odo["status"] == "ok"
+    assert odo["odometer_distance_km"] == 31.0
+
+
+def router_quality(rows, segments, since, until):
+    from app.web.router import _period_quality
+    return _period_quality(rows, segments, since, until, NOW)
