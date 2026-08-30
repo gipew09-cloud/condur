@@ -173,3 +173,32 @@ def test_shifts_of_another_owner_are_not_returned():
         assert data["shifts"] == []
         await session.close()
     _run(scenario)
+
+
+def test_every_point_carries_its_own_time():
+    """Время КАЖДОЙ точки доезжает до карты.
+
+    Владелец 30.08.2026: «почему сервер не хранит время каждой отдельной точки
+    — это очень плохо». Он прав в претензии, но время в базе есть
+    (`VehicleTelemetryPoint.observed_at`) — его просто не отдавали. Без него
+    плеер раскладывал точки равномерно внутри отрезка, и стоянка на светофоре
+    проигрывалась так же быстро, как езда по трассе.
+    """
+    from decimal import Decimal
+
+    from app.services.telemetry_service import build_track_segments
+
+    start = datetime(2026, 8, 26, 9, 42, tzinfo=timezone.utc)
+    points = [
+        (start + timedelta(minutes=2 * i), 59.93 + i * 0.002, 30.33 + i * 0.002, Decimal("40"))
+        for i in range(8)
+    ]
+    moves = [
+        seg for seg in build_track_segments(points, window_end=start + timedelta(minutes=20))
+        if seg["kind"] == "move"
+    ]
+    assert moves, "поездка не собралась"
+    seg = moves[0]
+    assert len(seg["times"]) == len(seg["points"])
+    assert seg["times"][0] == points[0][0].isoformat()
+    assert seg["times"][-1] == points[-1][0].isoformat()

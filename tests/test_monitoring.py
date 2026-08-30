@@ -332,6 +332,21 @@ def test_tracks_tab_has_a_player_like_the_design():
     # стоянка пролетала бы так же быстро, как езда.
     assert "realMs * play.speed * 60" in src
 
+    # ⚠️ Время каждой точки приходит с сервера (seg.times). Раскладывать точки
+    # равномерно внутри отрезка нельзя — часы плеера будут врать.
+    assert "times[i] ? new Date(times[i]).getTime() : NaN" in src
+
+    # ⚠️ Объекты карты создаются ОДИН раз и дальше обновляются. Пересоздание в
+    # цикле анимации давало то самое «всё моргает и лагает» (владелец 30.08).
+    assert "play.line.update({ geometry:" in src
+    assert "play.marker.update({ coordinates:" in src
+    assert "if (play.at === play.drawn) return;" in src
+    seek = src[src.index("function seekTo(index)"):src.index("async function refresh()")]
+    assert "new YMapFeature" not in seek and "new YMapMarker" not in seek
+
+    # поля периода обязаны сжиматься, иначе панель распирает и режет поиск
+    assert "flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;" in src
+
     # камера едет за машиной по треку
     assert "ymap.setLocation({ center: LL(frame.lat, frame.lon)" in src
 
