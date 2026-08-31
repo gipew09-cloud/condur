@@ -550,6 +550,38 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px; font-weight: 600; color: var(--mon-text-2);
 }
+.mon-play__step {
+  width: 28px; height: 28px; border: 0; border-radius: 8px; cursor: pointer;
+  font-size: 16px; font-weight: 700; line-height: 1;
+  background: var(--mon-fill); color: var(--mon-text-2);
+}
+/* Показания приборов на текущей точке трека. */
+.mon-play__gauges {
+  margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px;
+}
+.mon-play__gauges i {
+  font-style: normal; font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 7px;
+  background: var(--mon-fill); color: var(--mon-text-2);
+}
+.mon-play__gauges i b { color: var(--mon-text); font-weight: 700; }
+.mon-play__gauges i[data-on="1"] { background: rgba(22,163,74,.16); color: #16a34a; }
+.mon-play__gauges i[data-on="0"] { background: rgba(148,163,184,.2); }
+.mon[data-mode="dark"] .mon-play__gauges i[data-on="1"] { color: #4ade80; }
+.mon-play__noplace {
+  margin-top: 8px; padding: 7px 9px; border-radius: 9px;
+  background: rgba(224,163,46,.14); color: var(--mon-text-2); font-size: 11.5px;
+}
+.mon-play__noplace[hidden] { display: none; }
+.mon-play__noplace b { color: var(--mon-text); }
+/* Значок действия водителя на линии трека. */
+.mon-event {
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  display: grid; place-items: center; font-size: 12px; line-height: 1;
+  background: var(--mon-surface); border: 2px solid #1d4ed8;
+  box-shadow: 0 4px 12px -4px rgba(11,31,77,.6);
+  transform: translate(-50%, -50%);
+}
 .mon-play__hint { margin-top: 8px; font-size: 11.5px; color: var(--mon-text-2); }
 
 @media (max-width: 720px) {
@@ -1028,17 +1060,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       <i id="mon-play-fill"></i>
     </div>
     <div class="mon-play__row">
+      <button type="button" class="mon-play__step" id="mon-play-prev" title="Предыдущая точка" aria-label="Предыдущая точка">‹</button>
       <button type="button" class="mon-play__go" id="mon-play-toggle" aria-label="Пауза"><i class="ph ph-pause"></i></button>
+      <button type="button" class="mon-play__step" id="mon-play-next" title="Следующая точка" aria-label="Следующая точка">›</button>
       <div class="mon-play__speeds" id="mon-play-speeds">
-        <button type="button" data-speed="0.5">×½</button>
         <button type="button" data-speed="1" class="is-on">×1</button>
-        <button type="button" data-speed="3">×3</button>
-        <button type="button" data-speed="10">×10</button>
-        <button type="button" data-speed="30">×30</button>
+        <button type="button" data-speed="2">×2</button>
+        <button type="button" data-speed="5">×5</button>
+        <button type="button" data-speed="15">×15</button>
+        <button type="button" data-speed="60">×60</button>
       </div>
       <span class="mon-play__km" id="mon-play-km">0 км</span>
     </div>
-    <div class="mon-play__hint">Просмотр трека — линия за машиной по всей смене</div>
+    <div class="mon-play__gauges" id="mon-play-gauges"></div>
+    <div class="mon-play__noplace" id="mon-play-noplace" hidden></div>
+    <div class="mon-play__hint">×1 — как в жизни. «‹ ›» — шаг на одну точку GPS.</div>
   </div>
 
   <div class="mon-track" id="mon-track" hidden>
@@ -2519,20 +2555,30 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // своего отрезка. Для проигрывателя этого достаточно: порядок точек и
     // границы отрезков — правда, а секунда туда-сюда на часах ничего не
     // решает. Выдавать это за точное время точки нельзя.
-    // Во сколько раз время трека идёт быстрее настоящего при скорости ×1.
-    var PLAY_BASE = 10;
-    var PLAY_MAX_STEP = 3;
+    // ⚠️ БАЗА = 1. Множитель на кнопке теперь означает ровно то, что написано:
+    // ×1 — как в жизни, минута просмотра = минута трека. Было 60, потом 10,
+    // потом 4 — и владелец каждый раз говорил «быстро», потому что «×1» на
+    // самом деле означало «×60», «×10», «×4». Спорить с этим бесполезно:
+    // подпись должна не врать.
+    var PLAY_BASE = 1;
+    // За кадр — не больше одной точки. Прыжок через несколько точек и был тем,
+    // из-за чего машина «телепортировалась» и трек читался рывками.
+    var PLAY_MAX_STEP = 1;
 
     var play = {
       shift: null,      // строка смены, которую смотрим
       frames: [],       // [{lat, lon, t, km}] по возрастанию времени
       at: 0,            // текущий кадр
-      speed: 1,         // множитель к PLAY_BASE
+      speed: 1,         // ×1 = реальное время
       running: false,
       raf: null,
       ghost: null,      // весь трек бледной линией
       line: null,       // пройденная часть
       marker: null,     // машина на треке
+      arrow: null,      // стрелка направления внутри кружка
+      eventMarks: [],   // значки действий водителя на треке
+      eventsNoPlace: [],// события, для которых места на треке нет
+      multiday: false,  // период больше суток — показываем дату в часах
       lastTick: 0,
       drawn: -1         // какой кадр уже нарисован
     };
@@ -2544,6 +2590,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var playBar = document.getElementById('mon-play-bar');
     var playKm = document.getElementById('mon-play-km');
     var playToggle = document.getElementById('mon-play-toggle');
+    var gaugesEl = document.getElementById('mon-play-gauges');
     var shiftsEl = document.getElementById('mon-shifts');
     var fromEl = document.getElementById('mon-from');
     var toEl = document.getElementById('mon-to');
@@ -2744,13 +2791,18 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var n = seg.points.length;
         var segKm = seg.distance_km || 0;
         var times = seg.times || [];
+        var fuel = seg.fuel_litres || [], temps = seg.fuel_temp_c || [], ign = seg.ignition || [];
         seg.points.forEach(function (pt, i) {
           var share = n > 1 ? i / (n - 1) : 1;
           var own = times[i] ? new Date(times[i]).getTime() : NaN;
           out.push({
             lat: pt[0], lon: pt[1],
             t: isNaN(own) ? t0 + (t1 - t0) * share : own,
-            km: km + segKm * share
+            km: km + segKm * share,
+            fuel: fuel[i], temp: temps[i], ign: ign[i],
+            // Первая точка отрезка идёт следом за разрывом связи: между ней и
+            // предыдущей путь неизвестен, и это надо сказать вслух.
+            afterGap: i === 0 && out.length > 0
           });
         });
         km += segKm;
@@ -2765,7 +2817,84 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // обновляются. Первая версия пересоздавала линию и метку на каждом кадре —
     // по 60 раз в секунду снимала с карты и вешала заново. Владелец 30.08:
     // «всё моргает и лагает». Пересоздавать объекты в цикле анимации нельзя.
+    // ================= события водителя на треке =================
+    // ⚠️ Место события считается ЗДЕСЬ, по времени: берём ближайшую точку
+    // трека. Если ближайшая дальше, чем на 5 минут, значит в эту минуту связи
+    // не было — метку не ставим вовсе и честно пишем «место неизвестно».
+    // Нарисовать значок посреди пунктира значило бы выдать догадку за факт.
+    var EVENT_MATCH_MS = 5 * 60 * 1000;
+    var EVENT_ICONS = {
+      shift: '🟢', trip: '🚛', photo: '📄', money: '💳', zone: '🏭', alarm: '⚠️'
+    };
+
+    function clearEventMarks() {
+      play.eventMarks.forEach(function (m) { ymap.removeChild(m); });
+      play.eventMarks = [];
+    }
+
+    function placeEvents(events) {
+      clearEventMarks();
+      play.eventsNoPlace = [];
+      if (!play.frames.length) return;
+
+      events.forEach(function (ev) {
+        var at = new Date(ev.at).getTime();
+        var best = null, bestDiff = Infinity;
+        for (var i = 0; i < play.frames.length; i++) {
+          var d = Math.abs(play.frames[i].t - at);
+          if (d < bestDiff) { bestDiff = d; best = play.frames[i]; }
+        }
+        if (!best || bestDiff > EVENT_MATCH_MS) {
+          play.eventsNoPlace.push(ev);
+          return;
+        }
+        var el = document.createElement('div');
+        el.className = 'mon-event';
+        el.innerHTML = '<i>' + (EVENT_ICONS[ev.kind] || '•') + '</i>';
+        el.title = ev.at_label + ' — ' + ev.label;
+        el.addEventListener('click', function () {
+          showBalloon(LL(best.lat, best.lon),
+            '<div class="mon-balloon"><h4>' + esc(ev.label) + '</h4>' +
+            '<div class="meta">' + esc(ev.at_label) + '</div>' +
+            '<div class="meta">Место — ближайшая точка трека' +
+            (bestDiff > 60000 ? ' (расхождение ' + Math.round(bestDiff / 60000) + ' мин)' : '') +
+            '</div></div>');
+        });
+        var marker = new YMapMarker(
+          { coordinates: LL(best.lat, best.lon), zIndex: 880 }, el);
+        ymap.addChild(marker);
+        play.eventMarks.push(marker);
+      });
+      paintNoPlace();
+    }
+
+    function paintNoPlace() {
+      var box = document.getElementById('mon-play-noplace');
+      if (!box) return;
+      if (!play.eventsNoPlace.length) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = '<b>Без места на карте:</b> ' + play.eventsNoPlace.map(function (ev) {
+        return esc(ev.at_label.split(', ').pop()) + ' ' + esc(ev.label);
+      }).join(' · ') + ' — в эти минуты GPS молчал.';
+    }
+
+    async function loadEvents(row) {
+      try {
+        var to = row.ended_at || new Date().toISOString();
+        var r = await fetch('/api/vehicles/' + selected + '/events?from=' +
+          encodeURIComponent(row.started_at) + '&to=' + encodeURIComponent(to));
+        if (!r.ok) return;
+        var data = await r.json();
+        if (!play.shift || play.shift.shift_id !== row.shift_id) return;
+        placeEvents(data.events || []);
+      } catch (e) {
+        // события — дополнение к треку; не загрузились, трек работает дальше
+      }
+    }
+
     function clearPlayObjects() {
+      clearEventMarks();
+      play.arrow = null;
       ['ghost', 'line', 'marker'].forEach(function (key) {
         if (play[key]) { ymap.removeChild(play[key]); play[key] = null; }
       });
@@ -2792,10 +2921,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       });
       ymap.addChild(play.line);
 
+      // Кружок со стрелкой: куда машина была повёрнута в этот момент.
+      // Направление считаем по СЛЕДУЮЩЕЙ точке трека — это факт, а не догадка.
       var dot = document.createElement('div');
-      dot.style.cssText = 'width:16px;height:16px;border-radius:50%;background:#93c5fd;' +
-        'border:3px solid #1d4ed8;box-shadow:0 6px 16px -6px rgba(0,0,0,.8);' +
-        'transform:translate(-50%,-50%);';
+      dot.style.cssText = 'position:relative;width:18px;height:18px;border-radius:50%;' +
+        'background:#93c5fd;border:3px solid #1d4ed8;' +
+        'box-shadow:0 6px 16px -6px rgba(0,0,0,.8);transform:translate(-50%,-50%);';
+      dot.innerHTML = '<i id="mon-play-arrow" style="position:absolute;left:50%;top:50%;' +
+        'width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;' +
+        'border-bottom:9px solid #1d4ed8;transform-origin:50% 50%;display:none;' +
+        'filter:drop-shadow(0 0 1.5px rgba(255,255,255,.9))"></i>';
+      play.arrow = dot.querySelector('#mon-play-arrow');
       play.marker = new YMapMarker(
         { coordinates: LL(all[0][0], all[0][1]), zIndex: 900 }, dot
       );
@@ -2819,6 +2955,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           encodeURIComponent(row.started_at) + '&to=' + encodeURIComponent(to));
         if (!r.ok) { playClock.textContent = 'нет данных'; return; }
         play.frames = framesFrom(await r.json());
+        play.multiday = play.frames.length > 1 &&
+          (play.frames[play.frames.length - 1].t - play.frames[0].t) > 24 * 3600 * 1000;
         if (play.frames.length < 2) {
           playClock.textContent = 'точек нет';
           playKm.textContent = '—';
@@ -2829,6 +2967,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         makePlayObjects(play.frames.map(function (f) { return [f.lat, f.lon]; }));
         seekTo(0);
         setRunning(true);
+        loadEvents(row);
       } catch (e) {
         playClock.textContent = 'нет данных';
       }
@@ -2881,6 +3020,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         x.classList.toggle('is-on', x === b);
       });
     });
+    document.getElementById('mon-play-prev').addEventListener('click', function () {
+      setRunning(false);
+      seekTo(play.at - 1);
+    });
+    document.getElementById('mon-play-next').addEventListener('click', function () {
+      setRunning(false);
+      seekTo(play.at + 1);
+    });
     playBar.addEventListener('click', function (e) {
       if (!play.frames.length) return;
       var box = playBar.getBoundingClientRect();
@@ -2926,11 +3073,56 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // догоняла бы предыдущую, и карта дёргалась.
       ymap.setLocation({ center: LL(frame.lat, frame.lon) });
 
+      // Стрелка смотрит на следующую точку трека.
+      var next = play.frames[play.at + 1];
+      if (play.arrow) {
+        if (next && (next.lat !== frame.lat || next.lon !== frame.lon)) {
+          var dLat = next.lat - frame.lat;
+          var dLon = (next.lon - frame.lon) * Math.cos(frame.lat * Math.PI / 180);
+          var course = (Math.atan2(dLon, dLat) * 180 / Math.PI + 360) % 360;
+          play.arrow.style.display = 'block';
+          play.arrow.style.transform =
+            'translate(-50%,-50%) rotate(' + course + 'deg) translateY(-13px)';
+        } else {
+          play.arrow.style.display = 'none';   // стоит — направления нет
+        }
+      }
+
       var share = play.at / (play.frames.length - 1);
       playFill.style.width = (share * 100).toFixed(1) + '%';
       playBar.setAttribute('aria-valuenow', Math.round(share * 100));
-      playClock.textContent = hhmm(new Date(frame.t).toISOString());
+      // ⚠️ Если период больше суток, одно время без даты обманывает: ночной
+      // рейс читается как дневной. Владелец 30.08: «непонятно какой день».
+      playClock.textContent = play.multiday
+        ? dayTime(new Date(frame.t)) : hhmm(new Date(frame.t).toISOString());
       playKm.textContent = frame.km.toFixed(1) + ' км';
+      paintGauges(frame);
+    }
+
+    function dayTime(d) {
+      return d.toLocaleString('ru-RU', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    // Показания приборов ровно на текущей точке. Прибор промолчал — пишем
+    // «нет данных», а не подставляем прошлое значение: это разные факты.
+    function paintGauges(frame) {
+      var parts = [];
+      if (frame.ign === true || frame.ign === false) {
+        parts.push('<i data-on="' + (frame.ign ? 1 : 0) + '">Зажигание <b>' +
+          (frame.ign ? 'вкл' : 'выкл') + '</b></i>');
+      }
+      parts.push(frame.fuel === null || frame.fuel === undefined
+        ? '<i>Топливо <b>нет данных</b></i>'
+        : '<i>Топливо <b>' + Math.round(frame.fuel) + ' л</b></i>');
+      if (frame.temp !== null && frame.temp !== undefined) {
+        parts.push('<i>Темп. топлива <b>' + frame.temp.toFixed(0) + ' °C</b></i>');
+      }
+      if (frame.afterGap) {
+        parts.push('<i data-on="0">⚠ до этой точки связи не было</i>');
+      }
+      gaugesEl.innerHTML = parts.join('');
     }
 
     async function refresh() {

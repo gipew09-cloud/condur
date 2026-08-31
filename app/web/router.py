@@ -4379,6 +4379,48 @@ _TRACK_POINT_LIMIT = 20000
 _GPS_GAP_SECONDS = 300
 
 
+def _with_instruments(segments: list[dict], rows, vehicle) -> list[dict]:
+    """Добавить к точкам отрезка показания приборов на ту же минуту.
+
+    Владелец 30.08.2026: «трек — это профессиональный уровень, это не только
+    куда машина ехала; какая температура была в эту минуту, что водитель делал».
+    Значит у каждой точки должны быть топливо, температура топлива и зажигание.
+
+    Массивы идут ПАРАЛЛЕЛЬНО `points` и `times` — по одному значению на точку,
+    `null` там, где прибор промолчал. Так проигрыватель показывает ровно то,
+    что было в текущем кадре, и ничего не интерполирует.
+
+    ⚠️ Топливо отдаём В ЛИТРАХ только при наличии тарировки бака. Сырое
+    значение датчика литрами не является: без тарировочной таблицы это
+    выдуманное число. Нет тарировки — `null`, а не «примерно столько».
+    """
+    calibration = getattr(vehicle, "fuel_calibration", None)
+    by_time = {
+        _utc_moment(r[0]): r
+        for r in rows
+        if r[0] is not None
+    }
+
+    for segment in segments:
+        times = segment.get("times")
+        if not times:
+            continue
+        fuel, temps, ignition = [], [], []
+        for iso in times:
+            row = by_time.get(datetime.fromisoformat(iso))
+            if row is None:
+                fuel.append(None); temps.append(None); ignition.append(None)
+                continue
+            _, _, _, _, _, fuel_raw, fuel_temp, ign = row
+            fuel.append(_fuel_litres_or_none(fuel_raw, calibration))
+            temps.append(float(fuel_temp) if fuel_temp is not None else None)
+            ignition.append(bool(ign) if ign is not None else None)
+        segment["fuel_litres"] = fuel
+        segment["fuel_temp_c"] = temps
+        segment["ignition"] = ignition
+    return segments
+
+
 def _period_quality(rows, segments, since, until, now_utc) -> dict:
     """Честный ответ на вопрос «а есть ли вообще данные за этот период».
 
@@ -4448,7 +4490,7 @@ def _odometer_for_period(rows) -> dict:
     Показание уменьшилось — значит либо сброс, либо замену трекера; склеивать
     такие числа нельзя, отдаём `reset_detected`.
     """
-    values = [(t, float(m)) for t, _, _, _, m in rows if m is not None]
+    values = [(t, float(m)) for t, _, _, _, m, *_ in rows if m is not None]
     if not values:
         return {"status": "missing", "reason": "no_odometer_readings"}
     if len(values) < 2:
@@ -4503,6 +4545,11 @@ async def api_vehicle_track(
                 # в геометрии трека, поэтому берётся отдельной колонкой и никогда
                 # не подменяет путь по точкам.
                 VehicleTelemetryPoint.mileage_km,
+                # Приборы на момент точки. Владелец 30.08: «трек — это не только
+                # куда машина ехала, но и какая была температура в эту минуту».
+                VehicleTelemetryPoint.fuel_level_raw,
+                VehicleTelemetryPoint.fuel_temp_c,
+                VehicleTelemetryPoint.ignition,
             )
             .where(
                 VehicleTelemetryPoint.vehicle_id == vehicle_id,
@@ -4519,7 +4566,7 @@ async def api_vehicle_track(
         )
     ).all()
     segments = telemetry_service.build_track_segments(
-        [(t, lat, lon, speed) for t, lat, lon, speed, _ in rows],
+        [(t, lat, lon, speed) for t, lat, lon, speed, *_ in rows],
         # ⚠️ Конец окна — конец ПЕРИОДА, а не «сейчас». Иначе у трека за
         # прошлый вторник последняя стоянка тянулась бы до текущей минуты.
         window_end=min(until, now_utc),
@@ -4542,7 +4589,7 @@ async def api_vehicle_track(
         "gaps": len(gaps),
         "truncated": len(rows) >= _TRACK_POINT_LIMIT,
         "quality": _period_quality(rows, segments, since, until, now_utc),
-        "segments": segments,
+        "segments": _with_instruments(segments, rows, vehicle),
     }
 
 
@@ -4551,6 +4598,108 @@ def _same_day(a: datetime | None, b: datetime | None, tz: str | None) -> bool:
     if a is None or b is None:
         return False
     return fmt_dt(a, tz, "%d.%m.%Y") == fmt_dt(b, tz, "%d.%m.%Y")
+
+
+# Подписи событий для трека. Ключ — `event_type` из таблицы `events`.
+# ⚠️ Здесь только то, что владельцу осмысленно видеть НА КАРТЕ: действия
+# водителя и факты о машине. Служебные рассылки и напоминания на трек не идут —
+# они не происходили «в каком-то месте».
+_TRACK_EVENT_LABELS = {
+    "shift_started": ("Смена начата", "shift"),
+    "shift_added_manual": ("Смена добавлена вручную", "shift"),
+    "trip_created": ("Рейс создан", "trip"),
+    "trip_in_transit": ("Выехал", "trip"),
+    "trip_unloading": ("На выгрузке", "trip"),
+    "trip_completed": ("Груз сдан", "trip"),
+    "trip_added_manual": ("Рейс добавлен вручную", "trip"),
+    "waybill_uploaded": ("Фото ТТН", "photo"),
+    "odometer_edited": ("Пробег вписан", "photo"),
+    "expense_submitted": ("Расход с чеком", "money"),
+    "cash_submitted": ("Сдал деньги", "money"),
+    "trip_revenue_set": ("Выручка рейса указана", "money"),
+    "rc_arrived": ("Приехал на РЦ", "zone"),
+    "rc_departed": ("Уехал с РЦ", "zone"),
+    "sos": ("SOS", "alarm"),
+    "downtime": ("Простой", "alarm"),
+    "moving_without_shift_alert": ("Ехал без открытой смены", "alarm"),
+    "vehicle_mixup_alert": ("Необычная машина", "alarm"),
+    "silence_alert": ("Пропал сигнал", "alarm"),
+    "fuel_overrun_alert": ("Перерасход топлива", "alarm"),
+    "rc_downtime_alert": ("Долго стоит на РЦ", "alarm"),
+}
+
+
+@app.get("/api/vehicles/{vehicle_id}/events")
+async def api_vehicle_events(
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    frm: Annotated[str | None, Query(alias="from")] = None,
+    to: Annotated[str | None, Query()] = None,
+    hours: int = 24,
+):
+    """Что делал водитель за период — для наложения на трек по времени.
+
+    Владелец 30.08.2026: «трек это ещё и что водитель делал во время рейса, на
+    какой точке он нажал такую-то кнопку, где загрузил документы, где сдал груз».
+
+    ⚠️ Связи «событие → машина» в таблице `events` НЕТ: там есть смена, рейс,
+    водитель и payload. Машину определяем через смену или рейс, а если события
+    привязаны только к payload — по `vehicle_id` внутри него. Придумывать связь
+    по времени («водитель был на этой машине, значит событие про неё») нельзя:
+    водитель за день может пересесть.
+
+    ⚠️ Координату здесь НЕ отдаём. Место события считает карта по времени,
+    сопоставляя его с точками трека. Если в эту минуту точек нет — события
+    остаются в списке без места, а не выдумывают позицию.
+    """
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    now_utc = datetime.now(timezone.utc)
+    since, until = _period_bounds(frm, to, hours, now_utc)
+
+    shift_ids = set((await session.execute(
+        select(Shift.id).where(Shift.owner_id == owner.id, Shift.vehicle_id == vehicle_id)
+    )).scalars().all())
+    trip_ids = set((await session.execute(
+        select(Trip.id).where(Trip.owner_id == owner.id, Trip.vehicle_id == vehicle_id)
+    )).scalars().all())
+
+    rows = (await session.execute(
+        select(Event)
+        .where(
+            Event.owner_id == owner.id,
+            Event.created_at >= since,
+            Event.created_at <= until,
+            Event.event_type.in_(list(_TRACK_EVENT_LABELS)),
+        )
+        .order_by(Event.created_at)
+        .limit(500)
+    )).scalars().all()
+
+    events = []
+    for event in rows:
+        payload = event.payload or {}
+        mine = (
+            (event.shift_id is not None and event.shift_id in shift_ids)
+            or (event.trip_id is not None and event.trip_id in trip_ids)
+            or payload.get("vehicle_id") == vehicle_id
+        )
+        if not mine:
+            continue
+        label, kind = _TRACK_EVENT_LABELS[event.event_type]
+        events.append({
+            "at": event.created_at.isoformat(),
+            "at_label": fmt_dt(event.created_at, owner.timezone, "%d.%m, %H:%M"),
+            "type": event.event_type,
+            "kind": kind,
+            "label": label,
+            "shift_id": event.shift_id,
+            "trip_id": event.trip_id,
+        })
+    return {"vehicle_id": vehicle_id, "events": events}
 
 
 @app.get("/api/vehicles/{vehicle_id}/shifts")
