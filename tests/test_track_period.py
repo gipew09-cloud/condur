@@ -39,15 +39,33 @@ def _bigint_sqlite(type_, compiler, **kw):
     return "INTEGER"
 
 
-def test_period_from_to_wins_over_hours():
-    since, until = _period_bounds("2026-08-20T07:00", "2026-08-20T20:00", 12, NOW)
-    assert since == datetime(2026, 8, 20, 7, 0, tzinfo=timezone.utc)
-    assert until == datetime(2026, 8, 20, 20, 0, tzinfo=timezone.utc)
+def test_period_is_read_in_the_owners_timezone():
+    """⚠️ «26.08 00:00» значит полночь У ВЛАДЕЛЬЦА, а не в Гринвиче.
+
+    Раньше наивное время из поля браузера читалось как UTC, и период уезжал на
+    три часа: владелец 30.08.2026 заметил это как «трек должен заканчиваться
+    там, где последняя точка до 12 часов по московскому времени».
+    """
+    since, until = _period_bounds(
+        "2026-08-20T07:00", "2026-08-20T20:00", 12, NOW, "Europe/Moscow",
+    )
+    # 07:00 в Москве — это 04:00 UTC
+    assert since.astimezone(timezone.utc).hour == 4
+    assert until.astimezone(timezone.utc).hour == 17
+
+    # у владельца в другом поясе тот же ввод даёт другой момент
+    vlad, _ = _period_bounds(
+        "2026-08-20T07:00", "2026-08-20T20:00", 12, NOW, "Asia/Vladivostok",
+    )
+    assert vlad.astimezone(timezone.utc).hour == 21
+    assert vlad < since
 
 
 def test_period_survives_swapped_ends():
     """Владелец выбрал «с 20:00 по 07:00» — не пустой ответ, а тот же день."""
-    since, until = _period_bounds("2026-08-20T20:00", "2026-08-20T07:00", 12, NOW)
+    since, until = _period_bounds(
+        "2026-08-20T20:00", "2026-08-20T07:00", 12, NOW, "Europe/Moscow",
+    )
     assert since.hour == 7 and until.hour == 20
 
 
@@ -63,13 +81,15 @@ def test_period_is_capped_at_a_month():
     Отдаём последний месяц периода, а не пустой ответ: пустой экран читается
     как «данных нет», и владелец будет искать несуществующую поломку.
     """
-    since, until = _period_bounds("2025-08-20T00:00", "2026-08-20T00:00", 12, NOW)
+    since, until = _period_bounds(
+        "2025-08-20T00:00", "2026-08-20T00:00", 12, NOW, "Europe/Moscow",
+    )
     assert until - since == timedelta(days=31)
-    assert until == datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc)
+    assert until.hour == 0 and until.day == 20
 
 
 def test_broken_dates_do_not_break_the_track():
-    since, until = _period_bounds("вчера", "сегодня", 3, NOW)
+    since, until = _period_bounds("вчера", "сегодня", 3, NOW, "Europe/Moscow")
     assert NOW - since == timedelta(hours=3)
 
 
