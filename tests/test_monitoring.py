@@ -321,16 +321,22 @@ def test_tracks_tab_has_a_player_like_the_design():
 
     # плеер: пауза, скорости, полоса прогресса, часы по треку
     assert 'id="mon-play-toggle"' in src
-    for speed in ("0.5", "1", "3", "10", "30"):
+    for speed in ("1", "2", "5", "15", "60"):
         assert 'data-speed="%s"' % speed in src
+    # шаг по одной точке — для разбора спорной минуты
+    assert 'id="mon-play-prev"' in src and 'id="mon-play-next"' in src
     assert "linear-gradient(90deg, #2563eb, #93c5fd)" in src
-    assert "Просмотр трека — линия за машиной по всей смене" in src
 
     # ⚠️ Ускорение считается по ВРЕМЕНИ трека, а не по числу точек: иначе
     # стоянка пролетала бы так же быстро, как езда.
     assert "realMs * play.speed * PLAY_BASE" in src
     # ⚠️ База 10, а не 60: при 60 даже ×1 гнал час трека за минуту
-    assert "var PLAY_BASE = 10;" in src
+    # ⚠️ База = 1: «×1» на кнопке означает реальное время, а не «×4».
+    # Владелец говорил «быстро» трижды именно потому, что подпись врала.
+    assert "var PLAY_BASE = 1;" in src
+    assert "×1 — как в жизни" in src
+    # и не больше ОДНОЙ точки за кадр — иначе машина прыгает
+    assert "var PLAY_MAX_STEP = 1;" in src
     # и не больше нескольких точек за кадр — иначе машина телепортируется
     assert "play.at + PLAY_MAX_STEP" in src
 
@@ -363,6 +369,25 @@ def test_tracks_tab_has_a_player_like_the_design():
 
     # поля периода обязаны сжиматься, иначе панель распирает и режет поиск
     assert "flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;" in src
+
+    # Приборы на текущей точке: зажигание, топливо, температура.
+    # ⚠️ Прибор промолчал — «нет данных», прошлое значение не подставляем.
+    assert "Топливо <b>нет данных</b>" in src
+    assert "Темп. топлива" in src
+    assert "Зажигание" in src
+    # предупреждение о разрыве связи прямо в плеере
+    assert "до этой точки связи не было" in src
+    # стрелка направления на кружке — по следующей точке, а не наугад
+    assert "play.arrow.style.transform" in src
+    # период больше суток — в часах появляется дата
+    assert "play.multiday" in src
+
+    # События водителя на треке: место считается по времени, а если точек в эту
+    # минуту нет — метки НЕТ, событие уходит в список «без места».
+    assert "var EVENT_MATCH_MS = 5 * 60 * 1000;" in src
+    assert "play.eventsNoPlace.push(ev);" in src
+    assert "в эти минуты GPS молчал" in src
+    assert "/events?from=" in src
 
     # камера едет за машиной по треку
     assert "ymap.setLocation({ center: LL(frame.lat, frame.lon)" in src

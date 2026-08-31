@@ -293,3 +293,124 @@ def test_odometer_pair_gives_the_distance():
 def router_quality(rows, segments, since, until):
     from app.web.router import _period_quality
     return _period_quality(rows, segments, since, until, NOW)
+
+
+def test_every_track_point_carries_instruments():
+    """У точки трека есть приборы на ту же минуту.
+
+    Владелец 30.08.2026: «трек — это профессиональный уровень, это не только
+    куда машина ехала; какая температура была в эту минуту».
+    """
+    from types import SimpleNamespace
+
+    from app.web.router import _with_instruments
+
+    t0 = datetime(2026, 8, 26, 9, 42, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=1)
+    rows = [
+        (t0, 59.93, 30.33, 40, 958_700, 512, 17.0, True),
+        (t1, 59.94, 30.34, 42, 958_701, None, None, False),
+    ]
+    segments = [{
+        "kind": "move",
+        "points": [[59.93, 30.33], [59.94, 30.34]],
+        "times": [t0.isoformat(), t1.isoformat()],
+    }]
+    vehicle = SimpleNamespace(fuel_calibration=None)
+    out = _with_instruments(segments, rows, vehicle)[0]
+
+    assert len(out["fuel_temp_c"]) == len(out["points"]) == 2
+    assert out["fuel_temp_c"] == [17.0, None]
+    assert out["ignition"] == [True, False]
+    # ⚠️ Без тарировки бака литров быть не может — сырое значение датчика
+    # литрами не является, это выдуманное число.
+    assert out["fuel_litres"] == [None, None]
+
+
+def test_stop_segments_are_left_alone():
+    """У стоянки нет массива времён — трогать её нечем и не нужно."""
+    from types import SimpleNamespace
+
+    from app.web.router import _with_instruments
+
+    segments = [{"kind": "stop", "lat": 59.9, "lon": 30.3, "duration_label": "18 мин"}]
+    out = _with_instruments(segments, [], SimpleNamespace(fuel_calibration=None))[0]
+    assert "fuel_litres" not in out
+
+
+def test_events_belong_to_the_vehicle_not_to_the_driver():
+    """Событие привязывается к машине через смену или рейс, а не по водителю.
+
+    Владелец 30.08.2026 хочет видеть на треке, где водитель нажал кнопку и где
+    сдал груз. ⚠️ Связи «событие → машина» в таблице `events` нет. Определять её
+    «водитель в этот день ездил на этой машине» нельзя: за смену он может
+    пересесть, и события уедут на чужой трек.
+    """
+    from app.models import Event
+    from app.web.router import api_vehicle_events
+
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        other = Vehicle(owner_id=owner.id, license_plate="Т772НХ178", is_active=True)
+        session.add(other)
+        await session.flush()
+
+        mine = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                     started_at=NOW - timedelta(hours=5))
+        alien = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=other.id,
+                      started_at=NOW - timedelta(hours=5))
+        session.add_all([mine, alien])
+        await session.flush()
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=mine.id,
+                  event_type="shift_started", created_at=NOW - timedelta(hours=4)),
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=alien.id,
+                  event_type="waybill_uploaded", created_at=NOW - timedelta(hours=3)),
+            # служебная рассылка — на карте ей не место
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=mine.id,
+                  event_type="weekly_review_sent", created_at=NOW - timedelta(hours=2)),
+        ])
+        await session.commit()
+
+        data = await api_vehicle_events(
+            vehicle.id, owner, session,
+            frm=(NOW - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M"),
+            to=NOW.strftime("%Y-%m-%dT%H:%M"),
+        )
+        kinds = [e["type"] for e in data["events"]]
+        assert kinds == ["shift_started"], kinds
+        assert data["events"][0]["label"] == "Смена начата"
+        await session.close()
+    _run(scenario)
+
+
+def test_events_carry_no_coordinates():
+    """⚠️ Сервер НЕ придумывает место события.
+
+    Координату считает карта, сопоставляя время события с точками трека. Если
+    точек в эту минуту нет, событие останется в списке без места — а не встанет
+    посреди пунктирного участка, где путь неизвестен.
+    """
+    from app.models import Event
+    from app.web.router import api_vehicle_events
+
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=2))
+        session.add(shift)
+        await session.flush()
+        session.add(Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                          event_type="sos", created_at=NOW - timedelta(hours=1)))
+        await session.commit()
+
+        data = await api_vehicle_events(
+            vehicle.id, owner, session,
+            frm=(NOW - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M"),
+            to=NOW.strftime("%Y-%m-%dT%H:%M"),
+        )
+        event = data["events"][0]
+        assert event["label"] == "SOS"
+        assert "lat" not in event and "lon" not in event
+        await session.close()
+    _run(scenario)
