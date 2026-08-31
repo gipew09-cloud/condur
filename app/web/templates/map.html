@@ -69,6 +69,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   overflow: hidden;
 }
 .mon-panel--list {
+  color: var(--mon-text);
   left: 16px; top: 16px; bottom: 16px;
   width: 356px;
   /* ⚠️ КОЛОНКА FLEX, а не grid. Раньше здесь было
@@ -444,6 +445,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 /* Владелец 30.08: за выбранный период должны быть видны И одометр, И GPS, а
    если данных нет — так и написано. Пустой экран он читает как поломку. */
 .mon-quality {
+  color: var(--mon-text);
   margin: 0 12px 10px; padding: 10px 12px; border-radius: 12px;
   background: var(--mon-fill); border: 1px solid var(--mon-border);
   display: grid; gap: 8px;
@@ -479,6 +481,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-shift.is-on {
   background: rgba(37, 99, 235, .16); border-color: rgba(96, 165, 250, .55);
 }
+.mon-shift__go svg { display: block; }
 .mon-shift__go {
   width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
   background: rgba(37, 99, 235, .18); color: #1d4ed8; font-size: 15px;
@@ -502,6 +505,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
 /* ---------- проигрыватель трека ---------- */
 .mon-play {
+  /* ⚠️ Цвет текста задан явно. Панель — своя поверхность со своим фоном, а
+     цвет она наследовала от страницы: в тёмной теме получался серый текст
+     rgb(55,60,68) на почти чёрном фоне, заголовок смены читался с трудом.
+     Нашлось только когда открыл страницу и посмотрел, а не по коду. */
+  color: var(--mon-text);
   position: absolute; z-index: 6; left: 50%; transform: translateX(-50%);
   top: 12px; width: 366px; max-width: calc(100% - 24px);
   padding: 12px 14px 11px; box-sizing: border-box;
@@ -536,7 +544,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   background: #1d4ed8; color: #fff;
 }
 /* Значок ▶ у шрифта иконок сидит на базовой линии и съезжал вниз-вправо. */
-.mon-play__go i { line-height: 1; display: block; }
+.mon-play__go svg { display: block; }
 .mon-play__speeds { display: flex; gap: 4px; flex: 1; }
 .mon-play__speeds button {
   height: 28px; padding: 0 9px; border: 0; cursor: pointer; font: inherit;
@@ -1061,7 +1069,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     </div>
     <div class="mon-play__row">
       <button type="button" class="mon-play__step" id="mon-play-prev" title="Предыдущая точка" aria-label="Предыдущая точка">‹</button>
-      <button type="button" class="mon-play__go" id="mon-play-toggle" aria-label="Пауза"><i class="ph ph-pause"></i></button>
+      <button type="button" class="mon-play__go" id="mon-play-toggle" aria-label="Пауза"></button>
       <button type="button" class="mon-play__step" id="mon-play-next" title="Следующая точка" aria-label="Следующая точка">›</button>
       <div class="mon-play__speeds" id="mon-play-speeds">
         <button type="button" data-speed="1" class="is-on">×1</button>
@@ -2561,9 +2569,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // самом деле означало «×60», «×10», «×4». Спорить с этим бесполезно:
     // подпись должна не врать.
     var PLAY_BASE = 1;
-    // За кадр — не больше одной точки. Прыжок через несколько точек и был тем,
-    // из-за чего машина «телепортировалась» и трек читался рывками.
-    var PLAY_MAX_STEP = 1;
+
+    // ⚠️ Значок рисуем сами, а не берём из шрифта иконок: глиф ▶ сидит на
+    // базовой линии и в круглой кнопке всегда съезжает вниз-вправо. Владелец
+    // просил поправить это четыре раза — со шрифтом это и не чинилось.
+    var PLAY_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+      '<path fill="currentColor" d="M8 5.5v13l11-6.5z"/></svg>';
+    var PAUSE_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+      '<path fill="currentColor" d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>';
+
 
     var play = {
       shift: null,      // строка смены, которую смотрим
@@ -2580,6 +2594,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       eventsNoPlace: [],// события, для которых места на треке нет
       multiday: false,  // период больше суток — показываем дату в часах
       lastTick: 0,
+      clock: 0,         // время трека, которое «прошло» с начала просмотра
       drawn: -1         // какой кадр уже нарисован
     };
 
@@ -2629,6 +2644,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       Array.prototype.forEach.call(listPanel.querySelectorAll('[data-pane]'), function (el) {
         el.hidden = el.dataset.pane !== tab;
       });
+      // Владелец 30.08: «зачем в треках показывается машина, которая стоит
+      // сейчас». Карточка живой машины на этой вкладке только загораживает
+      // карту — прячем её, пока смотрим прошлое.
+      cardEl.classList.toggle('mon-sheet-hide', tab === 'tracks');
       if (tab === 'tracks') {
         if (!fromEl.value) setQuick('today'); else loadShifts();
       }
@@ -2736,7 +2755,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           var sub = sh.route ? esc(sh.route)
             : (sh.is_manual ? 'добавлена вручную' : 'рейсов не было');
           return '<button type="button" class="mon-shift" data-shift="' + sh.shift_id + '">' +
-            '<i class="mon-shift__go"><i class="ph ph-play"></i></i>' +
+            '<i class="mon-shift__go">' + PLAY_SVG + '</i>' +
             '<span><b>' + when + '</b><small>' + sub + '</small></span>' +
             '<span class="mon-shift__km">' + km + '</span>' +
             '</button>';
@@ -2773,6 +2792,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       startPlayback(row, btn);
     });
 
+    // Расстояние между двумя точками в метрах (формула гаверсинуса).
+    function metresBetween(lat1, lon1, lat2, lon2) {
+      var R = 6371000, rad = Math.PI / 180;
+      var dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * rad) * Math.cos(lat2 * rad) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
     // Разворачиваем отрезки в ровный список кадров: точка, ЕЁ время, пробег.
     //
     // ⚠️ Время берём у сервера — по одному на каждую точку (`seg.times`).
@@ -2789,23 +2818,29 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var t1 = new Date(seg.end).getTime();
         if (isNaN(t0) || isNaN(t1) || t1 < t0) return;
         var n = seg.points.length;
-        var segKm = seg.distance_km || 0;
         var times = seg.times || [];
         var fuel = seg.fuel_litres || [], temps = seg.fuel_temp_c || [], ign = seg.ignition || [];
         seg.points.forEach(function (pt, i) {
           var share = n > 1 ? i / (n - 1) : 1;
           var own = times[i] ? new Date(times[i]).getTime() : NaN;
+          // ⚠️ Километры набегают по РЕАЛЬНОМУ расстоянию между точками.
+          // Раньше они делились поровну на число точек — и счётчик рос, даже
+          // когда машина стояла и точки приходили с одного места.
+          // Владелец 30.08: «машина стоит, а километраж всё равно считается».
+          if (i > 0) {
+            var prev = seg.points[i - 1];
+            km += metresBetween(prev[0], prev[1], pt[0], pt[1]) / 1000;
+          }
           out.push({
             lat: pt[0], lon: pt[1],
             t: isNaN(own) ? t0 + (t1 - t0) * share : own,
-            km: km + segKm * share,
+            km: km,
             fuel: fuel[i], temp: temps[i], ign: ign[i],
             // Первая точка отрезка идёт следом за разрывом связи: между ней и
             // предыдущей путь неизвестен, и это надо сказать вслух.
             afterGap: i === 0 && out.length > 0
           });
         });
-        km += segKm;
       });
       // На всякий случай по возрастанию времени: пачки от Ставтрэка приходят
       // с задержкой и иногда вперемешку.
@@ -2873,16 +2908,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (!box) return;
       if (!play.eventsNoPlace.length) { box.hidden = true; return; }
       box.hidden = false;
-      box.innerHTML = '<b>Без места на карте:</b> ' + play.eventsNoPlace.map(function (ev) {
+      // Показываем первые три и число остальных: полный список на два экрана
+      // читать невозможно, а суть — «столько-то действий без места» — видна.
+      var first = play.eventsNoPlace.slice(0, 3).map(function (ev) {
         return esc(ev.at_label.split(', ').pop()) + ' ' + esc(ev.label);
-      }).join(' · ') + ' — в эти минуты GPS молчал.';
+      }).join(' · ');
+      var rest = play.eventsNoPlace.length - 3;
+      box.innerHTML = '<b>Без места на карте:</b> ' + first +
+        (rest > 0 ? ' и ещё ' + rest : '') + ' — в эти минуты GPS молчал.';
     }
 
     async function loadEvents(row) {
       try {
-        var to = row.ended_at || new Date().toISOString();
+        var span = clipToPeriod(row);
         var r = await fetch('/api/vehicles/' + selected + '/events?from=' +
-          encodeURIComponent(row.started_at) + '&to=' + encodeURIComponent(to));
+          encodeURIComponent(span.from) + '&to=' + encodeURIComponent(span.to));
         if (!r.ok) return;
         var data = await r.json();
         if (!play.shift || play.shift.shift_id !== row.shift_id) return;
@@ -2938,21 +2978,44 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       ymap.addChild(play.marker);
     }
 
+    // Пересечение смены и выбранного периода. Границы полей — местное время
+    // владельца, сервер их так и читает (см. _parse_moment на бэкенде).
+    function clipToPeriod(row) {
+      var shiftFrom = new Date(row.started_at).getTime();
+      var shiftTo = row.ended_at ? new Date(row.ended_at).getTime() : Date.now();
+      var periodFrom = fromEl.value ? new Date(fromEl.value).getTime() : shiftFrom;
+      var periodTo = toEl.value ? new Date(toEl.value).getTime() : shiftTo;
+      var from = Math.max(shiftFrom, periodFrom);
+      var to = Math.min(shiftTo, periodTo);
+      if (to <= from) { from = shiftFrom; to = shiftTo; }   // не пересеклись — вся смена
+      return {
+        from: new Date(from).toISOString(),
+        to: new Date(to).toISOString(),
+        clipped: from > shiftFrom + 60000 || to < shiftTo - 60000
+      };
+    }
+
     async function startPlayback(row, btn) {
       stopPlayback(true);
       hideTrack();
       clearTail();
       play.shift = row;
-      playTitle.textContent = 'Смена ' + row.started_label;
+      var span = clipToPeriod(row);
+      playTitle.textContent = 'Смена ' + row.started_label +
+        (span.clipped ? ' · показан выбранный период' : '');
       playEl.hidden = false;
       playClock.textContent = 'загружаю…';
       Array.prototype.forEach.call(shiftsEl.querySelectorAll('.mon-shift'), function (b) {
         b.classList.toggle('is-on', b === btn);
       });
       try {
-        var to = row.ended_at || new Date().toISOString();
+        // ⚠️ Смотрим ПЕРЕСЕЧЕНИЕ смены и выбранного периода. Смена могла
+        // тянуться с 26-го по 28-е (водитель забыл её закрыть), а владелец
+        // выбрал одни сутки — и удивлялся, почему трек уезжает за границу
+        // периода. Показываем ровно то, что он выбрал.
+        var span = clipToPeriod(row);
         var r = await fetch('/api/vehicles/' + selected + '/track?from=' +
-          encodeURIComponent(row.started_at) + '&to=' + encodeURIComponent(to));
+          encodeURIComponent(span.from) + '&to=' + encodeURIComponent(span.to));
         if (!r.ok) { playClock.textContent = 'нет данных'; return; }
         play.frames = framesFrom(await r.json());
         play.multiday = play.frames.length > 1 &&
@@ -2991,7 +3054,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
     function setRunning(on) {
       play.running = on;
-      playToggle.innerHTML = '<i class="ph ph-' + (on ? 'pause' : 'play') + '"></i>';
+      playToggle.innerHTML = on ? PAUSE_SVG : PLAY_SVG;
       playToggle.setAttribute('aria-label', on ? 'Пауза' : 'Продолжить');
       if (on) {
         play.lastTick = performance.now();
@@ -3039,19 +3102,19 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (!play.running) return;
       var realMs = now - play.lastTick;
       play.lastTick = now;
-      // Ускорение считается по ВРЕМЕНИ трека, а не по числу точек: иначе
-      // стоянка пролетала бы так же быстро, как езда, и наоборот.
-      //
-      // ⚠️ База 10, а не 60. При 60 даже ×1 гнал час трека за минуту —
-      // владелец 30.08: «слишком быстро, непонятно, нужно чуть медленнее».
-      // Теперь ×1 — это десять минут трека за минуту просмотра.
-      var trackMs = realMs * play.speed * PLAY_BASE;
-      var target = play.frames[play.at].t + trackMs;
+
+      // ⚠️ ВОТ ГДЕ БЫЛА «слишком быстрая» перемотка, а вовсе не в числах.
+      // Раньше цель считалась от времени ТЕКУЩЕЙ точки:
+      //     target = frames[at].t + прошедшие_16мс
+      // За кадр набегало 16 миллисекунд трека — этого всегда «хватало», чтобы
+      // шагнуть на точку вперёд. То есть плеер шёл 60 ТОЧЕК В СЕКУНДУ при любой
+      // выбранной скорости, и уменьшение множителя ничего не меняло.
+      // Правильно — вести СОБСТВЕННЫЕ часы трека и копить в них время.
+      play.clock += realMs * play.speed * PLAY_BASE;
+
       var i = play.at;
-      while (i < play.frames.length - 1 && play.frames[i].t < target) i++;
-      // Больше нескольких точек за кадр не перескакиваем: машина должна ехать
-      // по треку, а не телепортироваться через перекрёстки.
-      seekTo(Math.min(i, play.at + PLAY_MAX_STEP));
+      while (i < play.frames.length - 1 && play.frames[i + 1].t <= play.clock) i++;
+      if (i !== play.at) seekTo(i);
       if (play.at >= play.frames.length - 1) { setRunning(false); return; }
       play.raf = requestAnimationFrame(step);
     }
@@ -3059,6 +3122,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     function seekTo(index) {
       if (!play.frames.length || !play.line) return;
       play.at = Math.min(Math.max(0, index), play.frames.length - 1);
+      play.clock = play.frames[play.at].t;     // часы трека всегда на кадре
       if (play.at === play.drawn) return;      // кадр тот же — карту не трогаем
       play.drawn = play.at;
 

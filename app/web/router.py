@@ -4335,7 +4335,8 @@ async def api_vehicle_fuel(
 # /api/vehicles/{id}/track — трек машины за период для карты мониторинга
 # =========================================================================
 def _period_bounds(
-    frm: str | None, to: str | None, hours: int, now_utc: datetime
+    frm: str | None, to: str | None, hours: int, now_utc: datetime,
+    tz_name: str | None = None,
 ) -> tuple[datetime, datetime]:
     """Границы периода для трека: либо «с… по…», либо «последние N часов».
 
@@ -4343,8 +4344,8 @@ def _period_bounds(
     ляжет, а пользы ноль. Просит больше — отдаём последний месяц периода,
     а не пустой ответ: пустой экран читается как «данных нет».
     """
-    start = _parse_moment(frm)
-    end = _parse_moment(to)
+    start = _parse_moment(frm, tz_name)
+    end = _parse_moment(to, tz_name)
     if start is None or end is None:
         hours = max(1, min(int(hours or 12), 72))
         return now_utc - timedelta(hours=hours), now_utc
@@ -4355,11 +4356,15 @@ def _period_bounds(
     return start, end
 
 
-def _parse_moment(value: str | None) -> datetime | None:
+def _parse_moment(value: str | None, tz_name: str | None = None) -> datetime | None:
     """«2026-08-20T07:00» из поля браузера → момент времени в UTC.
 
-    Браузер шлёт местное время БЕЗ часового пояса — своего он не знает.
-    Считаем его временем владельца: он выбирал период, глядя на свои часы.
+    ⚠️ Браузер шлёт время БЕЗ часового пояса. Раньше мы считали его временем
+    UTC — и период уезжал на разницу с Москвой: владелец выбирал «26.08 00:00»,
+    а сервер брал 03:00 по его часам. Он это и заметил: «трек должен
+    заканчиваться там, где последняя точка до 12 часов по московскому».
+    Теперь наивное время читается в поясе ВЛАДЕЛЬЦА — он выбирал период, глядя
+    на свои часы, а не на гринвичские.
     """
     if not value:
         return None
@@ -4367,7 +4372,14 @@ def _parse_moment(value: str | None) -> datetime | None:
         moment = datetime.fromisoformat(value.strip())
     except (TypeError, ValueError):
         return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    if moment.tzinfo:
+        return moment
+    try:
+        # Пояс владельца берём тем же помощником, что и весь кабинет, —
+        # чтобы «26.08 00:00» значило одно и то же везде.
+        return moment.replace(tzinfo=owner_tz(tz_name))
+    except Exception:  # noqa: BLE001 — незнакомый пояс не должен ронять трек
+        return moment.replace(tzinfo=timezone.utc)
 
 
 # Потолок точек за один ответ. Упёрлись — в ответе поднимается `truncated`:
@@ -4533,7 +4545,7 @@ async def api_vehicle_track(
         raise HTTPException(status_code=404, detail="Not found")
 
     now_utc = datetime.now(timezone.utc)
-    since, until = _period_bounds(frm, to, hours, now_utc)
+    since, until = _period_bounds(frm, to, hours, now_utc, owner.timezone)
     rows = (
         await session.execute(
             select(
@@ -4658,7 +4670,7 @@ async def api_vehicle_events(
         raise HTTPException(status_code=404, detail="Not found")
 
     now_utc = datetime.now(timezone.utc)
-    since, until = _period_bounds(frm, to, hours, now_utc)
+    since, until = _period_bounds(frm, to, hours, now_utc, owner.timezone)
 
     shift_ids = set((await session.execute(
         select(Shift.id).where(Shift.owner_id == owner.id, Shift.vehicle_id == vehicle_id)
@@ -4726,7 +4738,7 @@ async def api_vehicle_shifts(
         raise HTTPException(status_code=404, detail="Not found")
 
     now_utc = datetime.now(timezone.utc)
-    since, until = _period_bounds(frm, to, hours, now_utc)
+    since, until = _period_bounds(frm, to, hours, now_utc, owner.timezone)
 
     rows = (
         await session.execute(
