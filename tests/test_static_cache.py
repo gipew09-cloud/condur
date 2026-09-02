@@ -76,3 +76,15 @@ def test_version_works_without_railway():
         for name, value in saved.items():
             if value is not None:
                 os.environ[name] = value
+
+
+def test_html_pages_are_never_served_from_browser_cache():
+    """⚠️ Страницы кэшировать нельзя.
+
+    Файлы в /static версионируются меткой, а сам HTML браузер мог отдать из
+    своего кэша — и владелец видел вчерашнюю разметку, решая, что правка «не
+    выкатилась». Владелец 31.08.2026: «кэш ты не очищаешь».
+    """
+    src = open("app/web/router.py", encoding="utf-8").read()
+    assert 'response.headers.setdefault("Cache-Control", "no-store, must-revalidate")' in src
+    assert 'startswith("text/html")' in src

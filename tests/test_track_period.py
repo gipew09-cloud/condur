@@ -434,3 +434,28 @@ def test_events_carry_no_coordinates():
         assert "lat" not in event and "lon" not in event
         await session.close()
     _run(scenario)
+
+
+def test_departure_is_the_first_movement_not_the_shift_start():
+    """Просмотр начинается там, где машина ТРОНУЛАСЬ.
+
+    Владелец 31.08.2026: «почему трек записался только когда он начал смену, а
+    не когда сдвинулся». Смену открывают кнопкой, а машина до этого стоит.
+    """
+    from app.web.router import _departure_at
+
+    segments = [
+        {"kind": "stop", "lat": 59.9, "lon": 30.3, "duration_label": "1 ч 12 мин"},
+        {"kind": "move", "start": "2026-08-26T07:42:00+00:00", "points": [], "times": []},
+        {"kind": "stop", "lat": 59.95, "lon": 30.35, "duration_label": "20 мин"},
+        {"kind": "move", "start": "2026-08-26T10:11:00+00:00", "points": [], "times": []},
+    ]
+    assert _departure_at(segments) == "2026-08-26T07:42:00+00:00"
+
+
+def test_departure_is_none_when_the_vehicle_never_moved():
+    """Не ехала вовсе — подсказки нет, а не «начните с нуля»."""
+    from app.web.router import _departure_at
+
+    assert _departure_at([{"kind": "stop", "lat": 59.9, "lon": 30.3}]) is None
+    assert _departure_at([]) is None

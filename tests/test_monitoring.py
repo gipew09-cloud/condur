@@ -250,7 +250,7 @@ def test_monitoring_has_tail_and_direction_arrow_like_the_app():
     # бледно-синий теряется среди дорог того же тона.
     assert "function tailColor()" in src
     assert "#93c5fd" in src            # тёмная карта — как в приложении
-    assert "#2f7bf6" in src            # светлая карта
+    assert "#1d4ed8" in src            # светлая карта
     assert "0.18 + t * 0.82" in src    # яркости прибавлено по просьбе владельца
 
     # Хвост ТАЕТ к дальнему концу, а не обрывается: у машины плотный, там где
@@ -345,8 +345,51 @@ def test_tracks_tab_has_a_player_like_the_design():
     # цикле анимации давало то самое «всё моргает и лагает» (владелец 30.08).
     assert "play.line.update({ geometry:" in src
     assert "play.marker.update({ coordinates:" in src
+
+    # ⚠️ Между точками метку ВЕДЁМ. Точка приходит раз в 40 секунд, и на ×1
+    # кружок стоял бы неподвижно почти минуту — владелец 31.08: «плеер встал».
+    assert "function glideTo(clock)" in src
+    assert "glideTo(play.clock);" in src
+
+    # ⚠️ Шевроны «‹ ›» — своим SVG. Текстовые глифы сидят на базовой линии и в
+    # квадратной кнопке стоят выше центра: про эти «съехавшие кнопки» владелец
+    # говорил пять раз.
+    assert "function chevron(dir)" in src
+
+    # ⚠️ НАСТОЯЩАЯ причина «съехавших кнопок», про которые владелец говорил пять
+    # раз: общие стили кабинета дают каждой <button> отступы 12.75×17 px, и
+    # содержимое выдавливалось за пределы кнопки на 8 px вправо и 7 вниз.
+    # Померено в браузере: после сброса смещение ровно ноль.
+    assert ".mon-play button,\n.mon-shift__go { padding: 0; margin: 0; }" in src
+    # но у кнопок скоростей отступы по бокам обязаны остаться, иначе «×15»
+    # схлопывается до 14 px и текст не помещается
+    assert "height: 28px; padding: 0 9px !important;" in src
+    assert 'aria-label="Предыдущая точка">‹<' not in src
+
+    # ⚠️ Поля периода узкие и время в них обрезается — пишем окно словами.
+    # ⚠️ ДВЕ разные вехи на карте, и владелец должен видеть обе: где нажали
+    # «начать смену» и где машина реально поехала. Между ними может быть час
+    # стояния на базе — из-за этого он и решил, что трек «пишется со смены».
+    assert "function placeMilestones()" in src
+    assert "'Смена начата'" in src and "'Здесь тронулась'" in src
+
+    # Фильтр значков: действия водителя / геозоны / тревоги — по отдельности.
+    assert 'id="mon-play-filters"' in src
+    assert "var eventFilter = { driver: true, zone: true, alarm: true };" in src
+    assert "if (!eventFilter[EVENT_GROUP[ev.kind] || 'driver']) return;" in src
+
+    # ⚠️ Просмотр начинается с момента движения, а не с открытия смены.
+    assert "play.departure = 0;" in src
+    assert "seekTo(play.departure);" in src
+
+    # ⚠️ Хвост заканчивается ровно на машине: метка доезжает плавно, а история
+    # точек обновляется раньше — линия убегала вперёд иконки.
+    assert "pts.push([vehicle.lat, vehicle.lon]);" in src
+
+    assert 'id="mon-window"' in src
+    assert "Показываю: <b>" in src
     assert "if (play.at === play.drawn) return;" in src
-    seek = src[src.index("function seekTo(index)"):src.index("async function refresh()")]
+    seek = src[src.index("function seekTo(index, keepClock)"):src.index("async function refresh()")]
     assert "new YMapFeature" not in seek and "new YMapMarker" not in seek
 
     # Карточка качества периода: одометр и GPS рядом, «нет данных» вслух.
