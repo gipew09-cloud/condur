@@ -265,6 +265,12 @@ async def _security_middleware(request: Request, call_next):
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
         )
+    # ⚠️ Сами СТРАНИЦЫ не кэшируем. Файлы в /static версионируются меткой
+    # (см. _asset_version), а вот HTML браузер мог отдать из своего кэша — и
+    # владелец видел вчерашнюю разметку, решая, что правка «не выкатилась».
+    # Данные в страницах живые (карта, цифры), кэшировать их нечего.
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers.setdefault("Cache-Control", "no-store, must-revalidate")
     return response
 
 
@@ -4391,6 +4397,26 @@ _TRACK_POINT_LIMIT = 20000
 _GPS_GAP_SECONDS = 300
 
 
+def _departure_at(segments: list[dict]) -> str | None:
+    """Момент, когда машина в этом периоде ТРОНУЛАСЬ.
+
+    Владелец 31.08.2026: «почему трек записался только когда он начал смену, а
+    не когда сдвинулся». Смену водитель открывает кнопкой в боте, а машина до
+    этого может час стоять на базе — просмотр начинался с неподвижной точки, и
+    первые минуты приходилось перематывать вручную.
+
+    Это начало ПЕРВОГО отрезка «ехал». Никаких порогов «длинной стоянки» тут
+    не нужно: всё, что до первого движения, машина простояла на месте.
+
+    ⚠️ Данные не режем — отдаём только подсказку, откуда начать проигрывание.
+    Весь трек остаётся на месте, ползунок можно отмотать назад.
+    """
+    for segment in segments:
+        if segment["kind"] == "move":
+            return segment.get("start")
+    return None
+
+
 def _with_instruments(segments: list[dict], rows, vehicle) -> list[dict]:
     """Добавить к точкам отрезка показания приборов на ту же минуту.
 
@@ -4600,6 +4626,7 @@ async def api_vehicle_track(
         "stops": len(stops),
         "gaps": len(gaps),
         "truncated": len(rows) >= _TRACK_POINT_LIMIT,
+        "departure_at": _departure_at(segments),
         "quality": _period_quality(rows, segments, since, until, now_utc),
         "segments": _with_instruments(segments, rows, vehicle),
     }

@@ -432,6 +432,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   color: var(--mon-text); background: var(--mon-fill);
   border: 1px solid var(--mon-border); border-radius: 10px;
 }
+/* ⚠️ Поля периода узкие, и время в них обрезается: владелец 31.08 не мог
+   понять, до какого часа он выбрал, и решил, что трек показывает лишнее.
+   Пишем выбранное окно словами, полностью. */
+.mon-window {
+  padding: 0 12px 8px; font-size: 11.5px; color: var(--mon-text-2);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.mon-window b { color: var(--mon-text); font-weight: 700; }
 .mon-quick { display: flex; gap: 6px; padding: 0 12px 10px; }
 .mon-quick button {
   flex: 1; height: 32px; border: 0; cursor: pointer; font: inherit;
@@ -547,7 +555,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-play__go svg { display: block; }
 .mon-play__speeds { display: flex; gap: 4px; flex: 1; }
 .mon-play__speeds button {
-  height: 28px; padding: 0 9px; border: 0; cursor: pointer; font: inherit;
+  /* Отступы по бокам возвращаем: сброс выше обнулил их всем кнопкам панели,
+     и «×15» переставало помещаться (кнопка схлопывалась до 14 px). */
+  height: 28px; padding: 0 9px !important; border: 0; cursor: pointer; font: inherit;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 11.5px; font-weight: 600; border-radius: 8px;
   background: var(--mon-fill); color: var(--mon-text-2);
@@ -558,12 +568,32 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 12px; font-weight: 600; color: var(--mon-text-2);
 }
+/* ⚠️ ВОТ ОТЧЕГО «КНОПКИ СЪЕХАЛИ» — про это владелец говорил пять раз.
+   Общие стили кабинета дают каждой <button> отступы `12.75px 17px` и нижний
+   внешний отступ. Я задавал ширину и высоту, но не сбрасывал их: содержимое
+   выдавливалось за пределы кнопки на 8 пикселей вправо и на 7 вниз. Значок из
+   шрифта тут был ни при чём — менять его на SVG не помогало.
+   Померено в браузере: до сброса смещение 8 / 6.75 px, после — ноль. */
+.mon-play button,
+.mon-shift__go { padding: 0; margin: 0; }
+
 .mon-play__step {
   width: 28px; height: 28px; border: 0; border-radius: 8px; cursor: pointer;
-  font-size: 16px; font-weight: 700; line-height: 1;
+  display: grid; place-items: center;
   background: var(--mon-fill); color: var(--mon-text-2);
 }
+.mon-play__step svg { display: block; }
 /* Показания приборов на текущей точке трека. */
+/* Фильтр значков на треке. Владелец 31.08 просил «показывать ли эти кнопки
+   вообще, что он нажимал» — по умолчанию видно всё, но лишнее можно убрать. */
+.mon-play__filters { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 5px; }
+.mon-play__filters button {
+  height: 24px; padding: 0 8px !important; border: 0; cursor: pointer; font: inherit;
+  font-size: 11px; font-weight: 700; border-radius: 7px;
+  background: var(--mon-fill); color: var(--mon-text-3);
+}
+.mon-play__filters button.is-on { background: rgba(37, 99, 235, .18); color: #1d4ed8; }
+.mon[data-mode="dark"] .mon-play__filters button.is-on { color: #9dc0ff; }
 .mon-play__gauges {
   margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px;
 }
@@ -582,6 +612,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-play__noplace[hidden] { display: none; }
 .mon-play__noplace b { color: var(--mon-text); }
+/* Вехи трека: где открыли смену и где машина поехала. Подписаны словами —
+   значок без подписи владелец читать не обязан. */
+.mon-milestone {
+  padding: 3px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  font-size: 10.5px; font-weight: 800; line-height: 1.4;
+  background: var(--mon-surface); border: 2px solid currentColor;
+  box-shadow: 0 4px 12px -4px rgba(11,31,77,.6);
+  transform: translate(-50%, -140%);
+}
 /* Значок действия водителя на линии трека. */
 .mon-event {
   width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
@@ -1007,6 +1046,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         <label>с<input type="datetime-local" id="mon-from"></label>
         <label>по<input type="datetime-local" id="mon-to"></label>
       </div>
+      <div class="mon-window" id="mon-window"></div>
       <div class="mon-quick" id="mon-quick">
         <button type="button" data-quick="today">Сегодня</button>
         <button type="button" data-quick="yesterday">Вчера</button>
@@ -1068,9 +1108,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       <i id="mon-play-fill"></i>
     </div>
     <div class="mon-play__row">
-      <button type="button" class="mon-play__step" id="mon-play-prev" title="Предыдущая точка" aria-label="Предыдущая точка">‹</button>
+      <button type="button" class="mon-play__step" id="mon-play-prev" title="Предыдущая точка" aria-label="Предыдущая точка"></button>
       <button type="button" class="mon-play__go" id="mon-play-toggle" aria-label="Пауза"></button>
-      <button type="button" class="mon-play__step" id="mon-play-next" title="Следующая точка" aria-label="Следующая точка">›</button>
+      <button type="button" class="mon-play__step" id="mon-play-next" title="Следующая точка" aria-label="Следующая точка"></button>
       <div class="mon-play__speeds" id="mon-play-speeds">
         <button type="button" data-speed="1" class="is-on">×1</button>
         <button type="button" data-speed="2">×2</button>
@@ -1079,6 +1119,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         <button type="button" data-speed="60">×60</button>
       </div>
       <span class="mon-play__km" id="mon-play-km">0 км</span>
+    </div>
+    <div class="mon-play__filters" id="mon-play-filters">
+      <button type="button" data-kind="driver" class="is-on">Действия водителя</button>
+      <button type="button" data-kind="zone" class="is-on">Геозоны</button>
+      <button type="button" data-kind="alarm" class="is-on">Тревоги</button>
     </div>
     <div class="mon-play__gauges" id="mon-play-gauges"></div>
     <div class="mon-play__noplace" id="mon-play-noplace" hidden></div>
@@ -1929,16 +1974,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     //
     // Оттенок берём по теме: бледно-синий, который хорошо читается на тёмной
     // карте, на светлой почти теряется среди дорог — они там такого же тона.
-    function tailColor() { return theme === 'dark' ? '#93c5fd' : '#2f7bf6'; }
-    var tail = { vehicleId: null, objs: [], loading: false };
+    // ⚠️ Синий НАСЫЩЕННЫЙ, а не бледный. Владелец 31.08: «сделай более синюю
+    // полосу сзади» — прежний бледно-голубой на светлой карте терялся среди
+    // дорог того же тона. Дальний конец всё равно тает: это делает
+    // прозрачность, а не цвет.
+    function tailColor() { return theme === 'dark' ? '#60a5fa' : '#1d4ed8'; }
+    var tail = { vehicleId: null, objs: [], loading: false, pulse: null };
 
     function clearTail() {
+      if (tail.pulse) { cancelAnimationFrame(tail.pulse); tail.pulse = null; }
       tail.objs.forEach(function (o) { ymap.removeChild(o); });
       tail.objs = [];
       tail.vehicleId = null;
     }
 
-    function tailPoints(data) {
+    function tailPoints(data, vehicle) {
       var now = Date.now();
       var pts = [];
       (data.segments || []).forEach(function (seg) {
@@ -1947,7 +1997,19 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         if (isNaN(end) || now - end > TAIL_WINDOW_MS) return;
         seg.points.forEach(function (p) { pts.push(p); });
       });
-      return pts.length > TAIL_MAX_POINTS ? pts.slice(-TAIL_MAX_POINTS) : pts;
+      if (pts.length > TAIL_MAX_POINTS) pts = pts.slice(-TAIL_MAX_POINTS);
+
+      // ⚠️ Хвост обязан заканчиваться РОВНО на машине. Метка берётся из
+      // «быстрого слоя» и доезжает до новой точки плавно за секунду, а хвост
+      // строится по истории точек, которая обновляется раньше, — и линия
+      // убегала вперёд иконки. Владелец 31.08: «палка опережает машину».
+      if (vehicle) {
+        var last = pts[pts.length - 1];
+        if (!last || last[0] !== vehicle.lat || last[1] !== vehicle.lon) {
+          pts.push([vehicle.lat, vehicle.lon]);
+        }
+      }
+      return pts;
     }
 
     async function loadTail(id) {
@@ -1956,7 +2018,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       try {
         var r = await fetch('/api/vehicles/' + id + '/track?hours=1');
         if (!r.ok) return;
-        var pts = tailPoints(await r.json());
+        var pts = tailPoints(await r.json(), byId(id));
         if (selected !== id) return;     // пока ждали — выбрали другую машину
         clearTail();
         if (pts.length < 2) return;
@@ -1993,6 +2055,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           tail.objs.push(obj);
         }
         tail.vehicleId = id;
+        breatheTail();
       } catch (e) {
         // Хвост — подсказка. Не загрузился — карта работает дальше.
       } finally {
@@ -2005,6 +2068,25 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (selected === null || track.vehicleId !== null) return;
       clearTail();
       loadTail(selected);
+    }
+
+    // Лёгкое дыхание хвоста у едущей машины: ближний конец чуть пульсирует.
+    // Ровно одна анимация и только пока машина в движении — иначе карта
+    // начинает мельтешить и мешать читать.
+    function breatheTail() {
+      if (tail.pulse) { cancelAnimationFrame(tail.pulse); tail.pulse = null; }
+      var v = selected === null ? null : byId(selected);
+      if (!v || stateKey(v) !== 'moving' || !tail.objs.length) return;
+      var head = tail.objs[tail.objs.length - 1];
+      var t0 = performance.now();
+      (function pulse(now) {
+        var k = (Math.sin((now - t0) / 700) + 1) / 2;      // 0…1 плавно
+        head.update({ style: { stroke: [
+          { color: '#050b16', width: 7, opacity: 0.5 },
+          { color: tailColor(), width: 4.4 + k * 1.6, opacity: 0.85 + k * 0.15 }
+        ], zIndex: 40, interactive: false } });
+        tail.pulse = requestAnimationFrame(pulse);
+      })(t0);
     }
 
     function syncTail() {
@@ -2577,6 +2659,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       '<path fill="currentColor" d="M8 5.5v13l11-6.5z"/></svg>';
     var PAUSE_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
       '<path fill="currentColor" d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>';
+    // ⚠️ Шевроны тоже своим SVG. Текстовые «‹ ›» сидят на базовой линии шрифта
+    // и в квадратной кнопке всегда стоят выше центра — это и есть «съехавшие
+    // кнопки», про которые владелец говорил пять раз.
+    function chevron(dir) {
+      return '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+        '<path fill="none" stroke="currentColor" stroke-width="2.4" ' +
+        'stroke-linecap="round" stroke-linejoin="round" d="' +
+        (dir === 'prev' ? 'M14.5 5.5 8 12l6.5 6.5' : 'M9.5 5.5 16 12l-6.5 6.5') +
+        '"/></svg>';
+    }
 
 
     var play = {
@@ -2592,7 +2684,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       arrow: null,      // стрелка направления внутри кружка
       eventMarks: [],   // значки действий водителя на треке
       eventsNoPlace: [],// события, для которых места на треке нет
+      events: [],       // последний загруженный список — для перефильтровки
       multiday: false,  // период больше суток — показываем дату в часах
+      departure: 0,     // кадр, где машина тронулась: с него начинаем показ
       lastTick: 0,
       clock: 0,         // время трека, которое «прошло» с начала просмотра
       drawn: -1         // какой кадр уже нарисован
@@ -2629,6 +2723,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       }
       fromEl.value = localValue(from);
       toEl.value = localValue(to);
+      paintWindow();
       Array.prototype.forEach.call(document.querySelectorAll('#mon-quick button'), function (b) {
         b.classList.toggle('is-on', b.dataset.quick === kind);
       });
@@ -2727,7 +2822,23 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       qualityEl.hidden = false;
     }
 
+    var windowEl = document.getElementById('mon-window');
+
+    function human(value) {
+      if (!value) return '—';
+      var d = new Date(value);
+      return isNaN(d) ? '—' : d.toLocaleString('ru-RU', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    function paintWindow() {
+      windowEl.innerHTML = 'Показываю: <b>' + human(fromEl.value) +
+        '</b> — <b>' + human(toEl.value) + '</b>';
+    }
+
     async function loadShifts() {
+      paintWindow();
       if (selected === null) {
         shiftsEl.innerHTML = '<div class="mon-empty">Выберите машину — покажу её смены за период.</div>';
         return;
@@ -2861,6 +2972,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var EVENT_ICONS = {
       shift: '🟢', trip: '🚛', photo: '📄', money: '💳', zone: '🏭', alarm: '⚠️'
     };
+    // Три группы, которые владелец включает и выключает по отдельности.
+    // Всё, что нажимал водитель, — одна группа: смена, рейс, фото, деньги.
+    var EVENT_GROUP = {
+      shift: 'driver', trip: 'driver', photo: 'driver', money: 'driver',
+      zone: 'zone', alarm: 'alarm'
+    };
+    var eventFilter = { driver: true, zone: true, alarm: true };
+
+    document.getElementById('mon-play-filters').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-kind]');
+      if (!b) return;
+      eventFilter[b.dataset.kind] = !eventFilter[b.dataset.kind];
+      b.classList.toggle('is-on', eventFilter[b.dataset.kind]);
+      placeEvents(play.events || []);
+    });
 
     function clearEventMarks() {
       play.eventMarks.forEach(function (m) { ymap.removeChild(m); });
@@ -2872,7 +2998,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.eventsNoPlace = [];
       if (!play.frames.length) return;
 
+      play.events = events;
       events.forEach(function (ev) {
+        if (!eventFilter[EVENT_GROUP[ev.kind] || 'driver']) return;
         var at = new Date(ev.at).getTime();
         var best = null, bestDiff = Infinity;
         for (var i = 0; i < play.frames.length; i++) {
@@ -2900,7 +3028,41 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         ymap.addChild(marker);
         play.eventMarks.push(marker);
       });
+      placeMilestones();
       paintNoPlace();
+    }
+
+    // ⚠️ Две РАЗНЫЕ точки, и владелец должен видеть обе.
+    // «Смена начата» — когда водитель нажал кнопку в боте.
+    // «Тронулась» — когда машина реально поехала.
+    // Между ними может быть час стояния на базе, и именно из-за этого владелец
+    // 31.08 решил, что «трек записался только когда он начал смену».
+    function placeMilestones() {
+      if (!play.frames.length) return;
+      var start = play.frames[0];
+      var moved = play.frames[play.departure] || null;
+
+      addMilestone(start, 'Смена начата', play.shift && play.shift.started_label, '#16a34a');
+      if (moved && play.departure > 0) {
+        addMilestone(moved, 'Здесь тронулась',
+          hhmm(new Date(moved.t).toISOString()), '#1d4ed8');
+      }
+    }
+
+    function addMilestone(frame, title, when, color) {
+      var el = document.createElement('div');
+      el.className = 'mon-milestone';
+      el.style.borderColor = color;
+      el.innerHTML = '<b style="color:' + color + '">' + esc(title) + '</b>';
+      el.addEventListener('click', function () {
+        showBalloon(LL(frame.lat, frame.lon),
+          '<div class="mon-balloon"><h4>' + esc(title) + '</h4>' +
+          '<div class="meta">' + esc(when || '') + '</div></div>');
+      });
+      var marker = new YMapMarker(
+        { coordinates: LL(frame.lat, frame.lon), zIndex: 870 }, el);
+      ymap.addChild(marker);
+      play.eventMarks.push(marker);
     }
 
     function paintNoPlace() {
@@ -3002,7 +3164,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.shift = row;
       var span = clipToPeriod(row);
       playTitle.textContent = 'Смена ' + row.started_label +
-        (span.clipped ? ' · показан выбранный период' : '');
+        (span.clipped ? ' · показано ' + human(span.from) + ' — ' + human(span.to) : '');
       playEl.hidden = false;
       playClock.textContent = 'загружаю…';
       Array.prototype.forEach.call(shiftsEl.querySelectorAll('.mon-shift'), function (b) {
@@ -3017,9 +3179,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var r = await fetch('/api/vehicles/' + selected + '/track?from=' +
           encodeURIComponent(span.from) + '&to=' + encodeURIComponent(span.to));
         if (!r.ok) { playClock.textContent = 'нет данных'; return; }
-        play.frames = framesFrom(await r.json());
+        var data = await r.json();
+        play.frames = framesFrom(data);
         play.multiday = play.frames.length > 1 &&
           (play.frames[play.frames.length - 1].t - play.frames[0].t) > 24 * 3600 * 1000;
+        // ⚠️ Начинаем с момента, когда машина ТРОНУЛАСЬ, а не с открытия смены.
+        // Смену открывают кнопкой в боте, а машина до этого может час стоять на
+        // базе — владелец 31.08: «трек записался только когда он начал смену».
+        // Данные не режем: ползунок можно отмотать назад к стоянке.
+        play.departure = 0;
+        if (data.departure_at) {
+          var moved = new Date(data.departure_at).getTime();
+          for (var d = 0; d < play.frames.length; d++) {
+            if (play.frames[d].t >= moved) { play.departure = d; break; }
+          }
+        }
         if (play.frames.length < 2) {
           playClock.textContent = 'точек нет';
           playKm.textContent = '—';
@@ -3028,8 +3202,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         play.at = 0;
         play.drawn = -1;
         makePlayObjects(play.frames.map(function (f) { return [f.lat, f.lon]; }));
-        seekTo(0);
+        seekTo(play.departure);
         setRunning(true);
+        placeMilestones();
         loadEvents(row);
       } catch (e) {
         playClock.textContent = 'нет данных';
@@ -3068,7 +3243,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     function togglePlay() {
       if (!play.frames.length) return;
       // Доиграли до конца — кнопка начинает сначала, а не молчит.
-      if (!play.running && play.at >= play.frames.length - 1) seekTo(0);
+      if (!play.running && play.at >= play.frames.length - 1) seekTo(play.departure);
       setRunning(!play.running);
     }
     playToggle.addEventListener('click', togglePlay);
@@ -3083,6 +3258,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         x.classList.toggle('is-on', x === b);
       });
     });
+    document.getElementById('mon-play-prev').innerHTML = chevron('prev');
+    document.getElementById('mon-play-next').innerHTML = chevron('next');
     document.getElementById('mon-play-prev').addEventListener('click', function () {
       setRunning(false);
       seekTo(play.at - 1);
@@ -3114,15 +3291,41 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
       var i = play.at;
       while (i < play.frames.length - 1 && play.frames[i + 1].t <= play.clock) i++;
-      if (i !== play.at) seekTo(i);
+      if (i !== play.at) seekTo(i, true);
+
+      // ⚠️ Между точками машину ВЕДЁМ. Точка приходит раз в 40 секунд, и на
+      // ×1 («как в жизни») кружок стоял бы неподвижно почти минуту — владелец
+      // 31.08 так и сказал: «плеер встал и не работает». Показываем движение
+      // между двумя известными точками; это не выдумывание пути — линия трека
+      // остаётся ровно той же, двигается только сама метка по ней.
+      glideTo(play.clock);
+
       if (play.at >= play.frames.length - 1) { setRunning(false); return; }
       play.raf = requestAnimationFrame(step);
     }
 
-    function seekTo(index) {
+    // Ведём метку между двумя соседними точками по времени.
+    function glideTo(clock) {
+      if (!play.marker) return;
+      var a = play.frames[play.at];
+      var b = play.frames[play.at + 1];
+      if (!a) return;
+      var lat = a.lat, lon = a.lon;
+      if (b && b.t > a.t) {
+        var k = Math.min(1, Math.max(0, (clock - a.t) / (b.t - a.t)));
+        lat = a.lat + (b.lat - a.lat) * k;
+        lon = a.lon + (b.lon - a.lon) * k;
+      }
+      play.marker.update({ coordinates: LL(lat, lon) });
+      ymap.setLocation({ center: LL(lat, lon) });
+    }
+
+    function seekTo(index, keepClock) {
       if (!play.frames.length || !play.line) return;
       play.at = Math.min(Math.max(0, index), play.frames.length - 1);
-      play.clock = play.frames[play.at].t;     // часы трека всегда на кадре
+      // При перемотке часы ставим на кадр; при обычном ходе — не трогаем,
+      // иначе накопленное время сбрасывалось бы и плавность пропадала.
+      if (!keepClock) play.clock = play.frames[play.at].t;
       if (play.at === play.drawn) return;      // кадр тот же — карту не трогаем
       play.drawn = play.at;
 
