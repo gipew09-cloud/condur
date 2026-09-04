@@ -327,9 +327,11 @@ def test_every_track_point_carries_instruments():
 
     t0 = datetime(2026, 8, 26, 9, 42, tzinfo=timezone.utc)
     t1 = t0 + timedelta(minutes=1)
+    # Порядок колонок — как в запросе трека: время, широта, долгота, скорость,
+    # пробег прибора, сырое топливо, температура топлива, зажигание, напряжение.
     rows = [
-        (t0, 59.93, 30.33, 40, 958_700, 512, 17.0, True),
-        (t1, 59.94, 30.34, 42, 958_701, None, None, False),
+        (t0, 59.93, 30.33, 40, 958_700, 512, 17.0, True, 27.4),
+        (t1, 59.94, 30.34, 42, 958_701, None, None, False, None),
     ]
     segments = [{
         "kind": "move",
@@ -345,6 +347,11 @@ def test_every_track_point_carries_instruments():
     # ⚠️ Без тарировки бака литров быть не может — сырое значение датчика
     # литрами не является, это выдуманное число.
     assert out["fuel_litres"] == [None, None]
+    # Скорость и напряжение — такие же приборы на ту же минуту. Владелец
+    # 04.09.2026: «нету датчика напряжения» — в карточке машины он был, а в
+    # треке его не было, и вопрос «когда машину обесточили» оставался без ответа.
+    assert out["speed_kmh"] == [40.0, 42.0]
+    assert out["voltage"] == [27.4, None]
 
 
 def test_stop_segments_are_left_alone():
@@ -459,3 +466,87 @@ def test_departure_is_none_when_the_vehicle_never_moved():
 
     assert _departure_at([{"kind": "stop", "lat": 59.9, "lon": 30.3}]) is None
     assert _departure_at([]) is None
+
+
+# ------------------------------------------------------ «телепорт» метки
+def test_gps_spike_is_dropped_but_a_real_point_after_a_gap_is_kept():
+    """Точка, куда машина улететь не могла и тут же вернуться, — выброс.
+
+    Владелец 04.09.2026: «точка телепортирует на секунду в какое-то другое
+    место и обратно на машину». Такие точки трекер отдаёт с признаком
+    «координаты достоверны»: у аэропорта и военных объектов сигнал глушат.
+
+    ⚠️ Односторонний скачок выбрасывать нельзя: так выглядит честная точка
+    после потери связи. Там путь неизвестен — рисуется пунктир, а не пустота.
+    """
+    from app.services import telemetry_service
+
+    t0 = datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+    lat, lon = 59.85, 30.42
+    points = [(t0 + timedelta(seconds=40 * i), lat + i * 0.004, lon, 40)
+              for i in range(6)]
+    # выброс между 3-й и 4-й точкой: 11 км в сторону и назад за 20 секунд
+    points.append((t0 + timedelta(seconds=40 * 3 + 20), lat + 0.112, lon + 0.1, 42))
+    points.sort(key=lambda p: p[0])
+
+    clean, dropped = telemetry_service.drop_gps_spikes(points)
+    assert dropped == 1
+    assert all(abs(p[1] - (lat + 0.112)) > 1e-9 for p in clean)
+
+    # честная точка после минутного молчания остаётся на месте
+    after_gap = [
+        (t0, 59.85, 30.42, 40),
+        (t0 + timedelta(minutes=1), 59.95, 30.52, 40),
+        (t0 + timedelta(minutes=1, seconds=40), 59.951, 30.521, 40),
+    ]
+    assert telemetry_service.drop_gps_spikes(after_gap)[1] == 0
+
+
+def test_track_has_no_dashed_excursion_to_a_spike():
+    """Выброс не должен оставлять на карте пунктир «машина была там».
+
+    Пунктир к ложной точке хуже её самой: он утверждает, что машина туда
+    ездила, — а это и есть то, что владелец предъявляет водителю.
+    """
+    from app.services import telemetry_service
+
+    t0 = datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+    lat, lon = 59.85, 30.42
+    points = [(t0 + timedelta(seconds=40 * i), lat + i * 0.004, lon, 40)
+              for i in range(12)]
+    points.append((t0 + timedelta(seconds=40 * 8 + 20), lat + 0.132, lon + 0.1, 42))
+    points.sort(key=lambda p: p[0])
+
+    segments = telemetry_service.build_track_segments(
+        points, window_end=t0 + timedelta(minutes=20)
+    )
+    assert [s["kind"] for s in segments] == ["move"]
+    assert len(segments[0]["points"]) == 12
+
+
+def test_receiver_marks_the_jump_instead_of_moving_the_car():
+    """Приёмник помечает скачок недостоверным — метка на карте не прыгает.
+
+    ⚠️ Судим только по соседним во времени точкам: если трекер молчал час,
+    машина могла честно уехать далеко, и это не скачок.
+    """
+    from app.services import telemetry_service
+
+    t0 = datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+    # 11 км за 40 секунд — 990 км/ч
+    reason = telemetry_service.gps_jump_reason(
+        t0, 59.85, 30.42, t0 + timedelta(seconds=40), 59.95, 30.42
+    )
+    assert reason and "скачок GPS" in reason
+    # час молчания — судить нельзя
+    assert telemetry_service.gps_jump_reason(
+        t0, 59.85, 30.42, t0 + timedelta(hours=1), 59.95, 30.42
+    ) is None
+    # обычная езда — не скачок
+    assert telemetry_service.gps_jump_reason(
+        t0, 59.85, 30.42, t0 + timedelta(seconds=40), 59.8512, 30.4212
+    ) is None
+
+    src = open("app/telemetry/egts_receiver.py", encoding="utf-8").read()
+    assert src.count("telemetry_service.gps_jump_reason(") == 2   # оба протокола
+    assert src.count("jump or \"нет достоверных координат (GPS)\"") == 2

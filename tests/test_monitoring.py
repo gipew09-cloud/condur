@@ -1065,3 +1065,102 @@ def test_fuel_period_is_named_by_hours_not_by_the_word_day():
 
     router = open("app/web/router.py", encoding="utf-8").read()
     assert "since = datetime.now(timezone.utc) - timedelta(hours=hours)" in router
+
+
+def test_track_paint_follows_the_car_between_points():
+    """Пройденный путь закрашивается ВМЕСТЕ с меткой, а не рывком раз в точку.
+
+    Владелец 04.09.2026: «тёмно-синяя, которая обводится, не автоматически —
+    она через 2 секунды красится». Метку между точками вели (`glideTo`), а
+    синюю линию дорисовывали только в `seekTo`, то есть в момент перехода на
+    следующую точку GPS — раз в 40 секунд трека. На ×15 это и есть «через две
+    секунды».
+
+    ⚠️ Хвостик — ОТДЕЛЬНЫЙ отрезок в две точки. Перерисовывать всю пройденную
+    ломаную (до 20 000 точек) 60 раз в секунду нельзя: это те самые «моргает и
+    лагает», из-за которых объекты карты создаются один раз.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "head: null," in src                     # объект есть в состоянии
+    assert "['ghost', 'line', 'head', 'marker']" in src   # и снимается с карты
+
+    glide = src.split("function glideTo(clock)")[1].split("function seekTo")[0]
+    assert "play.head.update" in glide              # растёт каждый кадр
+    assert "[[a.lat, a.lon], [lat, lon]]" in glide  # ровно две точки, не вся линия
+    # ⚠️ Через разрыв связи не ведём и не красим: путь там неизвестен.
+    assert "!b.afterGap" in glide
+
+
+def test_track_gauges_show_voltage_and_coordinates():
+    """На точке трека видно напряжение бортсети и координаты.
+
+    Владелец 04.09.2026: «нету датчика напряжения, не написаны координаты».
+    В карточке машины напряжение было, в треке — нет: на вопрос «в котором часу
+    машину обесточили» трек не отвечал. Координаты нужны, чтобы вставить их в
+    переписку и в карты, когда доказываешь водителю, где он стоял.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    gauges = src.split("function paintGauges(frame)")[1].split("function dayTime")[0]
+    assert "Напряжение" in gauges
+    assert "Скорость" in gauges
+    assert "frame.lat.toFixed(5)" in gauges
+    # Прибор промолчал — так и пишем. Подставлять прошлое значение нельзя.
+    assert "Напряжение <b>нет данных</b>" in gauges
+    # Значения приходят с сервера по каждой точке, а не считаются на глаз.
+    assert "seg.speed_kmh" in src and "seg.voltage" in src
+
+
+# ------------------------------------------------- бортсеть: ноль это факт
+def test_zero_bus_voltage_is_a_reading_not_a_missing_value():
+    """Ноль вольт на бортсети — это «массы нет», а не «прибор промолчал».
+
+    Владелец 04.09.2026 сравнил экраны: «в Ставтрэке на 557 напряжения нет,
+    а у нас есть». Так и было. Терминал шлёт `power = 0`, когда выключена
+    масса; старый разбор превращал ноль в «нет данных», в быстрый слой не
+    попадало НИЧЕГО, и карточка подставляла напряжение из истории — до двух
+    часов давности — выдавая его за текущее.
+    """
+    assert telemetry_service.bus_voltage(0) == Decimal("0")
+    assert telemetry_service.bus_voltage("0.00") == Decimal("0")
+    assert telemetry_service.bus_voltage(22.75) == Decimal("22.75")
+    # заглушки пустых каналов остаются «нет данных»
+    assert telemetry_service.bus_voltage(65535) is None
+    assert telemetry_service.bus_voltage(-128) is None
+    assert telemetry_service.bus_voltage(None) is None
+    assert telemetry_service.bus_voltage("что-то") is None
+    # у ДАТЧИКА (батарея трекера) ноль по-прежнему значит «канала нет»
+    assert telemetry_service.sensor_voltage(0) is None
+
+
+def test_power_cut_fires_on_zero():
+    """«Машина обесточена» обязана срабатывать именно на нуле.
+
+    Признак писался ради PROBLEMS №21 (машина пропадает с карты, потому что
+    сняли массу), но читал напряжение через `sensor_voltage`, который ноль
+    превращал в None — то есть в главном своём случае молчал.
+    """
+    assert telemetry_service.power_cut(0) is True
+    assert telemetry_service.power_cut(Decimal("0.00")) is True
+    assert telemetry_service.power_cut(Decimal("27.4")) is False
+    assert telemetry_service.power_cut(None) is False
+
+
+def test_receiver_reads_bus_voltage_not_sensor_voltage():
+    """Оба протокола кладут бортсеть через `bus_voltage`."""
+    src = open("app/telemetry/egts_receiver.py", encoding="utf-8").read()
+    assert 'telemetry_service.bus_voltage(\n                wp.params.get("power")' in src
+    assert "telemetry_service.bus_voltage(rec.state.main_power_v)" in src
+    # своя батарея трекера — по-прежнему через sensor_voltage
+    assert 'telemetry_service.sensor_voltage(\n                wp.params.get("battery")' in src
+
+
+def test_voltage_from_history_cannot_be_hours_old():
+    """Подстановка напряжения из истории — только свежая.
+
+    Двухчасовое окно означало «показываем позавчерашнюю правду как сегодняшнюю».
+    Точки идут раз в 40 секунд, 15 минут — уже с запасом.
+    """
+    src = open("app/web/router.py", encoding="utf-8").read()
+    assert "_VOLTAGE_FALLBACK_WINDOW = timedelta(minutes=15)" in src
+    assert "- _VOLTAGE_FALLBACK_WINDOW," in src
+    assert "datetime.now(timezone.utc) - timedelta(hours=2)" not in src
