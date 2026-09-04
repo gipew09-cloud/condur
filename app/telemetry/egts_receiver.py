@@ -168,12 +168,23 @@ async def _process_packet(
         points_saved = 0
         last_good: VehicleTelemetryPoint | None = None   # достоверная точка
         last_any: VehicleTelemetryPoint | None = None
+        prior_state = (
+            await session.get(VehicleState, vehicle.id) if vehicle is not None else None
+        )
+        # Последнее достоверное место — от него считаем, мог ли трекер там
+        # оказаться (скачок GPS).
+        prev_at = prior_state.last_seen_at if prior_state is not None and prior_state.is_valid else None
+        prev_lat = prior_state.latitude if prior_state is not None and prior_state.is_valid else None
+        prev_lon = prior_state.longitude if prior_state is not None and prior_state.is_valid else None
         if parsed is not None and vehicle is not None:
             for rec in parsed.records:
                 # Напряжения приходят отдельной подзаписью на всю запись —
                 # раскладываем их по точкам этой же записи.
+                # ⚠️ Через `bus_voltage`: ноль вольт — это показание «массы нет»,
+                # а не «нет данных». Заглушки терминала при этом отсекаются.
                 rec_voltage = (
-                    Decimal(str(rec.state.main_power_v)) if rec.state is not None else None
+                    telemetry_service.bus_voltage(rec.state.main_power_v)
+                    if rec.state is not None else None
                 )
                 rec_battery = (
                     Decimal(str(rec.state.backup_battery_v)) if rec.state is not None else None
@@ -182,6 +193,19 @@ async def _process_packet(
                     # «Нулевой остров»: при потере GPS часть трекеров шлёт (0,0).
                     zeroish = abs(pos.latitude) < 0.001 and abs(pos.longitude) < 0.001
                     good = pos.is_valid and not zeroish
+                    jump = None
+                    if good:
+                        jump = telemetry_service.gps_jump_reason(
+                            prev_at, prev_lat, prev_lon,
+                            pos.navigation_time, pos.latitude, pos.longitude,
+                        )
+                        if jump:
+                            good = False
+                            logger.warning(
+                                "EGTS: %s (terminal=%s, машина %s) — точка "
+                                "помечена недостоверной",
+                                jump, terminal_id, vehicle.license_plate,
+                            )
                     point = VehicleTelemetryPoint(
                         raw_packet_id=raw.id,
                         owner_id=vehicle.owner_id,
@@ -197,13 +221,19 @@ async def _process_packet(
                         voltage=rec_voltage,
                         battery_voltage=rec_battery,
                         is_valid=good,
-                        anomaly_reason=None if good else "нет достоверных координат (GPS)",
+                        anomaly_reason=(
+                            None if good
+                            else (jump or "нет достоверных координат (GPS)")
+                        ),
                     )
                     session.add(point)
                     points_saved += 1
                     last_any = point
                     if good:
                         last_good = point
+                        prev_at, prev_lat, prev_lon = (
+                            pos.navigation_time, pos.latitude, pos.longitude
+                        )
 
             state_point = last_good or last_any
             # Дампы истории и параллельные соединения могут принести точку ИЗ
@@ -212,7 +242,7 @@ async def _process_packet(
             # иначе у машины, ездившей днём, появлялось «стоит уже 19 ч».
             if last_any is not None:
                 await session.flush()  # нужны id точек
-                previous_state = await session.get(VehicleState, vehicle.id)
+                previous_state = prior_state
                 if not state_update_allowed(
                     previous_state.last_seen_at if previous_state is not None else None,
                     state_point.observed_at if state_point is not None else None,
@@ -386,6 +416,13 @@ async def _store_wialon_points(
         session.add(raw)
         await session.flush()
 
+        # Откуда машина «пришла»: последнее достоверное место. Нужно, чтобы
+        # поймать скачок GPS — точку, до которой машина не могла доехать.
+        prior = await session.get(VehicleState, vehicle.id)
+        prev_at = prior.last_seen_at if prior is not None and prior.is_valid else None
+        prev_lat = prior.latitude if prior is not None and prior.is_valid else None
+        prev_lon = prior.longitude if prior is not None and prior.is_valid else None
+
         last_good: VehicleTelemetryPoint | None = None
         last_any: VehicleTelemetryPoint | None = None
         for wp in points:
@@ -394,6 +431,18 @@ async def _store_wialon_points(
                 and abs(wp.latitude) < 0.001 and abs(wp.longitude) < 0.001
             )
             good = wp.is_valid and not zeroish
+            jump = None
+            if good:
+                jump = telemetry_service.gps_jump_reason(
+                    prev_at, prev_lat, prev_lon,
+                    wp.observed_at, wp.latitude, wp.longitude,
+                )
+                if jump:
+                    good = False
+                    logger.warning(
+                        "Wialon: %s (terminal=%s, машина %s) — точка помечена "
+                        "недостоверной", jump, terminal_id, vehicle.license_plate,
+                    )
             # Двигатель заведён определяем по напряжению бортсети (генератор),
             # если оно пришло: сырой бит ign у части трекеров залипает на 1
             # (см. telemetry_service.engine_running_from_voltage). Нет
@@ -408,7 +457,10 @@ async def _store_wialon_points(
             )
             # Напряжение бортсети и своя батарея трекера. Ставтрэк шлёт их в
             # каждом пакете; раньше power читали только ради зажигания.
-            voltage = telemetry_service.sensor_voltage(
+            # ⚠️ Бортсеть читаем `bus_voltage`, а не `sensor_voltage`: терминал
+            # шлёт ровно 0, когда выключена масса, и это ФАКТ, который нужен
+            # владельцу («Ставтрэк показывает 0, а у нас 27 В» — 04.09.2026).
+            voltage = telemetry_service.bus_voltage(
                 wp.params.get("power") if wp.params else None
             )
             battery_voltage = telemetry_service.sensor_voltage(
@@ -435,17 +487,23 @@ async def _store_wialon_points(
                 fuel_level_raw=fuel_raw,
                 fuel_temp_c=fuel_temp,
                 is_valid=good,
-                anomaly_reason=None if good else "нет достоверных координат (GPS)",
+                anomaly_reason=(
+                    None if good
+                    else (jump or "нет достоверных координат (GPS)")
+                ),
             )
             session.add(point)
             last_any = point
             if good:
                 last_good = point
+                prev_at, prev_lat, prev_lon = (
+                    wp.observed_at, wp.latitude, wp.longitude
+                )
 
         state_point = last_good or last_any
         if last_any is not None:
             await session.flush()
-            previous_state = await session.get(VehicleState, vehicle.id)
+            previous_state = prior
             if not state_update_allowed(
                 previous_state.last_seen_at if previous_state is not None else None,
                 state_point.observed_at if state_point is not None else None,

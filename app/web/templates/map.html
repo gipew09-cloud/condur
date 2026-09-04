@@ -605,7 +605,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-play__gauges i b { color: var(--mon-text); font-weight: 700; }
 .mon-play__gauges i[data-on="1"] { background: rgba(22,163,74,.16); color: #16a34a; }
 .mon-play__gauges i[data-on="0"] { background: rgba(148,163,184,.2); }
+.mon-play__gauges i[data-bad="1"] { background: rgba(220,38,38,.16); color: #dc2626; }
+.mon[data-mode="dark"] .mon-play__gauges i[data-bad="1"] { color: #fca5a5; }
 .mon[data-mode="dark"] .mon-play__gauges i[data-on="1"] { color: #4ade80; }
+/* Координаты точки — нажатием копируются: их вставляют в переписку и в
+   Яндекс.Карты, когда доказывают водителю, где он стоял. */
+.mon-play__gauges i[data-copy] { cursor: pointer; }
+.mon-play__gauges i[data-copy]:hover { background: rgba(37,99,235,.16); }
 .mon-play__noplace {
   margin-top: 8px; padding: 7px 9px; border-radius: 9px;
   background: rgba(224,163,46,.14); color: var(--mon-text-2); font-size: 11.5px;
@@ -2679,7 +2685,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       running: false,
       raf: null,
       ghost: null,      // весь трек бледной линией
-      line: null,       // пройденная часть
+      line: null,       // пройденная часть — по точкам GPS
+      head: null,       // хвостик от последней точки до метки (плавность)
       marker: null,     // машина на треке
       arrow: null,      // стрелка направления внутри кружка
       eventMarks: [],   // значки действий водителя на треке
@@ -2814,6 +2821,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           'Прибор не прислал показаний пробега.');
       }
 
+      // ⚠️ Про выброшенные точки говорим вслух. Молча подчищенный трек — это
+      // подправленное доказательство, даже если правка верная.
+      if (data.gps_jumps) {
+        html += qualityRow('Скачки GPS', 'partial',
+          'Отброшено точек: ' + data.gps_jumps,
+          'Машина не могла там оказаться: сигнал глушили или подменяли. ' +
+          'На треке этих точек нет.');
+      }
+
       if (data.truncated) {
         html += qualityRow('Внимание', 'partial', 'Показано не всё',
           'Период слишком большой: отдано первые ' + data.points + ' точек. Сузьте интервал.');
@@ -2931,6 +2947,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var n = seg.points.length;
         var times = seg.times || [];
         var fuel = seg.fuel_litres || [], temps = seg.fuel_temp_c || [], ign = seg.ignition || [];
+        var spd = seg.speed_kmh || [], volt = seg.voltage || [];
         seg.points.forEach(function (pt, i) {
           var share = n > 1 ? i / (n - 1) : 1;
           var own = times[i] ? new Date(times[i]).getTime() : NaN;
@@ -2947,6 +2964,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
             t: isNaN(own) ? t0 + (t1 - t0) * share : own,
             km: km,
             fuel: fuel[i], temp: temps[i], ign: ign[i],
+            speed: spd[i], volt: volt[i],
             // Первая точка отрезка идёт следом за разрывом связи: между ней и
             // предыдущей путь неизвестен, и это надо сказать вслух.
             afterGap: i === 0 && out.length > 0
@@ -3097,7 +3115,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     function clearPlayObjects() {
       clearEventMarks();
       play.arrow = null;
-      ['ghost', 'line', 'marker'].forEach(function (key) {
+      ['ghost', 'line', 'head', 'marker'].forEach(function (key) {
         if (play[key]) { ymap.removeChild(play[key]); play[key] = null; }
       });
     }
@@ -3122,6 +3140,24 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         }
       });
       ymap.addChild(play.line);
+
+      // ⚠️ Хвостик от последней ПРОЙДЕННОЙ точки до метки. Без него синяя
+      // линия дорисовывалась только в момент смены точки — раз в 40 секунд
+      // трека. Владелец 04.09: «она не автоматически, она через 2 секунды
+      // красится». Метка ехала плавно, а закраска догоняла рывком.
+      // Отдельным коротким отрезком в две точки: перерисовывать всю
+      // пройденную ломаную (до 20 000 точек) 60 раз в секунду нельзя.
+      play.head = new YMapFeature({
+        geometry: { type: 'LineString', coordinates: LLline(all.slice(0, 2)) },
+        style: {
+          stroke: [
+            { color: '#050b16', width: 7, opacity: 0.45 },
+            { color: '#2563eb', width: 4.5, opacity: 0.95 }
+          ],
+          zIndex: 46, interactive: false
+        }
+      });
+      ymap.addChild(play.head);
 
       // Кружок со стрелкой: куда машина была повёрнута в этот момент.
       // Направление считаем по СЛЕДУЮЩЕЙ точке трека — это факт, а не догадка.
@@ -3304,19 +3340,33 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.raf = requestAnimationFrame(step);
     }
 
-    // Ведём метку между двумя соседними точками по времени.
+    // Ведём метку между двумя соседними точками по времени — и вместе с ней
+    // тянем закраску пройденного пути.
     function glideTo(clock) {
       if (!play.marker) return;
       var a = play.frames[play.at];
       var b = play.frames[play.at + 1];
       if (!a) return;
       var lat = a.lat, lon = a.lon;
-      if (b && b.t > a.t) {
+      // ⚠️ Между точками ведём только там, где путь известен. `afterGap` — это
+      // первая точка после потери связи: как машина туда попала, мы не знаем,
+      // и вести по прямой = врать (правило «далёкие точки не соединять»).
+      if (b && b.t > a.t && !b.afterGap) {
         var k = Math.min(1, Math.max(0, (clock - a.t) / (b.t - a.t)));
         lat = a.lat + (b.lat - a.lat) * k;
         lon = a.lon + (b.lon - a.lon) * k;
       }
       play.marker.update({ coordinates: LL(lat, lon) });
+      // Хвостик закраски — от последней пройденной точки до метки. Так синяя
+      // линия растёт вместе с машиной, а не прыгает раз в 40 секунд трека.
+      if (play.head) {
+        play.head.update({
+          geometry: {
+            type: 'LineString',
+            coordinates: LLline([[a.lat, a.lon], [lat, lon]])
+          }
+        });
+      }
       ymap.setLocation({ center: LL(lat, lon) });
     }
 
@@ -3335,6 +3385,19 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       });
 
       play.line.update({ geometry: { type: 'LineString', coordinates: LLline(passed) } });
+      // Хвостик начинается заново от новой точки: то, что он тянул, уже вошло
+      // в пройденную линию. Иначе на перемотке он оставался бы висеть позади.
+      // Ложим его на последний ПРОЙДЕННЫЙ отрезок, а не в одну точку: линия
+      // нулевой длины — это вырожденная геометрия, и рисовать её карте незачем.
+      if (play.head) {
+        var prevFrame = play.frames[play.at - 1] || frame;
+        play.head.update({
+          geometry: {
+            type: 'LineString',
+            coordinates: LLline([[prevFrame.lat, prevFrame.lon], [frame.lat, frame.lon]])
+          }
+        });
+      }
       play.marker.update({ coordinates: LL(frame.lat, frame.lon) });
       // Камера едет за машиной БЕЗ анимации: своя анимация на каждый кадр
       // догоняла бы предыдущую, и карта дёргалась.
@@ -3386,11 +3449,50 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (frame.temp !== null && frame.temp !== undefined) {
         parts.push('<i>Темп. топлива <b>' + frame.temp.toFixed(0) + ' °C</b></i>');
       }
+      // Скорость прибора на этой точке. Это то, что предъявляют водителю
+      // («шёл 96 в посёлке»), поэтому берём значение трекера, а не считаем
+      // сами по расстоянию между точками.
+      if (frame.speed !== null && frame.speed !== undefined) {
+        parts.push('<i>Скорость <b>' + Math.round(frame.speed) + ' км/ч</b></i>');
+      }
+      // Напряжение бортсети — тот же прибор, что в карточке машины.
+      // Зелёным, когда генератор заряжает (значит двигатель работал), красным,
+      // когда бортсети фактически нет: машину обесточили или сняли клемму.
+      if (frame.volt === null || frame.volt === undefined) {
+        parts.push('<i>Напряжение <b>нет данных</b></i>');
+      } else {
+        var charging = frame.volt >= 26 || (frame.volt >= 13 && frame.volt < 18);
+        var dead = frame.volt < 6;
+        parts.push('<i' + (dead ? ' data-bad="1"' : (charging ? ' data-on="1"' : '')) +
+          '>Напряжение <b>' + frame.volt.toFixed(1) + ' В</b></i>');
+      }
+      // Координаты точки — нажатием копируются в буфер.
+      var coords = frame.lat.toFixed(5) + ', ' + frame.lon.toFixed(5);
+      parts.push('<i data-copy="' + coords + '" title="Нажмите — скопирую">' +
+        'Координаты <b>' + coords + '</b></i>');
       if (frame.afterGap) {
         parts.push('<i data-on="0">⚠ до этой точки связи не было</i>');
       }
       gaugesEl.innerHTML = parts.join('');
     }
+
+    // Копирование координат. `writeText` есть не везде (старый Android,
+    // страница без https) — тогда молча ничего не делаем, а не роняем плеер.
+    gaugesEl.addEventListener('click', function (e) {
+      var box = e.target.closest('i[data-copy]');
+      if (!box) return;
+      var text = box.dataset.copy;
+      var done = function () {
+        var was = box.innerHTML;
+        box.innerHTML = 'Координаты <b>скопированы</b>';
+        setTimeout(function () { box.innerHTML = was; }, 1200);
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () {});
+        }
+      } catch (err) { /* буфера нет — координаты всё равно видны глазами */ }
+    });
 
     async function refresh() {
       try {

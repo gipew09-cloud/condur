@@ -4089,6 +4089,12 @@ async def _driver_positions(session: AsyncSession, owner_id: int) -> list[dict]:
     return result
 
 
+
+# Насколько старым может быть напряжение из истории, если в «быстром слое» его
+# нет. Больше — это уже не «текущее состояние машины», а прошлое.
+_VOLTAGE_FALLBACK_WINDOW = timedelta(minutes=15)
+
+
 @app.get("/api/drivers-locations")
 async def api_drivers_locations(
     owner: Annotated[Owner, Depends(current_owner)],
@@ -4183,6 +4189,12 @@ async def api_drivers_locations(
     # Напряжение живёт в «быстром слое», но он обновляется только достоверными
     # точками. Если там пусто (например, приёмник телеметрии ещё на старой
     # версии), берём его из свежей точки истории — по одной строке на машину.
+    #
+    # ⚠️ Окно 15 минут, а не два часа. Двухчасовое окно означало вот что: у
+    # обесточенной машины сейчас напряжения нет, а кабинет показывал значение
+    # ДВУХЧАСОВОЙ давности как текущее — владелец 04.09.2026 сравнил с
+    # Ставтрэком («у них 0, у нас 27») и был прав. Точки идут раз в 40 секунд,
+    # так что 15 минут — это уже с запасом, а старше — честное «нет данных».
     missing_voltage = [v["vehicle_id"] for v in vehicles if v["voltage"] is None]
     if missing_voltage:
         volt_rows = (
@@ -4196,7 +4208,7 @@ async def api_drivers_locations(
                     VehicleTelemetryPoint.vehicle_id.in_(missing_voltage),
                     VehicleTelemetryPoint.voltage.is_not(None),
                     VehicleTelemetryPoint.observed_at
-                    >= datetime.now(timezone.utc) - timedelta(hours=2),
+                    >= datetime.now(timezone.utc) - _VOLTAGE_FALLBACK_WINDOW,
                 )
                 .order_by(
                     VehicleTelemetryPoint.vehicle_id,
@@ -4431,6 +4443,11 @@ def _with_instruments(segments: list[dict], rows, vehicle) -> list[dict]:
     ⚠️ Топливо отдаём В ЛИТРАХ только при наличии тарировки бака. Сырое
     значение датчика литрами не является: без тарировочной таблицы это
     выдуманное число. Нет тарировки — `null`, а не «примерно столько».
+
+    ⚠️ Скорость и напряжение бортсети — такие же показания прибора на ту же
+    минуту, как топливо. Владелец 04.09.2026: «нету датчика напряжения». В
+    карточке машины напряжение есть, а в треке его не было — то есть на вопрос
+    «в котором часу машину обесточили» трек не отвечал.
     """
     calibration = getattr(vehicle, "fuel_calibration", None)
     by_time = {
@@ -4443,19 +4460,24 @@ def _with_instruments(segments: list[dict], rows, vehicle) -> list[dict]:
         times = segment.get("times")
         if not times:
             continue
-        fuel, temps, ignition = [], [], []
+        fuel, temps, ignition, speeds, volts = [], [], [], [], []
         for iso in times:
             row = by_time.get(datetime.fromisoformat(iso))
             if row is None:
                 fuel.append(None); temps.append(None); ignition.append(None)
+                speeds.append(None); volts.append(None)
                 continue
-            _, _, _, _, _, fuel_raw, fuel_temp, ign = row
+            _, _, _, speed, _, fuel_raw, fuel_temp, ign, volt = row
             fuel.append(_fuel_litres_or_none(fuel_raw, calibration))
             temps.append(float(fuel_temp) if fuel_temp is not None else None)
             ignition.append(bool(ign) if ign is not None else None)
+            speeds.append(round(float(speed), 1) if speed is not None else None)
+            volts.append(round(float(volt), 1) if volt is not None else None)
         segment["fuel_litres"] = fuel
         segment["fuel_temp_c"] = temps
         segment["ignition"] = ignition
+        segment["speed_kmh"] = speeds
+        segment["voltage"] = volts
     return segments
 
 
@@ -4588,6 +4610,9 @@ async def api_vehicle_track(
                 VehicleTelemetryPoint.fuel_level_raw,
                 VehicleTelemetryPoint.fuel_temp_c,
                 VehicleTelemetryPoint.ignition,
+                # ⚠️ Напряжение — ПОСЛЕДНЕЙ колонкой. Первые четыре разбираются
+                # позиционно (`for t, lat, lon, speed, *_ in rows`) ниже.
+                VehicleTelemetryPoint.voltage,
             )
             .where(
                 VehicleTelemetryPoint.vehicle_id == vehicle_id,
@@ -4603,6 +4628,13 @@ async def api_vehicle_track(
             .limit(_TRACK_POINT_LIMIT)
         )
     ).all()
+    # Сколько точек оказалось невозможными («телепорт» метки). Считаем ЗДЕСЬ,
+    # чтобы сказать об этом вслух: молча выброшенные точки — это тихая правка
+    # доказательства, а трек мы предъявляем водителю.
+    _clean, gps_jumps = telemetry_service.drop_gps_spikes(
+        [(_utc_moment(t), float(lat), float(lon), speed)
+         for t, lat, lon, speed, *_ in rows]
+    )
     segments = telemetry_service.build_track_segments(
         [(t, lat, lon, speed) for t, lat, lon, speed, *_ in rows],
         # ⚠️ Конец окна — конец ПЕРИОДА, а не «сейчас». Иначе у трека за
@@ -4626,6 +4658,9 @@ async def api_vehicle_track(
         "stops": len(stops),
         "gaps": len(gaps),
         "truncated": len(rows) >= _TRACK_POINT_LIMIT,
+        # Точки, до которых машина физически не могла доехать (подмена GPS).
+        # В геометрию трека они не идут — но владелец должен знать, что они были.
+        "gps_jumps": gps_jumps,
         "departure_at": _departure_at(segments),
         "quality": _period_quality(rows, segments, since, until, now_utc),
         "segments": _with_instruments(segments, rows, vehicle),

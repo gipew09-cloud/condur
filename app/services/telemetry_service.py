@@ -91,7 +91,11 @@ SENSOR_VOLTAGE_MAX_V = Decimal("100")
 
 
 def sensor_voltage(value) -> Decimal | None:
-    """Напряжение из параметров трекера. None — нет датчика или мусор."""
+    """Напряжение из параметров трекера. None — нет датчика или мусор.
+
+    ⚠️ Ноль здесь — тоже None: для ДАТЧИКА (своя батарея трекера) ноль вольт
+    означает «канал пустой». Для БОРТСЕТИ это не так — см. `bus_voltage`.
+    """
     if value is None:
         return None
     try:
@@ -103,6 +107,36 @@ def sensor_voltage(value) -> Decimal | None:
     if volts <= 0 or volts > SENSOR_VOLTAGE_MAX_V:
         return None
     return volts
+
+
+# Ниже этого бортсеть считаем отсутствующей, а не «маленькой»: трекер шлёт
+# ровно 0, когда выключена масса.
+BUS_VOLTAGE_ABSENT_V = Decimal("0.5")
+
+
+def bus_voltage(value) -> Decimal | None:
+    """Напряжение БОРТСЕТИ. Ноль — это показание «сети нет», а не «нет данных».
+
+    ⚠️ Владелец 04.09.2026: «в Ставтрэке на 557 напряжения нет, а у нас есть».
+    Так и было: терминал шлёт `power = 0`, когда выключена масса, старый разбор
+    превращал ноль в «нет данных», в быстрый слой не попадало ничего, и кабинет
+    подставлял на карточку ПРОШЛОЕ напряжение из истории. Машина стояла
+    обесточенная, а экран показывал 27 В.
+
+    Ноль вольт — это факт, который и нужен владельцу: масса выключена, трекер
+    доживает на своей батарее. Возвращаем его как показание.
+    """
+    if value is None:
+        return None
+    try:
+        volts = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    if any(volts == Decimal(str(sentinel)) for sentinel in SENSOR_SENTINELS):
+        return None
+    if volts < 0 or volts > SENSOR_VOLTAGE_MAX_V:
+        return None
+    return Decimal("0") if volts < BUS_VOLTAGE_ABSENT_V else volts
 
 
 # Уровень топлива с ДУТ приходит в параметрах fuel1…fuel15, температура — в
@@ -336,8 +370,14 @@ POWER_CUT_MAX_V = Decimal("5")
 
 
 def power_cut(voltage, battery_voltage=None) -> bool:
-    """True — машина обесточена (масса выключена), трекер на своей батарее."""
-    volts = sensor_voltage(voltage)
+    """True — машина обесточена (масса выключена), трекер на своей батарее.
+
+    ⚠️ Напряжение читаем через `bus_voltage`: раньше здесь стоял
+    `sensor_voltage`, который ноль превращал в None, — и признак «обесточена»
+    не срабатывал именно в том случае, ради которого писался (терминал шлёт
+    ровно 0, когда сняли массу).
+    """
+    volts = bus_voltage(voltage)
     if volts is None:
         return False
     if volts >= POWER_CUT_MAX_V:
@@ -581,6 +621,107 @@ def segment_movements(
     return smoothed
 
 
+def gps_jump_reason(prev_at, prev_lat, prev_lon, at, lat, lon) -> str | None:
+    """«Скачок GPS»: метка улетела и вернулась. Возвращает причину или None.
+
+    Владелец 04.09.2026: «точка телепортирует на секунду в какое-то другое
+    место и обратно на машину». Это не ошибка отрисовки — такие точки реально
+    приходят: у Пулково и рядом с военными объектами сигнал глушат и
+    подменяют, и трекер честно рапортует чужие координаты с признаком
+    «достоверно». Раньше такая точка ложилась в «быстрый слой», и метка на
+    карте прыгала; хуже того — на ней срабатывали геозоны РЦ.
+
+    Судим ТОЛЬКО по соседним во времени точкам (не дальше
+    TRACK_LEG_GAP_SECONDS). Если между точками прошёл час, машина могла честно
+    уехать далеко — и объявлять это скачком нельзя.
+
+    ⚠️ Это не сглаживание. Точку мы не двигаем и не выдумываем: помечаем
+    недостоверной и не пускаем в геометрию, как уже делаем с «нулевым
+    островом» (0, 0).
+    """
+    from app.services import rc_service
+
+    if None in (prev_at, prev_lat, prev_lon, at, lat, lon):
+        return None
+    seconds = (at - prev_at).total_seconds()
+    if seconds <= 0 or seconds > TRACK_LEG_GAP_SECONDS:
+        return None
+    metres = rc_service.haversine_m(
+        float(prev_lat), float(prev_lon), float(lat), float(lon)
+    )
+    if metres <= TRACK_LEG_MAX_M:
+        return None
+    kmh = (metres / seconds) * 3.6
+    if kmh <= TRACK_LEG_MAX_KMH:
+        return None
+    return (
+        f"скачок GPS: {metres / 1000:.1f} км за {int(seconds)} с "
+        f"({int(kmh)} км/ч)"
+    )
+
+
+def _implausible_leg_kmh(a, b) -> float | None:
+    """Скорость между двумя точками, если её вообще можно осудить.
+
+    None — судить нельзя: точки далеко по времени (машина могла честно уехать)
+    или сместилась в пределах погрешности.
+    """
+    from app.services import rc_service
+
+    seconds = (b[0] - a[0]).total_seconds()
+    if seconds <= 0 or seconds > TRACK_LEG_GAP_SECONDS:
+        return None
+    metres = rc_service.haversine_m(a[1], a[2], b[1], b[2])
+    if metres <= TRACK_LEG_MAX_M:
+        return None
+    return (metres / seconds) * 3.6
+
+
+def drop_gps_spikes(points: list[tuple]) -> tuple[list[tuple], int]:
+    """Выбросить точки, куда машина улететь не могла, и тут же вернуться.
+
+    Владелец 04.09.2026: «точка телепортирует на секунду в какое-то другое
+    место и обратно». Такие точки приходят от трекера с признаком «координаты
+    достоверны»: рядом с аэропортом и военными объектами сигнал глушат и
+    подменяют ([[project_gps_spoofing_connectivity]]).
+
+    Правило намеренно строгое — выбрасываем только явный ВЫБРОС:
+      * до точки скорость невозможна (> TRACK_LEG_MAX_KMH),
+      * и после точки — тоже,
+      * и соседи при этом рядом друг с другом (машина «вернулась»).
+
+    Одностороннего скачка мало: так выглядит и честная точка после потери
+    связи. Её выбрасывать нельзя — это настоящее место машины, и трек рисует
+    туда пунктир («путь неизвестен»).
+
+    ⚠️ Точки не двигаем и не усредняем. Либо точка остаётся как есть, либо её
+    нет вовсе — сглаживание рисует красивый и ложный трек.
+    """
+    from app.services import rc_service
+
+    if len(points) < 3:
+        return list(points), 0
+
+    kept = [points[0]]
+    dropped = 0
+    for i in range(1, len(points) - 1):
+        prev, cur, nxt = kept[-1], points[i], points[i + 1]
+        into = _implausible_leg_kmh(prev, cur)
+        out = _implausible_leg_kmh(cur, nxt)
+        if (
+            into is not None and out is not None
+            and into > TRACK_LEG_MAX_KMH and out > TRACK_LEG_MAX_KMH
+        ):
+            away = rc_service.haversine_m(prev[1], prev[2], cur[1], cur[2])
+            back = rc_service.haversine_m(prev[1], prev[2], nxt[1], nxt[2])
+            if back < away / 2:          # сосед вернулся туда, откуда улетели
+                dropped += 1
+                continue
+        kept.append(cur)
+    kept.append(points[-1])
+    return kept, dropped
+
+
 def _leg_is_unknown(prev, cur) -> bool:
     """Между двумя точками потерялся путь — соединять их прямой нельзя.
 
@@ -661,6 +802,12 @@ def build_track_segments(
          for t, lat, lon, s in points if t is not None),
         key=lambda p: p[0],
     )
+    if not pts:
+        return []
+
+    # ⚠️ Выбросы («телепорт» метки) убираем ДО нарезки: иначе к ложной точке
+    # тянется пунктир, и владелец читает его как «машина где-то там была».
+    pts, _dropped = drop_gps_spikes(pts)
     if not pts:
         return []
 
