@@ -1219,3 +1219,71 @@ def test_shifts_list_ignores_answers_of_old_requests():
     assert src.count("if (mine !== shiftsReq) return;") >= 2
     # Ошибку показываем с кодом ответа: «не удалось» без кода нечем чинить.
     assert "Не удалось загрузить смены (ошибка ' +" in src
+
+
+# ------------------------------------------------- расход топлива по балансу
+def test_noise_never_becomes_consumption_even_when_it_is_big():
+    """Сутки дрожания датчика на стоянке — это ноль расхода, а не сотни литров.
+
+    ⚠️ Именно здесь пряталось расхождение со Ставтрэком. Старый расчёт
+    складывал ВСЕ спуски кривой, а подъёмы между ними объявлял шумом и
+    выбрасывал. Датчик в баке гуляет вверх-вниз — и каждый ложный спуск капал
+    в расход, а возврат наверх не вычитался. На реальном дрожании ±3 л это
+    давало сотни литров из воздуха.
+    """
+    import random
+
+    random.seed(7)
+    t0 = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
+    parked = [(t0 + timedelta(seconds=40 * i), round(3000 + random.uniform(-20, 20)))
+              for i in range(2160)]                      # сутки по точке в 40 с
+    summary = telemetry_service.fuel_summary(parked, REAL_CALIBRATION)
+    assert summary["spent_l"] == 0.0, summary
+    assert summary["refuels"] == []
+
+
+def test_consumption_matches_reality_on_a_noisy_ride():
+    """На шумных данных расход обязан совпадать с реальным, а не «примерно».
+
+    Машина честно тратит топливо, датчик при этом дрожит ±3 л. Баланс бака
+    (сколько было − сколько стало + сколько залили) устойчив к такому шуму:
+    ложные спуски и подъёмы взаимно уничтожаются.
+    """
+    import random
+
+    random.seed(7)
+    t0 = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
+    points, level = [], 3100
+    for i in range(600):
+        level -= 1.2                                     # реальный расход
+        points.append((t0 + timedelta(seconds=40 * i), round(level + random.uniform(-18, 18))))
+
+    real = float(telemetry_service.fuel_litres(3100, REAL_CALIBRATION)
+                 - telemetry_service.fuel_litres(round(level), REAL_CALIBRATION))
+    got = telemetry_service.fuel_summary(points, REAL_CALIBRATION)["spent_l"]
+    assert abs(got - real) < real * 0.05, (got, real)
+
+
+def test_slow_refuel_spread_over_points_is_still_a_refuel():
+    """Налив на 300 литров идёт несколько минут — по одной точке его не видно.
+
+    Заправку ищем по непрерывному подъёму целиком (`fuel_runs`), а не по
+    одной дельте: иначе долив «размазывается», в заправки не попадает и
+    портит расход.
+    """
+    t0 = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
+    points, level = [], 1000
+    for i in range(20):                                  # ехали
+        level -= 10
+        points.append((t0 + timedelta(minutes=i), level))
+    for i in range(20, 32):                              # заправка по частям
+        level += 150
+        points.append((t0 + timedelta(minutes=i), level))
+    for i in range(32, 52):                              # поехали дальше
+        level -= 10
+        points.append((t0 + timedelta(minutes=i), level))
+
+    summary = telemetry_service.fuel_summary(points, REAL_CALIBRATION)
+    assert len(summary["refuels"]) == 1, summary["refuels"]
+    assert summary["refuelled_l"] > 100
+    assert summary["spent_l"] > 0
