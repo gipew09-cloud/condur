@@ -438,6 +438,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 .mon-window b { color: var(--mon-text); font-weight: 700; }
+/* Режимы периода. Ряд из трёх кнопок — первое, что владелец выбирает
+   после машины: сегодня, конкретная смена или произвольный интервал. */
+.mon-mode { display: flex; gap: 6px; padding: 0 12px 10px; flex: 0 0 auto; }
+.mon-mode button {
+  flex: 1; height: 32px; padding: 0 8px !important; border: 0; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 700; border-radius: 9px;
+  background: var(--mon-fill); color: var(--mon-text-2);
+  transition: background-color 160ms ease, color 160ms ease,
+              transform 140ms cubic-bezier(.23, 1, .32, 1);
+}
+.mon-mode button:active { transform: scale(.97); }
+.mon-mode button.is-on { background: rgba(37, 99, 235, .22); color: #1d4ed8; }
+.mon[data-mode="dark"] .mon-mode button.is-on { color: #9dc0ff; }
+.mon-period[hidden] { display: none; }
+
 .mon-quick { display: flex; gap: 6px; padding: 0 12px 10px; }
 .mon-quick button {
   flex: 1; height: 32px; border: 0; cursor: pointer; font: inherit;
@@ -719,6 +734,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-play__noplace b { color: var(--mon-text); }
 /* Вехи трека: где открыли смену и где машина поехала. Подписаны словами —
    значок без подписи владелец читать не обязан. */
+/* ⚠️ Вехи разводятся по ЭТАЖАМ. Начало смены, «тронулась» и конец часто
+   стоят в одном дворе — подписи ложились одна на другую и читалась только
+   верхняя (владелец 05.09.2026: «всё равно перекрывают друг друга»).
+   Этаж задаётся data-tier: 0 — над точкой, 1 — под точкой, 2 — ещё ниже. */
 .mon-milestone {
   padding: 3px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
   font-size: 10.5px; font-weight: 800; line-height: 1.4;
@@ -726,6 +745,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   box-shadow: 0 4px 12px -4px rgba(11,31,77,.6);
   transform: translate(-50%, -140%);
 }
+.mon-milestone[data-tier="1"] { transform: translate(-50%, 42%); }
+.mon-milestone[data-tier="2"] { transform: translate(-50%, 165%); }
 /* Значок действия водителя на линии трека. */
 /* ⚠️ Значок события — ЦВЕТНОЙ КРУЖОК с белым знаком внутри, а не эмодзи в
    белом круге. Эмодзи рисуются шрифтом системы: на Маке одни, на телефоне
@@ -741,6 +762,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   transition: transform 140ms cubic-bezier(.23, 1, .32, 1);
 }
 .mon-event .ph { font-size: 12px; }
+.mon-event__letter { font-size: 12px; font-weight: 800; line-height: 1; }
 @media (hover: hover) and (pointer: fine) {
   .mon-event:hover { transform: translate(-50%, -50%) scale(1.15); }
 }
@@ -1188,22 +1210,27 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         <span>Объект</span>
         <select id="mon-track-vehicle"></select>
       </label>
-      <div class="mon-period">
+      <!-- Период выбирается РЕЖИМОМ, как у Ставтрэка: сначала «что смотрим»,
+           и только для точного интервала показываются поля с датами.
+           Раньше два поля даты висели всегда и занимали место, хотя в 90 %
+           случаев нужен «сегодня». -->
+      <div class="mon-tracks__ttl">Период</div>
+      <div class="mon-mode" id="mon-mode">
+        <button type="button" data-mode="today" class="is-on">Сегодня</button>
+        <button type="button" data-mode="shift">Смена</button>
+        <button type="button" data-mode="exact">Точный интервал</button>
+      </div>
+      <div class="mon-period" id="mon-period" hidden>
         <label>с<input type="datetime-local" id="mon-from"></label>
         <label>по<input type="datetime-local" id="mon-to"></label>
       </div>
       <div class="mon-window" id="mon-window"></div>
-      <div class="mon-quick" id="mon-quick">
-        <button type="button" data-quick="today">Сегодня</button>
-        <button type="button" data-quick="yesterday">Вчера</button>
-        <button type="button" data-quick="week">7 дней</button>
-      </div>
       <div class="mon-quality" id="mon-quality" hidden></div>
       <!-- ⚠️ Трек не обязан быть «треком смены». Владелец 04.09.2026:
            «он записывает только где и когда смена начинается, я хотел
            углублённый трек». Эта кнопка проигрывает ВЕСЬ выбранный период
            целиком — со стоянками, двигателем и превышениями. -->
-      <div class="mon-whole">
+      <div class="mon-whole" id="mon-whole">
         <button type="button" id="mon-play-whole">Смотреть весь период</button>
       </div>
       <div class="mon-shifts" id="mon-shifts">
@@ -1221,7 +1248,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         <button type="button" data-kind="alarm"
           title="SOS, долгий простой, «ехал без смены», пропал сигнал"><i class="ph ph-warning"></i>Тревоги</button>
         <button type="button" data-kind="stop"
-          title="Где машина стояла дольше пяти минут"><i class="ph ph-car-profile"></i>Где стоял</button>
+          title="Где машина стояла дольше пяти минут"><i class="ph ph-car-profile"></i>Стоянки</button>
         <button type="button" data-kind="engine"
           title="Где заводили и где глушили двигатель"><i class="ph ph-key"></i>Завёл и заглушил</button>
         <button type="button" data-kind="speed"
@@ -2965,25 +2992,39 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
 
-    function setQuick(kind) {
-      var now = new Date();
-      var from = new Date(now), to = new Date(now);
-      if (kind === 'today') {
-        from.setHours(0, 0, 0, 0);
-      } else if (kind === 'yesterday') {
-        from.setDate(from.getDate() - 1); from.setHours(0, 0, 0, 0);
-        to = new Date(from); to.setHours(23, 59, 0, 0);
-      } else {
-        from.setDate(from.getDate() - 7); from.setHours(0, 0, 0, 0);
-      }
-      fromEl.value = localValue(from);
-      toEl.value = localValue(to);
-      paintWindow();
-      Array.prototype.forEach.call(document.querySelectorAll('#mon-quick button'), function (b) {
-        b.classList.toggle('is-on', b.dataset.quick === kind);
+    // ⚠️ Режим — это ответ на вопрос «что смотрим», а не «какие даты».
+    // «Сегодня» — с полуночи до сейчас; «Смена» — неделя, чтобы было из чего
+    // выбирать смену; «Точный интервал» — владелец ставит границы сам, и
+    // только тогда показываются поля дат.
+    var periodEl = document.getElementById('mon-period');
+    var periodMode = 'today';
+
+    function setPeriodMode(mode, keepDates) {
+      periodMode = mode;
+      Array.prototype.forEach.call(document.querySelectorAll('#mon-mode button'), function (b) {
+        b.classList.toggle('is-on', b.dataset.mode === mode);
       });
+      if (periodEl) periodEl.hidden = mode !== 'exact';
+      // В режиме «Смена» смотрят конкретную смену — «весь период» тут
+      // значил бы «вся неделя разом», это не то, что человек ищет.
+      var wholeBox = document.getElementById('mon-whole');
+      if (wholeBox) wholeBox.hidden = mode === 'shift';
+      if (mode !== 'exact' || !keepDates) {
+        var now = new Date();
+        var from = new Date(now), to = new Date(now);
+        if (mode === 'shift') {
+          from.setDate(from.getDate() - 7);
+        }
+        from.setHours(0, 0, 0, 0);
+        fromEl.value = localValue(from);
+        toEl.value = localValue(to);
+      }
+      paintWindow();
       loadShifts();
     }
+
+    // Старое имя оставлено: им пользуется переключение вкладок.
+    function setQuick(kind) { setPeriodMode(kind === 'today' ? 'today' : 'exact'); }
 
     function switchTab(tab) {
       Array.prototype.forEach.call(document.querySelectorAll('.mon-tab'), function (b) {
@@ -3002,16 +3043,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // перекрыли бы карточку живой машины.
       if (trackCardEl) trackCardEl.classList.toggle('mon-sheet-hide', tab !== 'tracks');
       if (tab === 'tracks') {
-        if (!fromEl.value) setQuick('today'); else loadShifts();
+        if (!fromEl.value) setPeriodMode(periodMode); else loadShifts();
       }
     }
 
     Array.prototype.forEach.call(document.querySelectorAll('.mon-tab'), function (b) {
       b.addEventListener('click', function () { switchTab(b.dataset.tab); });
     });
-    document.getElementById('mon-quick').addEventListener('click', function (e) {
-      var b = e.target.closest('button[data-quick]');
-      if (b) setQuick(b.dataset.quick);
+    document.getElementById('mon-mode').addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-mode]');
+      if (b) setPeriodMode(b.dataset.mode, true);
     });
     fromEl.addEventListener('change', loadShifts);
     toEl.addEventListener('change', loadShifts);
@@ -3285,7 +3326,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       money: 'ph-wallet', zone: 'ph-factory', alarm: 'ph-warning',
       // Дорожные события — то, что машина делала сама. Считаются по её же
       // точкам, поэтому место у них ТОЧНОЕ, а не «ближайшая точка трека».
-      stop: 'ph-car-profile', engine_on: 'ph-key', engine_off: 'ph-power',
+      // ⚠️ У стоянки не значок, а БУКВА «P»: владелец 05.09.2026 показал, как
+      // это выглядит у Ставтрэка, и букву читают все, без объяснений.
+      stop: 'letter:P', engine_on: 'ph-key', engine_off: 'ph-power',
       speeding: 'ph-timer', refuel: 'ph-gas-pump', drain: 'ph-drop-half'
     };
     var EVENT_COLORS = {
@@ -3376,21 +3419,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var el = document.createElement('div');
         el.className = 'mon-event';
         el.dataset.kind = ev.kind;
-        el.innerHTML = '<i class="ph ' + (EVENT_ICONS[ev.kind] || 'ph-circle') + '"></i>';
+        var icon = EVENT_ICONS[ev.kind] || 'ph-circle';
+        el.innerHTML = icon.indexOf('letter:') === 0
+          ? '<b class="mon-event__letter">' + icon.slice(7) + '</b>'
+          : '<i class="ph ' + icon + '"></i>';
         el.style.background = EVENT_COLORS[ev.kind] || '#1d4ed8';
         el.title = ev.at_label + ' — ' + ev.label;
-        el.addEventListener('click', function () {
-          showBalloon(LL(best.lat, best.lon),
-            '<div class="mon-balloon"><h4>' + esc(ev.label) + '</h4>' +
-            '<div class="meta">' + esc(ev.at_label) +
-            (ev.until ? ' — ' + hhmm(ev.until) : '') + '</div>' +
-            '<div class="meta">' + (own
-              ? 'Место посчитано по точкам трека'
-              : 'Место — ближайшая точка трека' +
-                (bestDiff > 60000
-                  ? ' (расхождение ' + Math.round(bestDiff / 60000) + ' мин)' : '')) +
-            '</div></div>');
-        });
+        el.addEventListener('click', function () { showEventBalloon(ev, best, own, bestDiff); });
         var marker = new YMapMarker(
           { coordinates: LL(best.lat, best.lon), zIndex: 880 }, el);
         ymap.addChild(marker);
@@ -3398,6 +3433,61 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       });
       placeMilestones();
       paintNoPlace();
+    }
+
+    // ⚠️ Карточка события — по образцу Ставтрэка (владелец 05.09.2026 прислал
+    // их вид): что случилось, дата, время, АДРЕС и сколько длилось. Адрес
+    // спрашиваем у своего геокодера по координатам события и кэшируем: без
+    // него «где это было» приходится искать на карте глазами.
+    var eventAddrCache = {};
+
+    function eventAddress(lat, lon, done) {
+      var key = lat.toFixed(4) + ',' + lon.toFixed(4);
+      if (eventAddrCache[key] !== undefined) { done(eventAddrCache[key]); return; }
+      fetch('/api/geocode/reverse?lat=' + lat + '&lon=' + lon)
+        .then(function (r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
+        .then(function (data) {
+          eventAddrCache[key] = data.address || null;
+          done(eventAddrCache[key]);
+        })
+        .catch(function () { eventAddrCache[key] = null; done(null); });
+    }
+
+    function showEventBalloon(ev, best, own, bestDiff) {
+      var when = new Date(ev.at);
+      var rows =
+        '<div class="meta">Дата: <b>' + when.toLocaleDateString('ru-RU', {
+          day: '2-digit', month: '2-digit', year: 'numeric'
+        }) + '</b></div>' +
+        '<div class="meta">Время: <b>' + hhmm(ev.at) +
+        (ev.until ? ' — ' + hhmm(ev.until) : '') + '</b></div>';
+      if (ev.duration_label) {
+        rows += '<div class="meta">Длительность: <b>' + esc(ev.duration_label) + '</b></div>';
+      }
+      if (ev.max_kmh) {
+        rows += '<div class="meta">Скорость: <b>' + ev.max_kmh + ' км/ч</b></div>';
+      }
+      if (ev.litres) {
+        rows += '<div class="meta">Объём: <b>' + Math.round(ev.litres) + ' л</b></div>';
+      }
+      var tail = '<div class="meta" data-role="addr">Адрес: определяю…</div>' +
+        '<div class="meta">' + (own
+          ? 'Место посчитано по точкам трека'
+          : 'Место — ближайшая точка трека' +
+            (bestDiff > 60000
+              ? ' (расхождение ' + Math.round(bestDiff / 60000) + ' мин)' : '')) +
+        '</div>';
+      showBalloon(LL(best.lat, best.lon),
+        '<div class="mon-balloon"><h4>' + esc(ev.label) + '</h4>' + rows + tail + '</div>');
+
+      // Адрес приезжает отдельно — карточка не должна его ждать.
+      eventAddress(best.lat, best.lon, function (address) {
+        var slot = balloonBox.querySelector('[data-role="addr"]');
+        if (!slot) return;
+        slot.innerHTML = address
+          ? 'Адрес: <b>' + esc(address) + '</b>'
+          : 'Адрес: <span style="opacity:.7">не определился</span>';
+      });
     }
 
     // ⚠️ Две РАЗНЫЕ точки, и владелец должен видеть обе.
@@ -3419,6 +3509,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
       // ⚠️ У «всего периода» смены нет: первая точка — это просто первая
       // точка, а не факт «водитель открыл смену». Подпись разная.
+      // ⚠️ Считаем, кто с кем рядом, и раскладываем подписи по этажам.
+      // Машина обычно ночует там же, где выезжает: начало, «тронулась» и
+      // конец оказываются в одном дворе, и без этажей видна только верхняя.
+      var NEAR_M = 250;
+      var movedNear = moved && play.departure > 0 &&
+        metresBetween(start.lat, start.lon, moved.lat, moved.lon) < NEAR_M;
+      var finishNear = finish !== start &&
+        metresBetween(start.lat, start.lon, finish.lat, finish.lon) < NEAR_M;
+
       if (play.shift && play.shift.whole) {
         addMilestone(start, 'Начало периода',
           hhmm(new Date(start.t).toISOString()), '#16a34a');
@@ -3427,19 +3526,22 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       }
       if (moved && play.departure > 0) {
         addMilestone(moved, 'Здесь тронулась',
-          hhmm(new Date(moved.t).toISOString()), '#1d4ed8');
+          hhmm(new Date(moved.t).toISOString()), '#1d4ed8', movedNear ? 1 : 0);
       }
-      // Конец пути. Ставим, только если он не совпал с началом — на коротком
-      // треке две подписи в одной точке налезают друг на друга.
-      if (finish !== start && metresBetween(start.lat, start.lon, finish.lat, finish.lon) > 30) {
+      // Конец пути ставим всегда, кроме случая «конец ровно в начале»:
+      // там подпись повторяла бы саму себя.
+      if (finish !== start &&
+          metresBetween(start.lat, start.lon, finish.lat, finish.lon) > 15) {
         addMilestone(finish, play.shift && play.shift.whole ? 'Конец периода' : 'Конец смены',
-          hhmm(new Date(finish.t).toISOString()), '#c5362b');
+          hhmm(new Date(finish.t).toISOString()), '#c5362b',
+          finishNear ? (movedNear ? 2 : 1) : 0);
       }
     }
 
-    function addMilestone(frame, title, when, color) {
+    function addMilestone(frame, title, when, color, tier) {
       var el = document.createElement('div');
       el.className = 'mon-milestone';
+      if (tier) el.dataset.tier = String(tier);
       el.style.borderColor = color;
       el.innerHTML = '<b style="color:' + color + '">' + esc(title) + '</b>';
       el.addEventListener('click', function () {
