@@ -4631,7 +4631,7 @@ async def api_vehicle_track(
     # Сколько точек оказалось невозможными («телепорт» метки). Считаем ЗДЕСЬ,
     # чтобы сказать об этом вслух: молча выброшенные точки — это тихая правка
     # доказательства, а трек мы предъявляем водителю.
-    _clean, gps_jumps = telemetry_service.drop_gps_spikes(
+    _clean, gps_dropped = telemetry_service.drop_unreachable_runs(
         [(_utc_moment(t), float(lat), float(lon), speed)
          for t, lat, lon, speed, *_ in rows]
     )
@@ -4658,9 +4658,11 @@ async def api_vehicle_track(
         "stops": len(stops),
         "gaps": len(gaps),
         "truncated": len(rows) >= _TRACK_POINT_LIMIT,
-        # Точки, до которых машина физически не могла доехать (подмена GPS).
-        # В геометрию трека они не идут — но владелец должен знать, что они были.
-        "gps_jumps": gps_jumps,
+        # Участки, куда машина попасть не могла (подмена GPS: сигнал глушат
+        # рядом с аэропортом и военными объектами). В геометрию трека они не
+        # идут — но владелец должен знать, что они были, и когда именно.
+        "gps_jumps": sum(run["points"] for run in gps_dropped),
+        "gps_dropped": gps_dropped,
         "departure_at": _departure_at(segments),
         "quality": _period_quality(rows, segments, since, until, now_utc),
         "segments": _with_instruments(segments, rows, vehicle),

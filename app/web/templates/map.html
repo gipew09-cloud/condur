@@ -2696,6 +2696,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       departure: 0,     // кадр, где машина тронулась: с него начинаем показ
       lastTick: 0,
       clock: 0,         // время трека, которое «прошло» с начала просмотра
+      standing: null,   // подпись «стоит …» — чтобы не перерисовывать зря
       drawn: -1         // какой кадр уже нарисован
     };
 
@@ -2824,10 +2825,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // ⚠️ Про выброшенные точки говорим вслух. Молча подчищенный трек — это
       // подправленное доказательство, даже если правка верная.
       if (data.gps_jumps) {
-        html += qualityRow('Скачки GPS', 'partial',
+        var runs = (data.gps_dropped || []).slice(0, 3).map(function (g) {
+          return hhmm(g.from) + ' — ' + hhmm(g.to) + ', ' + esc(g.duration_label) +
+            ' «в ' + g.away_km + ' км отсюда»';
+        }).join('; ');
+        html += qualityRow('Подмена GPS', 'partial',
           'Отброшено точек: ' + data.gps_jumps,
-          'Машина не могла там оказаться: сигнал глушили или подменяли. ' +
-          'На треке этих точек нет.');
+          'Машина не могла там оказаться — сигнал глушили. На треке этих ' +
+          'точек нет. ' + runs);
       }
 
       if (data.truncated) {
@@ -2853,6 +2858,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         '</b> — <b>' + human(toEl.value) + '</b>';
     }
 
+    // ⚠️ Номер запроса. Поля периода — `datetime-local`: браузер шлёт `change`
+    // на каждую правку, и запросов улетает несколько. Ответ СТАРОГО запроса
+    // приходил последним и затирал уже показанный список — владелец 04.09:
+    // «сначала две смены загружаются, а потом пишет, что не загружаются».
+    // Отвечает только последний запрос; ответы и ошибки прошлых — молча мимо.
+    var shiftsReq = 0;
+
     async function loadShifts() {
       paintWindow();
       if (selected === null) {
@@ -2860,13 +2872,22 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         return;
       }
       var v = byId(selected);
+      var mine = ++shiftsReq;
       shiftsEl.innerHTML = '<div class="mon-empty">Загружаю смены…</div>';
       loadQuality();
       try {
         var r = await fetch('/api/vehicles/' + selected + '/shifts?from=' +
           encodeURIComponent(fromEl.value) + '&to=' + encodeURIComponent(toEl.value));
-        if (!r.ok) { shiftsEl.innerHTML = '<div class="mon-empty">Не удалось загрузить смены.</div>'; return; }
+        if (mine !== shiftsReq) return;             // запрос устарел
+        if (!r.ok) {
+          // Код ответа пишем прямо на экран: без него «не удалось» нечем
+          // чинить — непонятно, упал сервер или оборвалась связь.
+          shiftsEl.innerHTML = '<div class="mon-empty">Не удалось загрузить смены (ошибка ' +
+            r.status + '). Попробуйте ещё раз.</div>';
+          return;
+        }
         var data = await r.json();
+        if (mine !== shiftsReq) return;
         if (selected !== data.vehicle_id) return;   // успели выбрать другую
         if (!data.shifts.length) {
           shiftsEl.innerHTML = '<div class="mon-empty">За этот период у ' +
@@ -2889,7 +2910,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         }).join('');
         shiftsEl._rows = data.shifts;
       } catch (e) {
-        shiftsEl.innerHTML = '<div class="mon-empty">Не удалось загрузить смены.</div>';
+        if (mine !== shiftsReq) return;             // запрос отменён новым
+        shiftsEl.innerHTML = '<div class="mon-empty">Не удалось загрузить смены: ' +
+          esc(e && e.message ? e.message : 'нет связи с сервером') + '.</div>';
       }
     }
 
@@ -3335,9 +3358,64 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // между двумя известными точками; это не выдумывание пути — линия трека
       // остаётся ровно той же, двигается только сама метка по ней.
       glideTo(play.clock);
+      // Время идёт всегда, даже когда точек нет: машина стоит на выгрузке.
+      paintClock(play.clock);
 
       if (play.at >= play.frames.length - 1) { setRunning(false); return; }
       play.raf = requestAnimationFrame(step);
+    }
+
+    // ⚠️ Камера ведёт машину НЕ ровно в центр экрана. Панель плеера висит
+    // сверху по центру и закрывает метку — владелец 04.09.2026: «эта штука
+    // сверху перекрывает иконку, не видно, где едет машина». Сдвигаем центр
+    // на север ровно на половину высоты панели, и метка выходит из-под неё.
+    // Возвращает готовую пару для карты (внутри тот же конвертер LL).
+    function followCenter(lat, lon) {
+      var box = mapRoot.getBoundingClientRect();
+      var panel = playEl.hidden ? 0 : playEl.getBoundingClientRect().height;
+      var shiftPx = Math.min(panel * 0.6, box.height * 0.28);
+      if (!shiftPx || !isFinite(shiftPx)) return LL(lat, lon);
+      // Сколько метров в пикселе на этой широте и этом масштабе.
+      var mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) /
+        Math.pow(2, ymap.zoom || 13);
+      return LL(lat + (shiftPx * mpp) / 111320, lon);
+    }
+
+    // Часы плеера. ⚠️ Раньше время писалось только при смене точки GPS —
+    // и на стоянке (точек нет, машина стоит у ворот РЦ) подпись замирала на
+    // час, хотя плеер шёл. Владелец 04.09: «время не работает… для человека
+    // непонятно». Теперь время идёт по СОБСТВЕННЫМ часам просмотра, а рядом
+    // написано, почему машина не двигается.
+    function paintClock(ms) {
+      var d = new Date(ms);
+      playClock.textContent = play.multiday ? dayTime(d) : hhmm(d.toISOString());
+      var stand = standingLabel(ms);
+      if (stand === play.standing) return;
+      play.standing = stand;
+      var el = document.getElementById('mon-play-standing');
+      if (!el) return;
+      el.textContent = stand;
+      el.hidden = !stand;
+    }
+
+    // Через сколько между точками считаем, что машина не едет, а стоит.
+    // Точки идут раз в ~40 секунд, поэтому три минуты — это уже не «пачка
+    // задержалась».
+    var STAND_MS = 3 * 60 * 1000;
+
+    function standingLabel(ms) {
+      var a = play.frames[play.at], b = play.frames[play.at + 1];
+      if (!a || !b || b.t - a.t < STAND_MS) return '';
+      var mins = Math.floor((ms - a.t) / 60000);
+      if (mins < 1) return '';
+      // Стоянка и потеря связи — РАЗНЫЕ факты, и путать их нельзя.
+      return (b.afterGap ? 'Связи нет ' : 'Стоит ') + minutesLabel(mins);
+    }
+
+    function minutesLabel(mins) {
+      if (mins < 60) return mins + ' мин';
+      var h = Math.floor(mins / 60), m = mins % 60;
+      return h + ' ч' + (m ? ' ' + m + ' мин' : '');
     }
 
     // Ведём метку между двумя соседними точками по времени — и вместе с ней
@@ -3367,7 +3445,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           }
         });
       }
-      ymap.setLocation({ center: LL(lat, lon) });
+      ymap.setLocation({ center: followCenter(lat, lon) });
     }
 
     function seekTo(index, keepClock) {
@@ -3401,7 +3479,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.marker.update({ coordinates: LL(frame.lat, frame.lon) });
       // Камера едет за машиной БЕЗ анимации: своя анимация на каждый кадр
       // догоняла бы предыдущую, и карта дёргалась.
-      ymap.setLocation({ center: LL(frame.lat, frame.lon) });
+      ymap.setLocation({ center: followCenter(frame.lat, frame.lon) });
 
       // Стрелка смотрит на следующую точку трека.
       var next = play.frames[play.at + 1];
@@ -3421,12 +3499,13 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var share = play.at / (play.frames.length - 1);
       playFill.style.width = (share * 100).toFixed(1) + '%';
       playBar.setAttribute('aria-valuenow', Math.round(share * 100));
-      // ⚠️ Если период больше суток, одно время без даты обманывает: ночной
-      // рейс читается как дневной. Владелец 30.08: «непонятно какой день».
-      playClock.textContent = play.multiday
-        ? dayTime(new Date(frame.t)) : hhmm(new Date(frame.t).toISOString());
-      playKm.textContent = frame.km.toFixed(1) + ' км';
+      playKm.textContent = frame.km.toFixed(1) + ' км по GPS';
       paintGauges(frame);
+      // ⚠️ Время берём из ЧАСОВ ПРОСМОТРА, а не из времени точки: на стоянке
+      // точка одна на час, и подпись замирала бы. Если период больше суток,
+      // пишем и дату — ночной рейс иначе читается как дневной.
+      play.standing = null;               // чип «стоит» перерисован ниже
+      paintClock(keepClock ? play.clock : frame.t);
     }
 
     function dayTime(d) {
@@ -3438,7 +3517,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // Показания приборов ровно на текущей точке. Прибор промолчал — пишем
     // «нет данных», а не подставляем прошлое значение: это разные факты.
     function paintGauges(frame) {
-      var parts = [];
+      // Первым — состояние: «стоит 1 ч 12 мин» / «связи нет 8 мин». Пусто,
+      // когда машина едет: точки идут подряд, и объяснять нечего.
+      var parts = ['<i id="mon-play-standing" data-on="0"' +
+        (standingLabel(play.clock) ? '' : ' hidden') + '>' +
+        standingLabel(play.clock) + '</i>'];
       if (frame.ign === true || frame.ign === false) {
         parts.push('<i data-on="' + (frame.ign ? 1 : 0) + '">Зажигание <b>' +
           (frame.ign ? 'вкл' : 'выкл') + '</b></i>');

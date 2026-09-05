@@ -677,48 +677,101 @@ def _implausible_leg_kmh(a, b) -> float | None:
     return (metres / seconds) * 3.6
 
 
-def drop_gps_spikes(points: list[tuple]) -> tuple[list[tuple], int]:
-    """Выбросить точки, куда машина улететь не могла, и тут же вернуться.
+# Насколько далеко участок должен «уехать» от соседей, чтобы считать его
+# подменой, а не погрешностью: 20 км — это уже другой город.
+UNREACHABLE_MIN_M = 20_000
+# Дальше этого по времени судить нельзя: за 15 минут молчания машина могла
+# честно уехать куда угодно.
+UNREACHABLE_JUDGE_SECONDS = 15 * 60
 
-    Владелец 04.09.2026: «точка телепортирует на секунду в какое-то другое
-    место и обратно». Такие точки приходят от трекера с признаком «координаты
-    достоверны»: рядом с аэропортом и военными объектами сигнал глушат и
-    подменяют ([[project_gps_spoofing_connectivity]]).
 
-    Правило намеренно строгое — выбрасываем только явный ВЫБРОС:
-      * до точки скорость невозможна (> TRACK_LEG_MAX_KMH),
-      * и после точки — тоже,
-      * и соседи при этом рядом друг с другом (машина «вернулась»).
+def _leg_impossible(a, b) -> bool:
+    """Между двумя точками машина оказаться не могла — при любой скорости."""
+    from app.services import rc_service
 
-    Одностороннего скачка мало: так выглядит и честная точка после потери
-    связи. Её выбрасывать нельзя — это настоящее место машины, и трек рисует
-    туда пунктир («путь неизвестен»).
+    seconds = (b[0] - a[0]).total_seconds()
+    if seconds <= 0 or seconds > UNREACHABLE_JUDGE_SECONDS:
+        return False                      # долго молчал — судить не о чем
+    metres = rc_service.haversine_m(a[1], a[2], b[1], b[2])
+    if metres <= TRACK_LEG_MAX_M:
+        return False
+    return (metres / seconds) * 3.6 > TRACK_LEG_MAX_KMH
 
-    ⚠️ Точки не двигаем и не усредняем. Либо точка остаётся как есть, либо её
-    нет вовсе — сглаживание рисует красивый и ложный трек.
+
+def drop_unreachable_runs(points: list[tuple]) -> tuple[list[tuple], list[dict]]:
+    """Выбросить УЧАСТКИ, куда машина попасть не могла, и вернуться обратно.
+
+    Владелец 04.09.2026: «у нас обычно геолокацию глушат на вот этот остров, и
+    машина действительно в какой-то момент попала на этот остров и покаталась
+    по кругу». Это не одна битая точка (её ловил прошлый фильтр), а целая
+    пачка правдоподобных точек в чужом месте: подменённый сигнал ведёт себя
+    как настоящий — едет, поворачивает, стоит.
+
+    Опознаём по трём признакам сразу:
+      1. хотя бы одна граница участка — физически невозможный переход
+         (`_leg_impossible`): 100 км за минуту не бывает;
+      2. участок дальше UNREACHABLE_MIN_M от того, что было ДО и ПОСЛЕ него;
+      3. соседи при этом рядом друг с другом — машина «вернулась» туда, откуда
+         «улетела».
+
+    ⚠️ Одного «далеко» мало: машина может честно уехать за 100 км, пока
+    трекер молчит. Поэтому пункт 1 обязателен — без доказанной невозможности
+    точки остаются на месте, а разрыв рисуется пунктиром «путь неизвестен».
+
+    ⚠️ Последний участок периода не судим: вернулась машина или нет — ещё
+    неизвестно, а объявить настоящее место подделкой хуже, чем оставить
+    сомнительное.
+
+    Возвращает (оставшиеся точки, список выброшенных участков).
     """
     from app.services import rc_service
 
     if len(points) < 3:
-        return list(points), 0
+        return list(points), []
 
-    kept = [points[0]]
-    dropped = 0
-    for i in range(1, len(points) - 1):
-        prev, cur, nxt = kept[-1], points[i], points[i + 1]
-        into = _implausible_leg_kmh(prev, cur)
-        out = _implausible_leg_kmh(cur, nxt)
-        if (
-            into is not None and out is not None
-            and into > TRACK_LEG_MAX_KMH and out > TRACK_LEG_MAX_KMH
-        ):
-            away = rc_service.haversine_m(prev[1], prev[2], cur[1], cur[2])
-            back = rc_service.haversine_m(prev[1], prev[2], nxt[1], nxt[2])
-            if back < away / 2:          # сосед вернулся туда, откуда улетели
-                dropped += 1
+    # Режем на участки там, где путь между точками НЕ ИЗВЕСТЕН: либо переход
+    # физически невозможен, либо машина надолго замолчала. Второе обязательно:
+    # подменённый участок может закончиться просто молчанием, и тогда он
+    # склеился бы с настоящим продолжением в один кусок.
+    runs: list[list[tuple]] = [[points[0]]]
+    impossible_before = [False]           # была ли граница слева НЕВОЗМОЖНОЙ
+    for prev, cur in zip(points, points[1:]):
+        impossible = _leg_impossible(prev, cur)
+        if impossible or _leg_is_unknown(prev, cur):
+            runs.append([cur])
+            impossible_before.append(impossible)
+        else:
+            runs[-1].append(cur)
+    if len(runs) < 3:
+        return list(points), []
+
+    kept: list[tuple] = []
+    dropped: list[dict] = []
+    for i, run in enumerate(runs):
+        suspect = 0 < i < len(runs) - 1
+        if suspect:
+            before, after = runs[i - 1][-1], runs[i + 1][0]
+            away_in = rc_service.haversine_m(before[1], before[2], run[0][1], run[0][2])
+            away_out = rc_service.haversine_m(run[-1][1], run[-1][2], after[1], after[2])
+            back = rc_service.haversine_m(before[1], before[2], after[1], after[2])
+            left_bad, right_bad = impossible_before[i], impossible_before[i + 1]
+            returned = back < max(away_in, away_out) / 2
+            # Обе границы невозможны — это выброс любой длины (хоть одна точка).
+            # Одна граница — верим только если участок реально далеко: так
+            # выглядит подмена, а не погрешность.
+            proven = (left_bad and right_bad) or (
+                (left_bad or right_bad) and min(away_in, away_out) > UNREACHABLE_MIN_M
+            )
+            if proven and returned:
+                dropped.append({
+                    "from": run[0][0].isoformat(),
+                    "to": run[-1][0].isoformat(),
+                    "points": len(run),
+                    "away_km": round(max(away_in, away_out) / 1000, 1),
+                    "duration_label": duration_label(run[0][0], run[-1][0]),
+                })
                 continue
-        kept.append(cur)
-    kept.append(points[-1])
+        kept.extend(run)
     return kept, dropped
 
 
@@ -807,7 +860,7 @@ def build_track_segments(
 
     # ⚠️ Выбросы («телепорт» метки) убираем ДО нарезки: иначе к ложной точке
     # тянется пунктир, и владелец читает его как «машина где-то там была».
-    pts, _dropped = drop_gps_spikes(pts)
+    pts, _dropped = drop_unreachable_runs(pts)
     if not pts:
         return []
 
