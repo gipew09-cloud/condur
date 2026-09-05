@@ -4481,6 +4481,143 @@ def _with_instruments(segments: list[dict], rows, vehicle) -> list[dict]:
     return segments
 
 
+# =========================================================================
+# Дорожные события трека: стоянки, «завёл/заглушил», превышение, топливо.
+# =========================================================================
+# ⚠️ Это НЕ действия водителя. Действия (кнопки в боте) координат не имеют, и
+# место им ищет карта по времени. Дорожные события посчитаны ИЗ САМИХ ТОЧЕК,
+# поэтому координата у них — факт, а не догадка, и её отдаёт сервер.
+#
+# Порог превышения — константа, а не настройка машины: у Ставтрэка это поле в
+# карточке устройства (у них 120 км/ч), у нас настроек машины пока нет.
+# 90 км/ч — предел для грузовика по ПДД на автомагистрали.
+_SPEEDING_KMH = 90
+_SPEEDING_MIN_SECONDS = 60
+# Стоянки короче пяти минут значками не сорим: на светофорах и у ворот их
+# десятки, и трек превращается в кашу. Сами отрезки трека остаются на месте.
+_STOP_EVENT_MIN_SECONDS = 300
+
+
+def _nearest_point(rows, moment: datetime, limit_seconds: int = 300):
+    """Ближайшая по времени точка. None — если ближе лимита ничего нет."""
+    best, best_diff = None, None
+    for row in rows:
+        at = _utc_moment(row[0])
+        if at is None:
+            continue
+        diff = abs((at - moment).total_seconds())
+        if best_diff is None or diff < best_diff:
+            best, best_diff = row, diff
+    if best is None or best_diff > limit_seconds:
+        return None
+    return best
+
+
+def _speeding_runs(rows) -> list[dict]:
+    """Участки, где машина дольше минуты шла быстрее порога.
+
+    Берём скорость ПРИБОРА, а не считаем её по расстоянию между точками:
+    предъявлять водителю нужно то, что записал трекер.
+    """
+    runs: list[dict] = []
+    run: list = []
+    for row in rows:
+        at, lat, lon, speed = _utc_moment(row[0]), row[1], row[2], row[3]
+        fast = at is not None and speed is not None and float(speed) > _SPEEDING_KMH
+        if fast:
+            run.append((at, float(lat), float(lon), float(speed)))
+            continue
+        if run:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+
+    out = []
+    for run in runs:
+        seconds = (run[-1][0] - run[0][0]).total_seconds()
+        if seconds < _SPEEDING_MIN_SECONDS:
+            continue
+        top = max(run, key=lambda p: p[3])
+        out.append({
+            "at": top[0].isoformat(),
+            "lat": top[1],
+            "lon": top[2],
+            "max_kmh": round(top[3]),
+            "seconds": int(seconds),
+        })
+    return out
+
+
+def _road_events(rows, segments, vehicle, tz) -> list[dict]:
+    """Что происходило с машиной на треке — по её же точкам.
+
+    Владелец 04–05.09.2026 просил «углублённый трек, а не трек смены»: чтобы
+    на карте было видно не только линию, но и что машина делала — где стояла,
+    где заводили и глушили двигатель, где летела, где заправлялась.
+    Ровно эти шесть значков есть у Ставтрэка («Дорожные события»).
+    """
+    events: list[dict] = []
+
+    def add(kind, at, lat, lon, label, **extra):
+        events.append({
+            "kind": kind,
+            "at": at.isoformat() if hasattr(at, "isoformat") else at,
+            "at_label": fmt_dt(at, tz, "%d.%m, %H:%M"),
+            "lat": float(lat),
+            "lon": float(lon),
+            "label": label,
+            **extra,
+        })
+
+    # 1. Стоянки — готовые отрезки трека, координата уже посчитана.
+    for seg in segments:
+        if seg["kind"] != "stop" or seg.get("seconds", 0) < _STOP_EVENT_MIN_SECONDS:
+            continue
+        add("stop", datetime.fromisoformat(seg["start"]), seg["lat"], seg["lon"],
+            "Стоянка " + seg["duration_label"],
+            until=seg["end"], duration_label=seg["duration_label"])
+
+    # 2. «Завёл» и «заглушил». Дребезг датчика уже склеен в _ignition_runs,
+    #    иначе один кривой пакет рождал бы «завёл/заглушил» на ровном месте.
+    for change in telemetry_service.ignition_transitions(
+        [(_utc_moment(r[0]), r[7]) for r in rows]
+    ):
+        point = _nearest_point(rows, change["at"])
+        if point is None:
+            continue
+        add("engine_on" if change["on"] else "engine_off",
+            change["at"], point[1], point[2],
+            "Завёл двигатель" if change["on"] else "Заглушил двигатель")
+
+    # 3. Превышение скорости.
+    for run in _speeding_runs(rows):
+        add("speeding", datetime.fromisoformat(run["at"]), run["lat"], run["lon"],
+            "Превышение " + str(run["max_kmh"]) + " км/ч",
+            max_kmh=run["max_kmh"], seconds=run["seconds"])
+
+    # 4. Заправки и сливы. ⚠️ Только при тарировке бака: без неё литров нет,
+    #    а «примерно столько» — выдуманное число.
+    fuel = telemetry_service.fuel_summary(
+        [(_utc_moment(r[0]), r[5]) for r in rows],
+        getattr(vehicle, "fuel_calibration", None),
+    )
+    if fuel:
+        for kind, items, word in (("refuel", fuel["refuels"], "Заправка"),
+                                  ("drain", fuel["drains"], "Похоже на слив")):
+            for item in items:
+                moment = datetime.fromisoformat(item["at"])
+                point = _nearest_point(rows, moment)
+                if point is None:
+                    continue
+                add(kind, moment, point[1], point[2],
+                    word + " " + str(round(item["litres"])) + " л",
+                    litres=item["litres"])
+
+    events.sort(key=lambda e: e["at"])
+    return events
+
+
 def _period_quality(rows, segments, since, until, now_utc) -> dict:
     """Честный ответ на вопрос «а есть ли вообще данные за этот период».
 
@@ -4665,6 +4802,8 @@ async def api_vehicle_track(
         "gps_dropped": gps_dropped,
         "departure_at": _departure_at(segments),
         "quality": _period_quality(rows, segments, since, until, now_utc),
+        # Что машина делала: стоянки, «завёл/заглушил», превышения, топливо.
+        "road_events": _road_events(rows, segments, vehicle, owner.timezone),
         "segments": _with_instruments(segments, rows, vehicle),
     }
 
