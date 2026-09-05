@@ -439,8 +439,10 @@ def test_tracks_tab_has_a_player_like_the_design():
     assert "в эти минуты GPS молчал" in src
     assert "/events?from=" in src
 
-    # камера едет за машиной по треку
-    assert "ymap.setLocation({ center: LL(frame.lat, frame.lon)" in src
+    # камера едет за машиной по треку — но НЕ ровно в центр экрана: сверху
+    # панель плеера, и она закрывала собой метку (жалоба 04.09.2026)
+    assert "ymap.setLocation({ center: followCenter(frame.lat, frame.lon)" in src
+    assert "function followCenter(lat, lon)" in src
 
     # ⚠️ У панелей свой display, он специфичнее браузерного [hidden] — без
     # этого правила «Объекты» и «Треки» видны одновременно
@@ -927,8 +929,11 @@ def test_map_never_hands_raw_lat_lon_to_yandex_3_0():
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     assert "function LL(lat, lon) { return [lon, lat]; }" in src
     assert "function LLp(p) { return [p[1], p[0]]; }" in src
+    # followCenter — та же пара координат, только со сдвигом центра на высоту
+    # панели плеера; внутри она возвращает LL(). Разрешена как обёртка: сырых
+    # lat/lon в карту по-прежнему не уходит.
     allowed = ("LL(", "LLp(", "LLline(", "boundsOf(", "[circleRing(",
-               "c.coords", "lngLat")
+               "c.coords", "lngLat", "followCenter(")
     for field in ("coordinates:", "center:", "bounds:"):
         for m in re.finditer(re.escape(field) + r"\s*([^,\n}]+)", src):
             value = m.group(1).strip()
@@ -1164,3 +1169,53 @@ def test_voltage_from_history_cannot_be_hours_old():
     assert "_VOLTAGE_FALLBACK_WINDOW = timedelta(minutes=15)" in src
     assert "- _VOLTAGE_FALLBACK_WINDOW," in src
     assert "datetime.now(timezone.utc) - timedelta(hours=2)" not in src
+
+
+# ------------------------------------------------- часы плеера и стоянки
+def test_player_clock_keeps_running_while_the_car_stands():
+    """Время идёт всегда — даже когда точек нет и машина стоит на выгрузке.
+
+    Владелец 04.09.2026: «время не работает… машина в 12:00 стоит, плеер идёт,
+    и для человека непонятно». Подпись времени менялась только при переходе на
+    новую точку GPS, а на стоянке точка одна на час — часы замирали, хотя
+    просмотр шёл. Теперь время берётся из СОБСТВЕННЫХ часов плеера.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "function paintClock(ms)" in src
+    assert "function standingLabel(ms)" in src
+
+    # ⚠️ `step(now)` в файле не одна — так называются и кадры других анимаций.
+    # Нужна ПОСЛЕДНЯЯ: это шаг проигрывателя трека.
+    step = src.split("function step(now)")[-1].split("// Ведём метку")[0]
+    assert "paintClock(play.clock);" in step        # каждый кадр, а не на точке
+
+    # Стоянка и потеря связи — разные факты, подписи тоже разные.
+    assert "'Связи нет '" in src and "'Стоит '" in src
+    # ⚠️ Чип состояния рисуется первым в приборах, чтобы его было видно сразу.
+    assert 'id="mon-play-standing"' in src
+
+
+def test_player_km_says_it_is_gps_not_odometer():
+    """В плеере счётчик — путь по GPS. Имя обязано называть источник.
+
+    Одно число «км» на два разных смысла (GPS-путь и одометр) уже однажды
+    чуть не подставило владельца в споре с водителем.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "' км по GPS'" in src
+
+
+def test_shifts_list_ignores_answers_of_old_requests():
+    """Ответ устаревшего запроса не затирает уже показанный список.
+
+    Владелец 04.09.2026: «сначала две смены загружаются, а потом пишет, что не
+    загружаются». Поля периода — `datetime-local`: браузер шлёт `change` на
+    каждую правку, запросов улетает несколько, и последним приходил ответ
+    (или ошибка) САМОГО СТАРОГО.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "var shiftsReq = 0;" in src
+    assert "var mine = ++shiftsReq;" in src
+    assert src.count("if (mine !== shiftsReq) return;") >= 2
+    # Ошибку показываем с кодом ответа: «не удалось» без кода нечем чинить.
+    assert "Не удалось загрузить смены (ошибка ' +" in src

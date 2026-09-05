@@ -489,8 +489,8 @@ def test_gps_spike_is_dropped_but_a_real_point_after_a_gap_is_kept():
     points.append((t0 + timedelta(seconds=40 * 3 + 20), lat + 0.112, lon + 0.1, 42))
     points.sort(key=lambda p: p[0])
 
-    clean, dropped = telemetry_service.drop_gps_spikes(points)
-    assert dropped == 1
+    clean, dropped = telemetry_service.drop_unreachable_runs(points)
+    assert len(dropped) == 1 and dropped[0]["points"] == 1
     assert all(abs(p[1] - (lat + 0.112)) > 1e-9 for p in clean)
 
     # честная точка после минутного молчания остаётся на месте
@@ -499,7 +499,7 @@ def test_gps_spike_is_dropped_but_a_real_point_after_a_gap_is_kept():
         (t0 + timedelta(minutes=1), 59.95, 30.52, 40),
         (t0 + timedelta(minutes=1, seconds=40), 59.951, 30.521, 40),
     ]
-    assert telemetry_service.drop_gps_spikes(after_gap)[1] == 0
+    assert telemetry_service.drop_unreachable_runs(after_gap)[1] == []
 
 
 def test_track_has_no_dashed_excursion_to_a_spike():
@@ -550,3 +550,64 @@ def test_receiver_marks_the_jump_instead_of_moving_the_car():
     src = open("app/telemetry/egts_receiver.py", encoding="utf-8").read()
     assert src.count("telemetry_service.gps_jump_reason(") == 2   # оба протокола
     assert src.count("jump or \"нет достоверных координат (GPS)\"") == 2
+
+
+def test_spoofed_island_run_is_dropped_whole():
+    """Подменённый УЧАСТОК: машина «уехала» на остров и каталась там кругами.
+
+    Владелец 04.09.2026: «у нас обычно геолокацию глушат на вот этот остров, и
+    машина действительно в какой-то момент попала на этот остров и покаталась
+    по кругу». Одиночную битую точку фильтр ловил и раньше — а здесь приходит
+    пачка правдоподобных точек: они едут, поворачивают, стоят.
+
+    Признаки, по которым это опознаётся: попасть туда было невозможно, участок
+    далеко (> 20 км) от того, что было до и после, а соседи рядом друг с другом
+    — то есть машина «вернулась» туда, откуда «улетела».
+    """
+    import math
+
+    from app.services import telemetry_service
+
+    t0 = datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc)
+    spb = [(t0 + timedelta(seconds=40 * i), 59.85 + i * 0.001, 30.42, 45)
+           for i in range(30)]
+    t1 = t0 + timedelta(seconds=40 * 30)
+    island = [(t1 + timedelta(seconds=40 * j),
+               60.118 + 0.01 * math.sin(j * 0.1),
+               31.383 + 0.01 * math.cos(j * 0.1), 120) for j in range(60)]
+    # выход из подмены — просто молчание, а не второй «невозможный» переход
+    t2 = island[-1][0] + timedelta(minutes=20)
+    back = [(t2 + timedelta(seconds=40 * k), 59.88 + k * 0.001, 30.42, 40)
+            for k in range(20)]
+
+    kept, dropped = telemetry_service.drop_unreachable_runs(spb + island + back)
+    assert len(dropped) == 1
+    assert dropped[0]["points"] == 60
+    assert dropped[0]["away_km"] > 20
+    assert len(kept) == 50
+    # на карте от острова не остаётся даже пунктира
+    segments = telemetry_service.build_track_segments(
+        spb + island + back, window_end=back[-1][0] + timedelta(minutes=5)
+    )
+    assert all(
+        all(p[1] < 31 for p in (seg.get("points") or []))
+        for seg in segments
+    )
+
+
+def test_honest_long_trip_there_and_back_is_never_dropped():
+    """Машина честно съездила за 100 км и вернулась — это НЕ подмена.
+
+    ⚠️ Главный риск фильтра: выбросить настоящую поездку. Поэтому «далеко и
+    вернулась» само по себе ничего не значит — нужна доказанная невозможность
+    перехода. Здесь точки идут всю дорогу, разрывов нет, и выбрасывать нечего.
+    """
+    from app.services import telemetry_service
+
+    t0 = datetime(2026, 8, 31, 6, 0, tzinfo=timezone.utc)
+    there = [(t0 + timedelta(seconds=40 * k), 59.85 + k * 0.003, 30.42 + k * 0.011, 90)
+             for k in range(90)]
+    back = [(there[-1][0] + timedelta(seconds=40 * (k + 1)),
+             59.85 + (89 - k) * 0.003, 30.42 + (89 - k) * 0.011, 90)
+            for k in range(90)]
+    assert telemetry_service.drop_unreachable_runs(there + back)[1] == []
