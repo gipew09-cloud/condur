@@ -461,6 +461,51 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-quality__val { font-size: 12.5px; font-weight: 600; color: var(--mon-text); }
 .mon-quality__val small { display: block; font-weight: 500; color: var(--mon-text-2); font-size: 11.5px; }
 .mon-quality__gaps { margin: 0; padding-left: 14px; color: var(--mon-text-2); font-size: 11.5px; }
+/* Выбор машины во вкладке «Треки» — первое, что делает владелец. */
+.mon-object { flex: 0 0 auto; display: block; padding: 12px 12px 8px; }
+.mon-object span {
+  display: block; margin-bottom: 5px;
+  font-size: 11px; font-weight: 800; letter-spacing: .02em;
+  text-transform: uppercase; color: var(--mon-text-3);
+}
+.mon-object select {
+  width: 100%; height: 38px; margin: 0; padding: 0 10px;
+  border-radius: 10px; border: 1px solid var(--mon-border);
+  background: var(--mon-fill); color: var(--mon-text);
+  font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.mon-tracks__ttl {
+  flex: 0 0 auto; padding: 2px 12px 6px;
+  font-size: 11px; font-weight: 800; letter-spacing: .02em;
+  text-transform: uppercase; color: var(--mon-text-3);
+}
+.mon-tracks .mon-play__filters { flex: 0 0 auto; padding: 0 12px 12px; margin-top: 0; }
+
+/* Показания на точке трека — правая панель вместо карточки живой машины. */
+.mon-panel--track { padding-bottom: 12px; }
+.mon-track-card__head {
+  display: flex; align-items: center; gap: 9px; padding: 13px 14px 10px;
+}
+.mon-track-card__head > i.ph { font-size: 18px; color: #1d4ed8; }
+.mon[data-mode="dark"] .mon-track-card__head > i.ph { color: #9dc0ff; }
+.mon-track-card__id { flex: 1; min-width: 0; }
+.mon-track-card__id strong {
+  display: block; font-size: 20px; font-weight: 800; letter-spacing: -.02em;
+  font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--mon-text);
+}
+.mon-track-card__id small { display: block; font-size: 11.5px; color: var(--mon-text-2); }
+.mon-track-card__km {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px; font-weight: 800; color: var(--mon-text-2); text-align: right;
+}
+.mon-track-card__state {
+  margin: 0 14px 10px; padding: 8px 10px; border-radius: 10px;
+  background: rgba(148,163,184,.18); color: var(--mon-text-2);
+  font-size: 12.5px; font-weight: 700;
+}
+.mon-track-card__state[hidden] { display: none; }
+.mon-panel--track .mon-play__noplace { margin: 10px 14px 0; }
+
 .mon-whole { flex: 0 0 auto; padding: 0 12px 10px; }
 .mon-whole button {
   width: 100%; height: 34px; padding: 0 10px !important; border: 0;
@@ -508,8 +553,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
      rgb(55,60,68) на почти чёрном фоне, заголовок смены читался с трудом.
      Нашлось только когда открыл страницу и посмотрел, а не по коду. */
   color: var(--mon-text);
-  position: absolute; z-index: 6; left: 50%; transform: translateX(-50%);
-  top: 12px; width: 366px; max-width: calc(100% - 24px);
+  /* ⚠️ Плеер центрируется НЕ по всей карте, а по свободному месту между
+     панелями: слева список треков (356 + 16), справа показания точки
+     (350 + 16). При центрировании по карте на экране 1100 он залезал на
+     левую панель — померено в браузере. `left` + `right` + `margin: auto`
+     держат его ровно посередине промежутка на любой ширине. */
+  position: absolute; z-index: 6;
+  top: 12px; left: 388px; right: 382px; margin: 0 auto;
+  width: auto; max-width: 420px; min-width: 260px;
   padding: 12px 14px 11px; box-sizing: border-box;
   background: var(--mon-surface); border: 1px solid var(--mon-border);
   border-radius: 16px; box-shadow: var(--mon-panel-shadow);
@@ -523,8 +574,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
    анимации уезжает вправо на пол-своей ширины. */
 .mon-play { animation: monPlayIn 220ms cubic-bezier(.23, 1, .32, 1); }
 @keyframes monPlayIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(-8px) scale(.98); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(-8px) scale(.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 .mon-play__top { display: flex; align-items: center; gap: 8px; }
 .mon-play__top i.ph { color: #1d4ed8; font-size: 16px; }
@@ -650,17 +701,30 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   transform: translate(-50%, -140%);
 }
 /* Значок действия водителя на линии трека. */
+/* ⚠️ Значок события — ЦВЕТНОЙ КРУЖОК с белым знаком внутри, а не эмодзи в
+   белом круге. Эмодзи рисуются шрифтом системы: на Маке одни, на телефоне
+   другие, размер пляшет, цвет не задать. Владелец 05.09.2026 показал, как
+   это выглядит у Ставтрэка, — там цвет сразу говорит, что за событие. */
 .mon-event {
   width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
-  display: grid; place-items: center; font-size: 12px; line-height: 1;
-  background: var(--mon-surface); border: 2px solid #1d4ed8;
-  box-shadow: 0 4px 12px -4px rgba(11,31,77,.6);
+  display: grid; place-items: center; line-height: 1;
+  color: #fff; background: #1d4ed8;
+  border: 2px solid rgba(255, 255, 255, .92);
+  box-shadow: 0 4px 12px -4px rgba(11,31,77,.7);
   transform: translate(-50%, -50%);
+  transition: transform 140ms cubic-bezier(.23, 1, .32, 1);
 }
+.mon-event .ph { font-size: 12px; }
+@media (hover: hover) and (pointer: fine) {
+  .mon-event:hover { transform: translate(-50%, -50%) scale(1.15); }
+}
+.mon[data-mode="dark"] .mon-event { border-color: rgba(13, 21, 36, .85); }
 .mon-play__hint { margin-top: 8px; font-size: 11.5px; color: var(--mon-text-2); }
 
-@media (max-width: 720px) {
-  .mon-play { top: 8px; width: auto; left: 8px; right: 8px; transform: none; }
+/* На узком экране панелей по бокам уже нет (список уезжает в шторку) —
+   плеер занимает всю ширину карты. */
+@media (max-width: 1024px) {
+  .mon-play { top: 8px; left: 8px; right: 8px; margin: 0; max-width: none; }
 }
 
 /* ---------- метка машины ----------
@@ -1086,6 +1150,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     </div>
 
     <div class="mon-tracks" data-pane="tracks" hidden>
+      <!-- ⚠️ Машину выбирают ЗДЕСЬ, а не тыкая в неё на карте. Владелец
+           05.09.2026: «машину можно повыбирать, не тыкая её на карте» —
+           у Ставтрэка это первое поле панели треков, и он прав: искать
+           нужную машину среди меток на карте неудобно. -->
+      <label class="mon-object">
+        <span>Объект</span>
+        <select id="mon-track-vehicle"></select>
+      </label>
       <div class="mon-period">
         <label>с<input type="datetime-local" id="mon-from"></label>
         <label>по<input type="datetime-local" id="mon-to"></label>
@@ -1106,6 +1178,26 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       </div>
       <div class="mon-shifts" id="mon-shifts">
         <div class="mon-empty">Выберите машину — покажу её смены за период.</div>
+      </div>
+      <!-- Фильтр значков переехал из плеера сюда: плеер по центру карты
+           должен быть узким (он закрывает саму дорогу), а список «что
+           показывать» — спокойно живёт в боковой панели, как у Ставтрэка. -->
+      <div class="mon-tracks__ttl">Что показывать на треке</div>
+      <div class="mon-play__filters" id="mon-play-filters">
+        <button type="button" data-kind="driver"
+          title="Что водитель нажимал в боте: смена, рейс, фото, расходы"><i class="ph ph-hand-tap"></i>Водитель</button>
+        <button type="button" data-kind="zone"
+          title="Приезды на РЦ и отъезды с них"><i class="ph ph-factory"></i>Геозоны</button>
+        <button type="button" data-kind="alarm"
+          title="SOS, простои, «ехал без смены», пропал сигнал"><i class="ph ph-warning"></i>Тревоги</button>
+        <button type="button" data-kind="stop"
+          title="Где машина стояла дольше 5 минут"><i class="ph ph-car-profile"></i>Стоянки</button>
+        <button type="button" data-kind="engine"
+          title="Где заводили и где глушили двигатель"><i class="ph ph-key"></i>Двигатель</button>
+        <button type="button" data-kind="speed"
+          title="Где машина шла быстрее 90 км/ч дольше минуты"><i class="ph ph-timer"></i>Превышения</button>
+        <button type="button" data-kind="fuel"
+          title="Где заправлялись и где уровень упал слишком резко"><i class="ph ph-gas-pump"></i>Топливо</button>
       </div>
     </div>
     <div class="mon-foot" data-pane="objects">
@@ -1147,6 +1239,26 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     </div>
   </aside>
 
+  <!-- ⚠️ Показания точки — В ОТДЕЛЬНОЙ ПРАВОЙ ПАНЕЛИ, а не в плеере.
+       Владелец 05.09.2026: «данные, литры топлива — они мелкие, плохо
+       заметить». В плеере они и правда были мелкими плашками; здесь для них
+       есть ширина, и они читаются с расстояния. Панель занимает место
+       карточки живой машины — на вкладке «Треки» та всё равно скрыта. -->
+  <aside class="mon-panel mon-panel--card mon-panel--track" id="mon-track-card"
+         aria-label="Показания на точке трека" hidden>
+    <div class="mon-track-card__head">
+      <i class="ph ph-path"></i>
+      <div class="mon-track-card__id">
+        <strong id="mon-track-card-time">—</strong>
+        <small id="mon-track-card-sub">—</small>
+      </div>
+      <span class="mon-track-card__km" id="mon-track-card-km">0 км</span>
+    </div>
+    <div class="mon-track-card__state" id="mon-track-card-state" hidden></div>
+    <div class="mon-metrics" id="mon-track-card-metrics"></div>
+    <div class="mon-play__noplace" id="mon-play-noplace" hidden></div>
+  </aside>
+
   <div class="mon-play" id="mon-play" hidden>
     <div class="mon-play__top">
       <i class="ph ph-path"></i>
@@ -1171,24 +1283,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       </div>
       <span class="mon-play__km" id="mon-play-km">0 км</span>
     </div>
-    <div class="mon-play__filters" id="mon-play-filters">
-      <button type="button" data-kind="driver"
-        title="Что водитель нажимал в боте: смена, рейс, фото, расходы"><i class="ph ph-hand-tap"></i>Водитель</button>
-      <button type="button" data-kind="zone"
-        title="Приезды на РЦ и отъезды с них"><i class="ph ph-factory"></i>Геозоны</button>
-      <button type="button" data-kind="alarm"
-        title="SOS, простои, «ехал без смены», пропал сигнал"><i class="ph ph-warning"></i>Тревоги</button>
-      <button type="button" data-kind="stop"
-        title="Где машина стояла дольше 5 минут"><i class="ph ph-car-profile"></i>Стоянки</button>
-      <button type="button" data-kind="engine"
-        title="Где заводили и где глушили двигатель"><i class="ph ph-key"></i>Двигатель</button>
-      <button type="button" data-kind="speed"
-        title="Где машина шла быстрее 90 км/ч дольше минуты"><i class="ph ph-timer"></i>Превышения</button>
-      <button type="button" data-kind="fuel"
-        title="Где заправлялись и где уровень упал слишком резко"><i class="ph ph-gas-pump"></i>Топливо</button>
-    </div>
-    <div class="mon-play__gauges" id="mon-play-gauges"></div>
-    <div class="mon-play__noplace" id="mon-play-noplace" hidden></div>
     <div class="mon-play__hint">×1 — как в жизни. «‹ ›» — шаг на одну точку GPS.</div>
   </div>
 
@@ -1727,7 +1821,46 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       return out;
     }
 
+    // Выпадающий выбор машины во вкладке «Треки». ⚠️ Держим его в обе
+    // стороны: выбрали в списке — селект показывает ту же машину, выбрали
+    // селектом — подсвечивается строка и метка.
+    var vehicleSelect = document.getElementById('mon-track-vehicle');
+
+    function syncVehicleSelect() {
+      if (!vehicleSelect) return;
+      var want = vehicles.map(function (v) { return v.vehicle_id; }).join(',');
+      if (vehicleSelect.dataset.ids !== want) {
+        vehicleSelect.dataset.ids = want;
+        vehicleSelect.innerHTML = '<option value="">— выберите машину —</option>' +
+          vehicles.map(function (v) {
+            return '<option value="' + v.vehicle_id + '">' + esc(v.plate || '—') + '</option>';
+          }).join('');
+      }
+      var value = selected === null ? '' : String(selected);
+      if (vehicleSelect.value !== value) vehicleSelect.value = value;
+    }
+
+    // Жёсткий выбор (не переключатель): селект обязан выбирать ту машину,
+    // которую в нём назвали, а не снимать выбор при повторе.
+    function selectExact(id) {
+      if (selected === id) return;
+      selected = null;
+      select(id, true);
+    }
+
+    if (vehicleSelect) {
+      vehicleSelect.addEventListener('change', function () {
+        var id = this.value ? parseInt(this.value, 10) : null;
+        if (id === null) {
+          if (selected !== null) select(selected, false);   // снять выбор
+          return;
+        }
+        selectExact(id);
+      });
+    }
+
     function renderList() {
+      syncVehicleSelect();
       var rows = visibleVehicles();
       countEl.textContent = vehicles.length ? String(vehicles.length) : '—';
       if (!rows.length) {
@@ -2764,7 +2897,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var playBar = document.getElementById('mon-play-bar');
     var playKm = document.getElementById('mon-play-km');
     var playToggle = document.getElementById('mon-play-toggle');
-    var gaugesEl = document.getElementById('mon-play-gauges');
+    // Показания точки живут в правой панели — там их видно, а не в плеере,
+    // где они были мелкими плашками.
+    var trackCardEl = document.getElementById('mon-track-card');
+    var gaugesEl = document.getElementById('mon-track-card-metrics');
+    var trackTimeEl = document.getElementById('mon-track-card-time');
+    var trackSubEl = document.getElementById('mon-track-card-sub');
+    var trackKmEl = document.getElementById('mon-track-card-km');
+    var trackStateEl = document.getElementById('mon-track-card-state');
     var shiftsEl = document.getElementById('mon-shifts');
     var fromEl = document.getElementById('mon-from');
     var toEl = document.getElementById('mon-to');
@@ -2808,6 +2948,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // сейчас». Карточка живой машины на этой вкладке только загораживает
       // карту — прячем её, пока смотрим прошлое.
       cardEl.classList.toggle('mon-sheet-hide', tab === 'tracks');
+      // И наоборот: показания точки — только на вкладке «Треки», иначе они
+      // перекрыли бы карточку живой машины.
+      if (trackCardEl) trackCardEl.classList.toggle('mon-sheet-hide', tab !== 'tracks');
       if (tab === 'tracks') {
         if (!fromEl.value) setQuick('today'); else loadShifts();
       }
@@ -3084,12 +3227,22 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // не было — метку не ставим вовсе и честно пишем «место неизвестно».
     // Нарисовать значок посреди пунктира значило бы выдать догадку за факт.
     var EVENT_MATCH_MS = 5 * 60 * 1000;
+    // ⚠️ Значок + ЦВЕТ. Цвет несёт смысл: зелёный — начали, синий — стоянка,
+    // красный — нарушение, жёлтый — топливо ушло. Эмодзи убраны: их рисует
+    // шрифт системы, и на телефоне они выглядели иначе, чем на компьютере.
     var EVENT_ICONS = {
-      shift: '🟢', trip: '🚛', photo: '📄', money: '💳', zone: '🏭', alarm: '⚠️',
+      shift: 'ph-flag', trip: 'ph-truck', photo: 'ph-file-text',
+      money: 'ph-wallet', zone: 'ph-factory', alarm: 'ph-warning',
       // Дорожные события — то, что машина делала сама. Считаются по её же
       // точкам, поэтому место у них ТОЧНОЕ, а не «ближайшая точка трека».
-      stop: '🅿️', engine_on: '🔑', engine_off: '⏹', speeding: '⏱',
-      refuel: '⛽', drain: '🛢'
+      stop: 'ph-car-profile', engine_on: 'ph-key', engine_off: 'ph-power',
+      speeding: 'ph-timer', refuel: 'ph-gas-pump', drain: 'ph-drop-half'
+    };
+    var EVENT_COLORS = {
+      shift: '#16a34a', trip: '#1d4ed8', photo: '#6b7280', money: '#7c3aed',
+      zone: '#0891b2', alarm: '#dc2626',
+      stop: '#2563eb', engine_on: '#16a34a', engine_off: '#64748b',
+      speeding: '#dc2626', refuel: '#0ea5e9', drain: '#e0a32e'
     };
     // Группы, которые владелец включает и выключает по отдельности.
     // Всё, что нажимал водитель, — одна группа: смена, рейс, фото, деньги.
@@ -3173,7 +3326,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var el = document.createElement('div');
         el.className = 'mon-event';
         el.dataset.kind = ev.kind;
-        el.innerHTML = '<i>' + (EVENT_ICONS[ev.kind] || '•') + '</i>';
+        el.innerHTML = '<i class="ph ' + (EVENT_ICONS[ev.kind] || 'ph-circle') + '"></i>';
+        el.style.background = EVENT_COLORS[ev.kind] || '#1d4ed8';
         el.title = ev.at_label + ' — ' + ev.label;
         el.addEventListener('click', function () {
           showBalloon(LL(best.lat, best.lon),
@@ -3370,6 +3524,14 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         : 'Смена ' + row.started_label +
           (span.clipped ? ' · показано ' + human(span.from) + ' — ' + human(span.to) : '');
       playEl.hidden = false;
+      if (trackCardEl) {
+        trackCardEl.hidden = false;
+        // ⚠️ На телефоне список и показания делят один низ экрана. Пока идёт
+        // просмотр, показания важнее: список смен свою работу уже сделал.
+        if (listPanel && window.innerWidth <= 768) {
+          listPanel.classList.add('mon-sheet-hide');
+        }
+      }
       playClock.textContent = 'загружаю…';
       Array.prototype.forEach.call(shiftsEl.querySelectorAll('.mon-shift'), function (b) {
         b.classList.toggle('is-on', b === btn);
@@ -3431,6 +3593,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.drawn = -1;
       if (!quiet) {
         playEl.hidden = true;
+        if (trackCardEl) trackCardEl.hidden = true;
+        if (listPanel) listPanel.classList.remove('mon-sheet-hide');
         Array.prototype.forEach.call(shiftsEl.querySelectorAll('.mon-shift'), function (b) {
           b.classList.remove('is-on');
         });
@@ -3541,14 +3705,22 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // написано, почему машина не двигается.
     function paintClock(ms) {
       var d = new Date(ms);
-      playClock.textContent = play.multiday ? dayTime(d) : hhmm(d.toISOString());
+      var short = hhmm(d.toISOString());
+      playClock.textContent = play.multiday ? dayTime(d) : short;
+      // В правой панели время крупное — это главное число экрана, когда
+      // смотришь трек: «во сколько машина была вот здесь».
+      if (trackTimeEl) trackTimeEl.textContent = short;
+      if (trackSubEl) {
+        trackSubEl.textContent = d.toLocaleDateString('ru-RU', {
+          day: '2-digit', month: 'long', weekday: 'short'
+        });
+      }
       var stand = standingLabel(ms);
       if (stand === play.standing) return;
       play.standing = stand;
-      var el = document.getElementById('mon-play-standing');
-      if (!el) return;
-      el.textContent = stand;
-      el.hidden = !stand;
+      if (!trackStateEl) return;
+      trackStateEl.textContent = stand;
+      trackStateEl.hidden = !stand;
     }
 
     // Через сколько между точками считаем, что машина не едет, а стоит.
@@ -3653,6 +3825,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       playFill.style.width = (share * 100).toFixed(1) + '%';
       playBar.setAttribute('aria-valuenow', Math.round(share * 100));
       playKm.textContent = frame.km.toFixed(1) + ' км по GPS';
+      if (trackKmEl) trackKmEl.textContent = frame.km.toFixed(1) + ' км по GPS';
       paintGauges(frame);
       // ⚠️ Время берём из ЧАСОВ ПРОСМОТРА, а не из времени точки: на стоянке
       // точка одна на час, и подпись замирала бы. Если период больше суток,
@@ -3669,58 +3842,55 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
     // Показания приборов ровно на текущей точке. Прибор промолчал — пишем
     // «нет данных», а не подставляем прошлое значение: это разные факты.
-    // ⚠️ Значок + число, слово — в подсказке. Владелец 05.09.2026: «хочу
-    // иконки, чтобы понимать, про что речь, даже не читая». Единицы (л, °C,
-    // км/ч, В) остаются на экране — по ним прибор узнаётся и без наведения.
-    // Там, где прибора нет, слово «нет данных» пишем словами: молчание
-    // прибора значком не передать, а ноль читался бы как показание.
-    function gauge(icon, title, value, attrs) {
-      return '<i title="' + title + '"' + (attrs || '') + '>' +
-        '<span class="ph ' + icon + '"></span><b>' + value + '</b></i>';
+    // ⚠️ Показания рисуем ПЛИТКАМИ, как в карточке машины: подпись сверху,
+    // значение крупно. Владелец 05.09.2026: «данные, литры топлива — мелкие,
+    // плохо заметить». В плеере они были плашками по 11 пикселей — здесь у
+    // них есть ширина панели.
+    function trackMetric(icon, title, value, cls, attrs) {
+      return '<div class="mon-metric"' + (attrs || '') + '>' +
+        '<div class="mon-metric__k"><span class="ph ' + icon + '"></span>' + title + '</div>' +
+        '<div class="mon-metric__v ' + (cls || '') + '">' + value + '</div></div>';
     }
 
     function paintGauges(frame) {
-      // Первым — состояние: «стоит 1 ч 12 мин» / «связи нет 8 мин». Пусто,
-      // когда машина едет: точки идут подряд, и объяснять нечего.
-      var parts = ['<i id="mon-play-standing" data-on="0"' +
-        (standingLabel(play.clock) ? '' : ' hidden') + '>' +
-        standingLabel(play.clock) + '</i>'];
+      var parts = [];
       if (frame.ign === true || frame.ign === false) {
-        parts.push(gauge('ph-key', 'Зажигание', frame.ign ? 'вкл' : 'выкл',
-          ' data-on="' + (frame.ign ? 1 : 0) + '"'));
+        parts.push(trackMetric('ph-key', 'Зажигание', frame.ign ? 'вкл' : 'выкл',
+          frame.ign ? 'is-ok' : ''));
       }
-      parts.push(gauge('ph-drop', 'Топливо в баке',
+      // ⚠️ Прибор промолчал — пишем «нет данных» СЛОВАМИ. Ноль читался бы
+      // как показание, а это другой факт.
+      parts.push(trackMetric('ph-drop', 'Топливо',
         frame.fuel === null || frame.fuel === undefined
-          ? 'нет данных' : Math.round(frame.fuel) + ' л'));
+          ? '<span class="is-text">нет данных</span>' : Math.round(frame.fuel) + ' л'));
       if (frame.temp !== null && frame.temp !== undefined) {
-        parts.push(gauge('ph-thermometer-simple', 'Температура топлива',
+        parts.push(trackMetric('ph-thermometer-simple', 'Темп. топлива',
           frame.temp.toFixed(0) + ' °C'));
       }
-      // Скорость прибора на этой точке. Это то, что предъявляют водителю
-      // («шёл 96 в посёлке»), поэтому берём значение трекера, а не считаем
-      // сами по расстоянию между точками.
+      // Скорость прибора на этой точке — то, что предъявляют водителю
+      // («шёл 96 в посёлке»), а не расчёт по расстоянию между точками.
       if (frame.speed !== null && frame.speed !== undefined) {
-        parts.push(gauge('ph-speedometer', 'Скорость по прибору',
-          Math.round(frame.speed) + ' км/ч'));
+        parts.push(trackMetric('ph-speedometer', 'Скорость',
+          Math.round(frame.speed) + ' км/ч', frame.speed > 90 ? 'is-bad' : ''));
       }
-      // Напряжение бортсети — тот же прибор, что в карточке машины.
-      // Зелёным, когда генератор заряжает (значит двигатель работал), красным,
-      // когда бортсети фактически нет: машину обесточили или сняли клемму.
+      // Напряжение бортсети: зелёное — генератор заряжает (двигатель
+      // работал), красное — бортсети нет, машину обесточили.
       if (frame.volt === null || frame.volt === undefined) {
-        parts.push(gauge('ph-lightning', 'Напряжение бортсети', 'нет данных'));
+        parts.push(trackMetric('ph-lightning', 'Напряжение',
+          '<span class="is-text">нет данных</span>'));
       } else {
         var charging = frame.volt >= 26 || (frame.volt >= 13 && frame.volt < 18);
-        var dead = frame.volt < 6;
-        parts.push(gauge('ph-lightning', 'Напряжение бортсети',
+        parts.push(trackMetric('ph-lightning', 'Напряжение',
           frame.volt.toFixed(1) + ' В',
-          dead ? ' data-bad="1"' : (charging ? ' data-on="1"' : '')));
+          frame.volt < 6 ? 'is-bad' : (charging ? 'is-ok' : 'is-warn')));
       }
-      // Координаты точки — нажатием копируются в буфер.
       var coords = frame.lat.toFixed(5) + ', ' + frame.lon.toFixed(5);
-      parts.push(gauge('ph-crosshair', 'Координаты точки — нажмите, скопирую',
-        coords, ' data-copy="' + coords + '"'));
+      parts.push(trackMetric('ph-crosshair', 'Координаты · нажмите, скопирую',
+        '<span class="mon-metric__coords">' + coords + '</span>', 'is-text',
+        ' data-copy="' + coords + '"'));
       if (frame.afterGap) {
-        parts.push('<i data-on="0">⚠ до этой точки связи не было</i>');
+        parts.push(trackMetric('ph-wifi-slash', 'Внимание',
+          '<span class="is-text">до этой точки связи не было</span>', 'is-warn'));
       }
       gaugesEl.innerHTML = parts.join('');
     }
@@ -3728,13 +3898,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     // Копирование координат. `writeText` есть не везде (старый Android,
     // страница без https) — тогда молча ничего не делаем, а не роняем плеер.
     gaugesEl.addEventListener('click', function (e) {
-      var box = e.target.closest('i[data-copy]');
+      var box = e.target.closest('[data-copy]');
       if (!box) return;
       var text = box.dataset.copy;
       var done = function () {
-        var was = box.innerHTML;
-        box.innerHTML = 'Координаты <b>скопированы</b>';
-        setTimeout(function () { box.innerHTML = was; }, 1200);
+        var slot = box.querySelector('.mon-metric__coords');
+        if (!slot) return;
+        var was = slot.textContent;
+        slot.textContent = 'скопировано';
+        setTimeout(function () { slot.textContent = was; }, 1200);
       };
       try {
         if (navigator.clipboard && navigator.clipboard.writeText) {
