@@ -417,13 +417,14 @@ def test_tracks_tab_has_a_player_like_the_design():
     assert "flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;" in src
 
     # Приборы на текущей точке: зажигание, топливо, температура.
-    # С 05.09.2026 на экране значок + число, слово — в подсказке (владелец:
-    # «чтобы понимать, про что речь, даже не читая»).
+    # С 05.09.2026 они живут в ПРАВОЙ панели крупными плитками — в плеере
+    # были мелкими плашками, владелец их «плохо замечал».
     # ⚠️ Прибор промолчал — «нет данных» СЛОВАМИ: молчание значком не передать,
     # а ноль читался бы как показание.
-    assert "gauge('ph-drop', 'Топливо в баке'," in src
-    assert "'нет данных' : Math.round(frame.fuel)" in src
-    assert "'Температура топлива'" in src
+    assert 'id="mon-track-card-metrics"' in src
+    assert "trackMetric('ph-drop', 'Топливо'," in src
+    assert "нет данных</span>' : Math.round(frame.fuel) + ' л'" in src
+    assert "'Темп. топлива'" in src
     assert "'Зажигание'" in src
     # предупреждение о разрыве связи прямо в плеере
     assert "до этой точки связи не было" in src
@@ -1118,11 +1119,12 @@ def test_track_gauges_show_voltage_and_coordinates():
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     gauges = src.split("function paintGauges(frame)")[1].split("function dayTime")[0]
-    assert "'Напряжение бортсети'" in gauges
-    assert "'Скорость по прибору'" in gauges
+    assert "'Напряжение'" in gauges
+    assert "'Скорость'" in gauges
     assert "frame.lat.toFixed(5)" in gauges
     # Прибор промолчал — так и пишем словами. Прошлое значение не подставляем.
-    assert "gauge('ph-lightning', 'Напряжение бортсети', 'нет данных')" in gauges
+    assert "trackMetric('ph-lightning', 'Напряжение'," in gauges
+    assert "'<span class=\"is-text\">нет данных</span>'" in gauges
     # Значения приходят с сервера по каждой точке, а не считаются на глаз.
     assert "seg.speed_kmh" in src and "seg.voltage" in src
 
@@ -1203,8 +1205,9 @@ def test_player_clock_keeps_running_while_the_car_stands():
 
     # Стоянка и потеря связи — разные факты, подписи тоже разные.
     assert "'Связи нет '" in src and "'Стоит '" in src
-    # ⚠️ Чип состояния рисуется первым в приборах, чтобы его было видно сразу.
-    assert 'id="mon-play-standing"' in src
+    # ⚠️ Состояние — отдельной строкой в правой панели, над приборами.
+    assert 'id="mon-track-card-state"' in src
+    assert "trackStateEl.hidden = !stand;" in src
 
 
 def test_player_km_says_it_is_gps_not_odometer():
@@ -1377,8 +1380,10 @@ def test_track_panel_feels_alive_but_not_noisy():
     assert re.search(r"^\s*transition:\s*all", src, re.M) is None
     assert ".mon-whole button:active { transform: scale(.97); }" in src
     assert "@keyframes monPlayIn" in src
-    # ⚠️ Смещение по X держим в каждом кадре: панель центрируется им же.
-    assert "transform: translateX(-50%) translateY(-8px) scale(.98)" in src
+    # ⚠️ Старт не из нуля: в жизни ничто не появляется из ничего.
+    # (Смещения по X здесь больше нет — панель центрируется полями
+    # left/right/margin, а не трансформацией.)
+    assert "transform: translateY(-8px) scale(.98)" in src
 
     reduced = src.split("@media (prefers-reduced-motion: reduce)")[1].split("}\n\n")[0]
     assert ".mon-pin__dir b" in reduced and ".mon-play" in reduced
@@ -1389,3 +1394,67 @@ def test_track_panel_feels_alive_but_not_noisy():
                  "ph-thermometer-simple", "ph-speedometer", "ph-lightning",
                  "ph-crosshair"):
         assert icon in src, icon
+
+
+# ------------------------------------------------- раскладка вкладки «Треки»
+def test_vehicle_is_chosen_from_a_list_not_by_poking_the_map():
+    """Машину выбирают выпадающим списком, а не тыкая метку на карте.
+
+    Владелец 05.09.2026: «машину можно повыбирать, не тыкая её на карте» —
+    у Ставтрэка это первое поле панели треков.
+    ⚠️ Связь двусторонняя: выбрал на карте — селект показывает ту же машину.
+    ⚠️ Селект ВЫБИРАЕТ, а не переключает: повторный выбор той же машины не
+    должен снимать выделение (обычный `select()` работает переключателем).
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert 'id="mon-track-vehicle"' in src
+    assert "function syncVehicleSelect()" in src
+    assert "function selectExact(id)" in src
+    assert "syncVehicleSelect();" in src.split("function renderList()")[1][:200]
+
+
+def test_point_readings_live_in_the_right_panel_big():
+    """Показания точки — в правой панели крупными плитками, не в плеере.
+
+    Владелец 05.09.2026: «данные, литры топлива — они мелкие, плохо заметить».
+    В плеере это были плашки по 11 пикселей; в панели у них есть ширина.
+    Плеер остаётся узкой полосой управления по центру карты.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert 'id="mon-track-card"' in src
+    assert 'id="mon-track-card-metrics"' in src
+    assert 'id="mon-track-card-time"' in src
+    assert "trackCardEl.hidden = false;" in src        # открывается с плеером
+    assert "trackCardEl.classList.toggle('mon-sheet-hide', tab !== 'tracks')" in src
+    # фильтры уехали в левую панель, в плеере их больше нет
+    play_markup = src.split('<div class="mon-play" id="mon-play"')[1].split("</div>\n</div>")[0]
+    assert 'id="mon-play-filters"' not in play_markup
+
+
+def test_player_is_centred_between_panels_not_over_them():
+    """Плеер центрируется по СВОБОДНОМУ месту между панелями.
+
+    ⚠️ При центрировании по всей карте на экране 1100 px он залезал на левую
+    панель — померено в браузере. `left` + `right` + `margin: auto` держат его
+    посередине промежутка на любой ширине.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "top: 12px; left: 388px; right: 382px; margin: 0 auto;" in src
+    assert "max-width: 420px; min-width: 260px;" in src
+
+
+def test_event_pins_are_coloured_icons_not_emoji():
+    """Значок события — цветной кружок со знаком, а не эмодзи.
+
+    Эмодзи рисует шрифт системы: на Маке одни, на телефоне другие, цвет не
+    задать. Цвет теперь несёт смысл: зелёный — начали, синий — стоянка,
+    красный — нарушение, жёлтый — топливо ушло.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "var EVENT_COLORS = {" in src
+    assert "stop: 'ph-car-profile', engine_on: 'ph-key'" in src
+    assert "el.style.background = EVENT_COLORS[ev.kind]" in src
+    # старых эмодзи в таблице значков не осталось
+    icons = src.split("var EVENT_ICONS = {")[1].split("};")[0]
+    for emoji in ("🅿️", "🔑", "⏱", "⛽", "🛢", "🟢", "🚛"):
+        assert emoji not in icons, emoji
