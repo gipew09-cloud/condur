@@ -313,8 +313,12 @@ def test_tracks_tab_has_a_player_like_the_design():
 
     # период «с… по…» и быстрые чипы из макета
     assert 'id="mon-from"' in src and 'id="mon-to"' in src
-    for quick in ("today", "yesterday", "week"):
-        assert 'data-quick="%s"' % quick in src
+    # ⚠️ С 05.09.2026 период выбирается РЕЖИМОМ, а не чипами «Вчера / 7 дней»:
+    # сегодня · смена · точный интервал. Поля дат показываются только в
+    # режиме «Точный интервал» — раньше они висели всегда и занимали место.
+    for mode in ("today", "shift", "exact"):
+        assert 'data-mode="%s"' % mode in src
+    assert 'id="mon-period" hidden' in src
 
     # смены за период тянем у своего эндпоинта
     assert "/api/vehicles/' + selected + '/shifts?from=" in src
@@ -1356,7 +1360,12 @@ def test_track_starts_clean_and_shows_both_ends():
     assert 'class="is-on"' not in filters, filters
     # конец пути — своя веха, но только если он не совпал с началом
     assert "'Конец смены'" in src and "'Конец периода'" in src
-    assert "metresBetween(start.lat, start.lon, finish.lat, finish.lon) > 30" in src
+    assert "metresBetween(start.lat, start.lon, finish.lat, finish.lon) > 15" in src
+    # ⚠️ Вехи стоят этажами: машина ночует там же, где выезжает, и подписи
+    # ложились одна на другую (владелец 05.09.2026: «всё равно перекрывают»).
+    assert '.mon-milestone[data-tier="1"]' in src
+    assert '.mon-milestone[data-tier="2"]' in src
+    assert "var NEAR_M = 250;" in src
 
 
 # ------------------------------------------------- отделка панели трека
@@ -1493,7 +1502,9 @@ def test_filter_labels_speak_human():
     топливо, водитель, не понимаю вообще».
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
-    for label in ("Кнопки водителя", "Приезды на РЦ", "Где стоял",
+    # ⚠️ «Стоянки» владелец попросил вернуть: «где стоял» ему показалось
+    # менее понятным, чем привычное слово.
+    for label in ("Кнопки водителя", "Приезды на РЦ", "Стоянки",
                   "Завёл и заглушил", "Ехал быстро", "Заправки и сливы"):
         assert label in src, label
 
