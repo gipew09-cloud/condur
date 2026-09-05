@@ -377,8 +377,11 @@ def test_tracks_tab_has_a_player_like_the_design():
     # (действия водителя / геозоны / тревоги) 05.09.2026 добавились дорожные
     # события: стоянки, двигатель, скорость, топливо.
     assert 'id="mon-play-filters"' in src
-    assert "driver: true, zone: true, alarm: true," in src
-    assert "stop: true, engine: true, speed: true, fuel: true" in src
+    # ⚠️ Всё выключено по умолчанию (05.09.2026): базовый уровень трека —
+    # только начало и конец пути, остальное владелец включает сам.
+    assert "driver: false, zone: false, alarm: false," in src
+    assert "stop: false, engine: false, speed: false, fuel: false" in src
+    assert "localStorage.setItem(EVENT_FILTER_KEY" in src   # выбор запоминается
     assert "if (!eventFilter[EVENT_GROUP[ev.kind] || 'driver']) return;" in src
 
     # ⚠️ Просмотр начинается с момента движения, а не с открытия смены.
@@ -414,10 +417,14 @@ def test_tracks_tab_has_a_player_like_the_design():
     assert "flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;" in src
 
     # Приборы на текущей точке: зажигание, топливо, температура.
-    # ⚠️ Прибор промолчал — «нет данных», прошлое значение не подставляем.
-    assert "Топливо <b>нет данных</b>" in src
-    assert "Темп. топлива" in src
-    assert "Зажигание" in src
+    # С 05.09.2026 на экране значок + число, слово — в подсказке (владелец:
+    # «чтобы понимать, про что речь, даже не читая»).
+    # ⚠️ Прибор промолчал — «нет данных» СЛОВАМИ: молчание значком не передать,
+    # а ноль читался бы как показание.
+    assert "gauge('ph-drop', 'Топливо в баке'," in src
+    assert "'нет данных' : Math.round(frame.fuel)" in src
+    assert "'Температура топлива'" in src
+    assert "'Зажигание'" in src
     # предупреждение о разрыве связи прямо в плеере
     assert "до этой точки связи не было" in src
     # стрелка направления на кружке — по следующей точке, а не наугад
@@ -1111,11 +1118,11 @@ def test_track_gauges_show_voltage_and_coordinates():
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     gauges = src.split("function paintGauges(frame)")[1].split("function dayTime")[0]
-    assert "Напряжение" in gauges
-    assert "Скорость" in gauges
+    assert "'Напряжение бортсети'" in gauges
+    assert "'Скорость по прибору'" in gauges
     assert "frame.lat.toFixed(5)" in gauges
-    # Прибор промолчал — так и пишем. Подставлять прошлое значение нельзя.
-    assert "Напряжение <b>нет данных</b>" in gauges
+    # Прибор промолчал — так и пишем словами. Прошлое значение не подставляем.
+    assert "gauge('ph-lightning', 'Напряжение бортсети', 'нет данных')" in gauges
     # Значения приходят с сервера по каждой точке, а не считаются на глаз.
     assert "seg.speed_kmh" in src and "seg.voltage" in src
 
@@ -1327,5 +1334,58 @@ def test_period_can_be_played_without_any_shift():
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     assert 'id="mon-play-whole"' in src
     assert "whole: true," in src
-    assert "if (!(play.shift && play.shift.whole)) {" in src
+    assert "if (play.shift && play.shift.whole) {" in src
+    assert "'Начало периода'" in src and "'Конец периода'" in src
     assert "'Период ' + human(span.from)" in src
+
+
+def test_track_starts_clean_and_shows_both_ends():
+    """Базовый уровень трека — начало и конец пути, больше ничего.
+
+    Владелец 05.09.2026 объяснил, как это устроено у Ставтрэка и как он ждёт
+    у нас: «в базовом уровне показывает только начало положения и конец
+    положения, а потом ты можешь выбирать». Значки всех групп выключены, и
+    трек за рабочий день не превращается в ковёр из иконок.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    # ни одна кнопка фильтра не включена в разметке
+    filters = src.split('id="mon-play-filters"')[1].split("</div>")[0]
+    assert 'class="is-on"' not in filters, filters
+    # конец пути — своя веха, но только если он не совпал с началом
+    assert "'Конец смены'" in src and "'Конец периода'" in src
+    assert "metresBetween(start.lat, start.lon, finish.lat, finish.lon) > 30" in src
+
+
+# ------------------------------------------------- отделка панели трека
+def test_track_panel_feels_alive_but_not_noisy():
+    """Отделка панели: значки, отклик на нажатие, честные переходы.
+
+    Владелец 05.09.2026 про Ставтрэк: «у них функционально и красиво, нам
+    также надо — и удобно, и понятно». Правила, по которым сделано:
+      * значок + число, слово в подсказке — читается без чтения;
+      * кнопка отвечает на нажатие (scale .97), иначе интерфейс «неживой»;
+      * переходы перечислены поимённо, `transition: all` в панели нет;
+      * появление панели — 220 мс ease-out, старт НЕ из нуля;
+      * всё движение выключается при «уменьшить движение» в системе.
+    """
+    import re
+
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+
+    # ⚠️ Ищем именно СВОЙСТВО в начале строки: слова «transition: all» есть
+    # в комментарии, который объясняет, почему так не пишем.
+    assert re.search(r"^\s*transition:\s*all", src, re.M) is None
+    assert ".mon-whole button:active { transform: scale(.97); }" in src
+    assert "@keyframes monPlayIn" in src
+    # ⚠️ Смещение по X держим в каждом кадре: панель центрируется им же.
+    assert "transform: translateX(-50%) translateY(-8px) scale(.98)" in src
+
+    reduced = src.split("@media (prefers-reduced-motion: reduce)")[1].split("}\n\n")[0]
+    assert ".mon-pin__dir b" in reduced and ".mon-play" in reduced
+
+    # значки в фильтрах и приборах — из набора, который уже есть в проекте
+    for icon in ("ph-hand-tap", "ph-factory", "ph-warning", "ph-car-profile",
+                 "ph-key", "ph-timer", "ph-gas-pump", "ph-drop",
+                 "ph-thermometer-simple", "ph-speedometer", "ph-lightning",
+                 "ph-crosshair"):
+        assert icon in src, icon
