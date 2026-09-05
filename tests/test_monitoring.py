@@ -1458,3 +1458,85 @@ def test_event_pins_are_coloured_icons_not_emoji():
     icons = src.split("var EVENT_ICONS = {")[1].split("};")[0]
     for emoji in ("🅿️", "🔑", "⏱", "⛽", "🛢", "🟢", "🚛"):
         assert emoji not in icons, emoji
+
+
+# ------------------------------------------------- правки по разбору 05.09
+def test_live_card_is_really_hidden_on_the_tracks_tab():
+    """Карточка живой машины не должна оставаться справа во вкладке «Треки».
+
+    ⚠️ Правило `.mon-sheet-hide` лежало ВНУТРИ медиазапроса телефона: класс
+    вешался и на компьютере, но ничего не скрывал. Владелец 05.09.2026:
+    «машина перекрывает справа вот эту штуку».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    before_media = src.split("@media (max-width: 768px)")[0]
+    assert ".mon-sheet-hide { display: none !important; }" in before_media
+
+
+def test_vehicle_select_looks_like_a_select():
+    """У поля выбора машины своя стрелка — иначе это просто рамка с текстом.
+
+    Владелец 05.09.2026 не понял, что машину можно выбрать в поле, и
+    продолжал тыкать метку на карте. Системную стрелку браузеры рисуют
+    по-разному, а в тёмной теме её почти не видно.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    obj = src.split(".mon-object select {")[1].split("}")[0]
+    assert "appearance: none" in obj and "background-image: url(" in obj
+    assert '.mon[data-mode="dark"] .mon-object select {' in src
+
+
+def test_filter_labels_speak_human():
+    """Подписи фильтров — про то, что владелец увидит, а не термины.
+
+    Владелец 05.09.2026: «столько непонятных слов — что означает превышение,
+    топливо, водитель, не понимаю вообще».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    for label in ("Кнопки водителя", "Приезды на РЦ", "Где стоял",
+                  "Завёл и заглушил", "Ехал быстро", "Заправки и сливы"):
+        assert label in src, label
+
+
+def test_closing_the_card_also_clears_the_track_marks():
+    """Крестик снимает выбор машины — и убирает вехи со значками с карты.
+
+    Владелец 05.09.2026: «нажимаешь крестик, а пометки остаются посреди карты».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    deselect = src.split("if (selected === null) {")[1].split("}")[0]
+    assert "stopPlayback(false)" in deselect
+
+
+def test_direction_arrow_is_state_coloured_and_clear_of_the_tile():
+    """Стрелка направления — цвета состояния и СНАРУЖИ плитки.
+
+    ⚠️ Своё `color` у треугольника перебивало наследование, и стрелка
+    оставалась голубой, хотя JS красил родителя в зелёный.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "dir.style.color = stateColor(key);" in src
+    assert "var DIR_GAP = 16;" in src
+    triangle = src.split(".mon-pin__dir b {")[1].split("}")[0]
+    assert "solid currentColor" in triangle
+    assert "color: #38bdf8" not in triangle          # цвет только у родителя
+
+
+def test_fuel_card_shows_where_the_number_came_from():
+    """Под расходом видно, из чего он посчитан, и каким окном.
+
+    Владелец 05.09.2026: «у нас 12 л, а у Ставтрэка 25». Без разбора это два
+    числа, и проверить нечем: расход считается по балансу бака, а окно у нас
+    скользящее (последние 24 часа), а не «с полуночи».
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "mon-fuel-calc" in src
+    assert "html += '<div class=\"mon-fuel-calc\">было ' + Math.round(sum.start_l)" in src
+    assert "Окно скользящее" in src
+
+
+def test_legend_takes_two_columns():
+    """Легенда ужата ещё раз: пять строк съедали высоту трёх машин."""
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    legend = src.split(".mon-legend {")[1].split("}")[0]
+    assert "grid-template-columns: 1fr 1fr" in legend
