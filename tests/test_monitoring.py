@@ -373,9 +373,12 @@ def test_tracks_tab_has_a_player_like_the_design():
     assert "function placeMilestones()" in src
     assert "'Смена начата'" in src and "'Здесь тронулась'" in src
 
-    # Фильтр значков: действия водителя / геозоны / тревоги — по отдельности.
+    # Фильтр значков — каждая группа включается отдельно. К трём исходным
+    # (действия водителя / геозоны / тревоги) 05.09.2026 добавились дорожные
+    # события: стоянки, двигатель, скорость, топливо.
     assert 'id="mon-play-filters"' in src
-    assert "var eventFilter = { driver: true, zone: true, alarm: true };" in src
+    assert "driver: true, zone: true, alarm: true," in src
+    assert "stop: true, engine: true, speed: true, fuel: true" in src
     assert "if (!eventFilter[EVENT_GROUP[ev.kind] || 'driver']) return;" in src
 
     # ⚠️ Просмотр начинается с момента движения, а не с открытия смены.
@@ -1016,8 +1019,10 @@ def test_dark_theme_covers_panels_that_paint_background_by_number():
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     assert 'background: rgba(13, 21, 36, .88);\n  border-color: rgba(255, 255, 255, .09);' in src
-    # светлый акцент тёмной темы нельзя пускать под белый текст
-    assert '.mon[data-mode="dark"] .mon-follow,' in src
+    # Светлый акцент тёмной темы нельзя пускать под белый текст: заливкам
+    # возвращаем плотный синий. (Плашка «камера следит за машиной» отсюда
+    # ушла 05.09.2026 — владелец не понял, зачем она; правило осталось.)
+    assert '.mon[data-mode="dark"] .mon-ctl button.is-on {' in src
     assert "background: #2563eb; color: #fff; border-color: #2563eb;" in src
 
 
@@ -1287,3 +1292,40 @@ def test_slow_refuel_spread_over_points_is_still_a_refuel():
     assert len(summary["refuels"]) == 1, summary["refuels"]
     assert summary["refuelled_l"] > 100
     assert summary["spent_l"] > 0
+
+
+# ------------------------------------------------- углублённый трек в кабинете
+def test_track_shows_what_the_car_was_doing_not_only_where_it_went():
+    """Значки дорожных событий и фильтры к ним.
+
+    Владелец 04–05.09.2026 просил «углублённый трек»: на карте должно быть
+    видно, где машина стояла, где заводили и глушили двигатель, где летела,
+    где заправлялась. Те же шесть событий есть у Ставтрэка.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    # значки
+    for kind in ("stop:", "engine_on:", "engine_off:", "speeding:", "refuel:", "drain:"):
+        assert kind in src, kind
+    # фильтры — каждую группу можно выключить отдельно
+    for kind in ("stop", "engine", "speed", "fuel"):
+        assert 'data-kind="%s"' % kind in src, kind
+    # дорожные события приходят вместе с треком, а не отдельным запросом
+    assert "play.road = data.road_events || [];" in src
+    # ⚠️ у них СВОЯ координата: место посчитано по точкам, а не угадано
+    assert "var own = (ev.lat !== undefined && ev.lat !== null);" in src
+    assert "Место посчитано по точкам трека" in src
+
+
+def test_period_can_be_played_without_any_shift():
+    """Трек не обязан быть «треком смены».
+
+    Владелец 04.09.2026: «он записывает только где и когда смена начинается».
+    Кнопка «Смотреть весь период» проигрывает выбранный интервал целиком.
+    ⚠️ Веху «Смена начата» при этом не ставим: смены нет, и первая точка
+    периода — просто первая точка, а не факт открытия смены.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert 'id="mon-play-whole"' in src
+    assert "whole: true," in src
+    assert "if (!(play.shift && play.shift.whole)) {" in src
+    assert "'Период ' + human(span.from)" in src

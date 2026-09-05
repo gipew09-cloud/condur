@@ -611,3 +611,121 @@ def test_honest_long_trip_there_and_back_is_never_dropped():
              59.85 + (89 - k) * 0.003, 30.42 + (89 - k) * 0.011, 90)
             for k in range(90)]
     assert telemetry_service.drop_unreachable_runs(there + back)[1] == []
+
+
+# ------------------------------------------------- дорожные события трека
+def _day_rows():
+    """Синтетический день: стоим → завели → едем (с превышением) →
+    стоянка с заглушенным мотором → заправка → едем домой."""
+    t0 = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
+    rows, level, lat, lon, m = [], 3000, 59.85, 30.42, 0
+
+    def add(speed, ign, dlat=0.0):
+        nonlocal m, lat
+        lat += dlat
+        rows.append((t0 + timedelta(minutes=m), lat, lon, speed,
+                     100000, level, 15, ign, 27.5))
+        m += 1
+
+    for _ in range(10):
+        add(0, False)                       # 10 минут стоим, мотор выключен
+    for _ in range(5):
+        add(0, True)                        # завёл, прогрев
+    for i in range(40):
+        add(95 if 10 <= i < 20 else 60, True, dlat=0.004)
+    for _ in range(20):
+        add(0, False)                       # стоянка на выгрузке
+    for _ in range(6):
+        level += 300                        # заправка
+        add(0, True)
+    for _ in range(20):
+        add(55, True, dlat=-0.004)
+    return rows
+
+
+def test_road_events_are_counted_from_the_points_themselves():
+    """Углублённый трек: что машина делала, а не только куда ехала.
+
+    Владелец 04.09.2026: «он записывает только где и когда смена начинается,
+    я хотел ещё углублённый трек». Шесть значков — ровно как «Дорожные
+    события» у Ставтрэка: стоянка, завёл, заглушил, превышение, заправка, слив.
+
+    ⚠️ У этих событий координата СВОЯ и точная: они посчитаны из тех же точек.
+    Это не противоречит правилу «место события считает карта» — правило про
+    действия водителя (кнопки в боте), у которых координат нет вообще.
+    """
+    from types import SimpleNamespace
+
+    from app.services import telemetry_service
+    from app.web.router import _road_events
+
+    from tests.test_monitoring import REAL_CALIBRATION
+
+    rows = _day_rows()
+    segments = telemetry_service.build_track_segments(
+        [(r[0], r[1], r[2], r[3]) for r in rows],
+        window_end=rows[-1][0] + timedelta(minutes=1),
+    )
+    events = _road_events(
+        rows, segments, SimpleNamespace(fuel_calibration=REAL_CALIBRATION),
+        "Europe/Moscow",
+    )
+    kinds = [e["kind"] for e in events]
+    assert "stop" in kinds and "engine_on" in kinds and "engine_off" in kinds
+    assert "speeding" in kinds and "refuel" in kinds
+
+    # у каждого события есть место и человеческая подпись
+    for event in events:
+        assert event["lat"] and event["lon"], event
+        assert event["label"] and event["at_label"], event
+
+    speeding = next(e for e in events if e["kind"] == "speeding")
+    assert speeding["max_kmh"] == 95           # скорость ПРИБОРА, не расчётная
+    assert speeding["seconds"] >= 60
+
+    # события идут по времени — иначе список читается как попало
+    assert kinds == [e["kind"] for e in sorted(events, key=lambda e: e["at"])]
+
+
+def test_one_fast_point_is_not_a_speeding_event():
+    """Одна точка «95 км/ч» — это не нарушение, а выброс датчика.
+
+    Нарушением считаем только то, что держалось дольше минуты: иначе владелец
+    получит десяток «превышений» на ровном месте и перестанет им верить.
+    """
+    from types import SimpleNamespace
+
+    from app.web.router import _road_events
+
+    t0 = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
+    rows = [(t0 + timedelta(minutes=i), 59.85 + i * 0.004, 30.42,
+             130 if i == 5 else 60, 100000, None, None, True, 27.5)
+            for i in range(20)]
+    events = _road_events(rows, [], SimpleNamespace(fuel_calibration=None),
+                          "Europe/Moscow")
+    assert [e for e in events if e["kind"] == "speeding"] == []
+
+
+def test_short_stops_do_not_litter_the_track():
+    """Стоянка у светофора не должна ставить значок.
+
+    Значки ставим от пяти минут. Сами отрезки трека при этом на месте —
+    режется только то, что рисуется поверх карты.
+    """
+    from types import SimpleNamespace
+
+    from app.web.router import _road_events
+
+    t0 = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
+    segments = [
+        {"kind": "stop", "start": t0.isoformat(),
+         "end": (t0 + timedelta(minutes=3)).isoformat(),
+         "lat": 59.85, "lon": 30.42, "duration_label": "3 мин", "seconds": 180},
+        {"kind": "stop", "start": (t0 + timedelta(minutes=30)).isoformat(),
+         "end": (t0 + timedelta(minutes=70)).isoformat(),
+         "lat": 59.9, "lon": 30.5, "duration_label": "40 мин", "seconds": 2400},
+    ]
+    events = _road_events([], segments, SimpleNamespace(fuel_calibration=None),
+                          "Europe/Moscow")
+    stops = [e for e in events if e["kind"] == "stop"]
+    assert len(stops) == 1 and stops[0]["label"] == "Стоянка 40 мин"
