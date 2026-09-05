@@ -696,16 +696,43 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon-pin:not([data-state="moving"]) .mon-pin__ring { animation: none; opacity: 1; }
 .mon-pin[data-state="invalid"] .mon-pin__ring { border-color: transparent; }
-/* Стрелка направления — катается вокруг плитки. Показываем только у едущей
-   машины и только когда направление ИЗВЕСТНО: стрелка «в никуда» читается как
-   факт, куда машина повёрнута. То же правило в приложении (DirectionRing). */
+/* Стрелка направления — катается ВОКРУГ кольца, снаружи него. Показываем
+   только у едущей машины и только когда направление ИЗВЕСТНО: стрелка
+   «в никуда» читается как факт, куда машина повёрнута. То же правило в
+   приложении (DirectionRing).
+
+   ⚠️ Два вложенных элемента, а не один. Внешний поворачивается из JS
+   (`transform` целиком принадлежит ему), внутренний живёт своей анимацией.
+   Если вешать анимацию на тот же transform, что задаёт JS, они затирают
+   друг друга и стрелка дёргается.
+
+   Цвет НЕ повторяет состояние: рамка уже говорит «едет/стоит», а стрелка
+   отвечает на другой вопрос — куда. Владелец 05.09.2026 просил «более синий,
+   светлый, яркий, чтобы запоминался». */
 .mon-pin__dir {
   position: absolute; left: 0; top: 0; display: none;
-  width: 0; height: 0; border-left: 6px solid transparent;
-  border-right: 6px solid transparent; border-bottom: 11px solid currentColor;
-  filter: drop-shadow(0 0 1.5px rgba(5, 11, 22, .8));
   transition: transform .7s cubic-bezier(.22, 1, .36, 1);
   pointer-events: none;
+}
+.mon-pin__dir b {
+  display: block; width: 0; height: 0;
+  border-left: calc(var(--pin) * .155) solid transparent;
+  border-right: calc(var(--pin) * .155) solid transparent;
+  border-bottom: calc(var(--pin) * .29) solid #38bdf8;
+  /* ⚠️ Треугольник из рамок растёт ВПРАВО-ВНИЗ от своей точки, а не от
+     центра, и при повороте это смещение вращается вместе с ним — стрелка
+     то отходила от плитки, то налезала на неё. Проценты тут не работают:
+     ширина и высота у такого треугольника нулевые. Сдвигаем отступами. */
+  margin-left: calc(var(--pin) * -.155);
+  margin-top: calc(var(--pin) * -.145);
+  filter: drop-shadow(0 0 2px rgba(5, 11, 22, .85))
+          drop-shadow(0 0 6px rgba(56, 189, 248, .55));
+  animation: monDir 1.6s ease-in-out infinite;
+}
+@keyframes monDir {
+  0%, 100% { opacity: .92; }
+  50% { opacity: 1; filter: drop-shadow(0 0 2px rgba(5, 11, 22, .85))
+                            drop-shadow(0 0 9px rgba(56, 189, 248, .95)); }
 }
 .mon-pin[data-dir] .mon-pin__dir { display: block; }
 .mon-pin__plate {
@@ -717,16 +744,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   box-shadow: 0 4px 12px -4px rgba(11, 31, 77, .4);
 }
 .mon-pin.is-sel .mon-pin__plate { display: block; }
-.mon-pin__age {
-  position: absolute; left: 0; top: 0;
-  margin-top: calc(var(--pin) * .62);
-  transform: translateX(-50%); white-space: nowrap; display: none;
-  font-style: normal; font-size: 11px; font-weight: 700; color: #c5362b;
-  text-shadow: 0 1px 0 #fff, 0 0 4px #fff;
-}
-.mon-pin.is-late .mon-pin__age { display: block; }
-.mon-pin.is-late.is-sel .mon-pin__age { margin-top: calc(var(--pin) * .62 + 22px); }
-
 /* точка стоянки на треке */
 .mon-stop { position: relative; width: 0; height: 0; }
 .mon-stop__dot {
@@ -950,9 +967,6 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 .mon[data-mode="dark"] .mon-rc__label {
   color: #cfd8e6; text-shadow: 0 1px 0 #0a1120, 0 0 5px #0a1120;
-}
-.mon[data-mode="dark"] .mon-pin__age {
-  color: #f58b7f; text-shadow: 0 1px 0 #0a1120, 0 0 5px #0a1120;
 }
 /* эти два кружка лежат НА КАРТЕ, а не на панели — фон нужен непрозрачный */
 .mon[data-mode="dark"] .mon-stop__dot,
@@ -1219,6 +1233,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
   var REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var STALE_MS = 10 * 60 * 1000;   // «свежая» точка — не старше 10 минут
+  // Насколько стрелка направления отходит от кольца вокруг иконки.
+  var DIR_GAP = 9;
   var POLL_MS = 15000;             // Ставтрэк отдаёт пачки ~раз в 30-60 с
 
   // label — как в легенде; short — в чипе карточки, где место делится
@@ -2147,9 +2163,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       el.innerHTML =
         '<i class="mon-pin__pulse"></i>' +
         '<span class="mon-pin__tile"><i class="mon-pin__img"></i><i class="mon-pin__ring"></i></span>' +
-        '<i class="mon-pin__dir"></i>' +
-        '<b class="mon-pin__plate"></b>' +
-        '<i class="mon-pin__age"></i>';
+        // ⚠️ Подписи «точка 18 ч назад» под меткой больше нет. Владелец
+        // 05.09.2026: «и так слева есть, зачем ещё писать» — свежесть точки
+        // видна в списке машин и в карточке, на карте она только мешала.
+        '<i class="mon-pin__dir"><b></b></i>' +
+        '<b class="mon-pin__plate"></b>';
       el.querySelector('.mon-pin__plate').textContent = v.plate || '';
       el.addEventListener('click', function () { select(v.vehicle_id, true); });
       return el;
@@ -2160,11 +2178,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var el = pinEl(v.vehicle_id);
         if (!el) return;
         var key = stateKey(v);
-        var st = STATES[key];
-        var ms = ageMs(v);
         el.dataset.state = key;
         el.classList.toggle('is-sel', v.vehicle_id === selected);
-        el.classList.toggle('is-late', ms >= STALE_MS);
         var tile = el.querySelector('.mon-pin__tile');
         applyRing(tile, key, stateColor(key), 2.5, '0 8px 20px -9px rgba(11,31,77,.6)');
         var pic = el.querySelector('.mon-pin__img');
@@ -2180,12 +2195,19 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           if (key === 'moving' && course !== undefined) {
             var rad = course * Math.PI / 180;
             el.dataset.dir = '1';
-            dir.style.color = stateColor(key);
-            // Плитка шире, чем выше, поэтому стрелка ходит по эллипсу —
-            // иначе сбоку она налезала бы на рисунок машины.
+            // ⚠️ Радиус считаем ОТ РАЗМЕРА ПЛИТКИ, а не числами: плитка
+            // меняется с зумом (24…44 px), а раньше стояли константы 30 и 24 —
+            // на дальнем зуме стрелка улетала от машины, на ближнем налезала
+            // на рамку. Плитка шире, чем выше, поэтому путь стрелки —
+            // эллипс: по горизонтали полуось больше.
+            // GAP — зазор ЗА кольцом: стрелка идёт снаружи линии, которая
+            // обводит иконку (владелец 05.09.2026), а не поверх неё.
+            var half = pinSize || 44;
+            var rx = half * 0.72 + DIR_GAP;    // ширина плитки = pin × 1.3
+            var ry = half * 0.58 + DIR_GAP;
             dir.style.transform =
-              'translate(' + (Math.sin(rad) * 30 - 6) + 'px,' +
-              (-Math.cos(rad) * 24 - 5) + 'px) rotate(' + course + 'deg)';
+              'translate(' + (Math.sin(rad) * rx).toFixed(1) + 'px,' +
+              (-Math.cos(rad) * ry).toFixed(1) + 'px) rotate(' + course + 'deg)';
           } else {
             delete el.dataset.dir;
           }
@@ -2630,12 +2652,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
             if (cls) el.classList.add(cls);
           }
         });
-        var el = pinEl(v.vehicle_id);
-        if (el) {
-          var age = el.querySelector('.mon-pin__age');
-          if (age) setTick(age, 'точка ' + text + ' назад');
-          el.classList.toggle('is-late', ms >= STALE_MS);
-        }
+        // ⚠️ Метку счётчик больше не трогает: подписи «точка … назад» под
+        // машиной нет. Свежесть точки живёт в списке и в карточке —
+        // подпись на карте её только дублировала.
+
       });
     }, 1000);
 

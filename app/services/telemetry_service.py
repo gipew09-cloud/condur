@@ -304,14 +304,72 @@ def smooth_fuel(series: list[Decimal], window: int = 5) -> list[Decimal]:
     return out
 
 
+def fuel_runs(levels: list[Decimal], noise: Decimal) -> list[tuple[int, int, Decimal]]:
+    """Свернуть кривую уровня в участки монотонного движения.
+
+    Возвращает [(индекс начала, индекс конца, изменение)]. Разворотом считаем
+    только уход от достигнутого экстремума больше чем на `noise` — иначе
+    дрожание датчика нарежет кривую на сотни микроучастков.
+
+    ⚠️ Экстремум двигаем только при СТРОГОМ улучшении. Иначе на ровном месте
+    (уровень стоит) конец участка уползал вперёд, и слив «за 5 минут»
+    превращался в слив «за 19 минут» — то есть переставал быть сливом.
+    """
+    if len(levels) < 2:
+        return []
+    runs: list[tuple[int, int, Decimal]] = []
+    hi = lo = start = peak = 0
+    direction = 0
+    for i in range(1, len(levels)):
+        if direction == 0:
+            # Ещё не знаем, куда идём: помним самую высокую и самую низкую
+            # точку — от них и начнётся участок, когда движение определится.
+            if levels[i] > levels[hi]:
+                hi = i
+            if levels[i] < levels[lo]:
+                lo = i
+            if levels[i] - levels[lo] >= noise:
+                start, peak, direction = lo, i, 1
+            elif levels[hi] - levels[i] >= noise:
+                start, peak, direction = hi, i, -1
+            continue
+        if direction > 0:
+            if levels[i] > levels[peak]:
+                peak = i
+            elif levels[peak] - levels[i] >= noise:
+                runs.append((start, peak, levels[peak] - levels[start]))
+                start, peak, direction = peak, i, -1
+        else:
+            if levels[i] < levels[peak]:
+                peak = i
+            elif levels[i] - levels[peak] >= noise:
+                runs.append((start, peak, levels[peak] - levels[start]))
+                start, peak, direction = peak, i, 1
+    if direction != 0:
+        runs.append((start, peak, levels[peak] - levels[start]))
+    return runs
+
+
 def fuel_summary(points, calibration) -> dict | None:
     """Расход, заправки и подозрения на слив за период.
 
     points — [(observed_at, сырое значение датчика)] по возрастанию времени.
 
-    Считаем не «первый минус последний»: так заправка посреди периода съела бы
-    весь расход. Идём по кривой и складываем отдельно все спуски (расход) и все
-    подъёмы (заправки).
+    ⚠️ Расход считаем ПО БАЛАНСУ: сколько было, минус сколько стало, плюс
+    сколько залили. Раньше складывались все спуски кривой, а мелкие подъёмы
+    объявлялись шумом и выбрасывались. Датчик в тряске гуляет вверх-вниз —
+    и каждый ложный спуск капал в расход, а компенсирующий подъём не
+    возвращался. За сутки набегали лишние литры: владелец 05.09.2026 поймал
+    расхождение со Ставтрэком примерно в 5 литров и сам назвал причину —
+    «программа считает, когда убавляется, а топливо иногда прибавляется».
+
+    Заправку ищем не по одной дельте, а по НЕПРЕРЫВНОМУ подъёму (`fuel_runs`):
+    налив на 300 литров растянут на несколько точек, и по одному шагу его
+    можно было не узнать.
+
+    ⚠️ Если топливо слили, слив тоже попадёт в «расход»: по датчику это
+    неотличимо. Поэтому подозрительные падения отдаются рядом отдельным
+    списком — решает человек.
     """
     if not calibration or not points:
         return None
@@ -325,32 +383,33 @@ def fuel_summary(points, calibration) -> dict | None:
     rows.sort(key=lambda r: r[0])
     smoothed = smooth_fuel([litres for _, litres in rows])
 
-    spent = Decimal(0)
     refuelled = Decimal(0)
     refuels: list[dict] = []
     drains: list[dict] = []
-    for i in range(1, len(smoothed)):
-        delta = smoothed[i] - smoothed[i - 1]
-        if abs(delta) < FUEL_NOISE_L:
-            continue
-        minutes = (rows[i][0] - rows[i - 1][0]).total_seconds() / 60
+    for start, end, delta in fuel_runs(smoothed, FUEL_NOISE_L):
+        minutes = (rows[end][0] - rows[start][0]).total_seconds() / 60
         if delta > 0:
+            # Мелкий подъём — плескание в баке на неровностях, не заправка.
             if delta >= FUEL_REFUEL_MIN_L:
                 refuelled += delta
                 refuels.append({
-                    "at": rows[i][0].isoformat(),
+                    "at": rows[end][0].isoformat(),
                     "litres": float(delta.quantize(Decimal("0.1"))),
                 })
-            # мелкий подъём — плескание в баке на неровностях, не заправка
             continue
         drop = -delta
-        spent += drop
         if drop >= FUEL_DRAIN_MIN_L and minutes <= FUEL_DRAIN_MAX_MINUTES:
             drains.append({
-                "at": rows[i][0].isoformat(),
+                "at": rows[end][0].isoformat(),
                 "litres": float(drop.quantize(Decimal("0.1"))),
                 "minutes": round(minutes),
             })
+
+    # Баланс бака. Отрицательного расхода не бывает: если он получился, значит
+    # долив не опознан как заправка — честнее показать ноль, чем минус.
+    spent = smoothed[0] - smoothed[-1] + refuelled
+    if spent < 0:
+        spent = Decimal(0)
     return {
         "start_l": float(smoothed[0].quantize(Decimal("0.1"))),
         "end_l": float(smoothed[-1].quantize(Decimal("0.1"))),
