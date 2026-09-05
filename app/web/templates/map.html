@@ -89,6 +89,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   overflow-y: auto;
 }
 .mon-panel[hidden] { display: none; }
+/* ⚠️ Скрытие панели работало ТОЛЬКО на телефоне: правило `.mon-sheet-hide`
+   лежало внутри медиазапроса. На компьютере класс вешался, а карточка живой
+   машины оставалась на экране и закрывала показания точки — владелец
+   05.09.2026: «машина перекрывает справа вот эту штуку». */
+.mon-sheet-hide { display: none !important; }
 
 /* ---------- шапка списка ---------- */
 .mon-head {
@@ -188,18 +193,24 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
 /* ---------- легенда и честные приписки ---------- */
 .mon-foot { border-top: 1px solid var(--mon-divider); }
-/* Легенда ужата: владелец 30.08 попросил больше места под список и смены. */
-.mon-legend { display: grid; gap: var(--mon-legend-gap); padding: 9px 14px 7px; }
+/* Легенда ужата дважды: 30.08 и 05.09 — владелец оба раза просил больше
+   места под список и смены. Теперь она в ДВА СТОЛБЦА и мельче: пять строк
+   занимали высоту трёх машин в списке. */
+.mon-legend {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 3px 10px; padding: 7px 14px 6px;
+}
 .mon-legend__ttl {
-  font-size: 11px; font-weight: 800; color: var(--mon-text-4);
+  grid-column: 1 / -1;
+  font-size: 10px; font-weight: 800; color: var(--mon-text-4);
   text-transform: uppercase; letter-spacing: .06em;
 }
 .mon-legend__row {
   display: grid; grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px; align-items: center;
+  gap: 6px; align-items: center;
 }
 .mon-legend__row i {
-  width: 12px; height: 12px; border-radius: 4px; background: var(--mon-surface);
+  width: 10px; height: 10px; border-radius: 3px; background: var(--mon-surface);
   box-sizing: border-box; border: 0;
 }
 /* Цвет состояния — из стилей, а не из разметки: инлайновый стиль тёмная тема
@@ -209,7 +220,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 .mon-legend__row[data-state="unknown"] i { box-shadow: 0 0 0 2px #94a3b8; }
 .mon-legend__row[data-state="stale"] i   { box-shadow: 0 0 0 2px #c5362b; }
 .mon-legend__row[data-state="invalid"] i { border: 2px dashed #e0a32e; box-shadow: none; }
-.mon-legend__row span { font-size: 11.5px; font-weight: 600; color: #3a4453; }
+.mon-legend__row span { font-size: 10.5px; font-weight: 600; color: #3a4453; }
+.mon-fuel-calc {
+  margin-top: 6px; font-size: 11px; line-height: 1.45; color: var(--mon-text-3);
+}
+.mon-fuel-calc span { opacity: .8; }
 .mon-note {
   margin: 0 12px 6px; padding: 10px 12px;
   border-radius: 11px; background: #fff8eb; border: 1px solid #f9d18b;
@@ -469,10 +484,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   text-transform: uppercase; color: var(--mon-text-3);
 }
 .mon-object select {
-  width: 100%; height: 38px; margin: 0; padding: 0 10px;
+  width: 100%; height: 38px; margin: 0; padding: 0 34px 0 10px;
   border-radius: 10px; border: 1px solid var(--mon-border);
   background: var(--mon-fill); color: var(--mon-text);
   font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+  /* ⚠️ Своя стрелка. Без неё поле выглядит как обычный ввод текста, и
+     владелец 05.09.2026 не понял, что машину тут можно ВЫБРАТЬ, — продолжал
+     тыкать метку на карте. Системную стрелку Safari и Chrome рисуют
+     по-разному, а в тёмной теме она почти не видна. */
+  -webkit-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231d4ed8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center; background-size: 16px 16px;
+}
+.mon[data-mode="dark"] .mon-object select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239dc0ff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 }
 .mon-tracks__ttl {
   flex: 0 0 auto; padding: 2px 12px 6px;
@@ -797,6 +823,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
    светлый, яркий, чтобы запоминался». */
 .mon-pin__dir {
   position: absolute; left: 0; top: 0; display: none;
+  color: #38bdf8;            /* запасной цвет, если состояние неизвестно */
   transition: transform .7s cubic-bezier(.22, 1, .36, 1);
   pointer-events: none;
 }
@@ -804,7 +831,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   display: block; width: 0; height: 0;
   border-left: calc(var(--pin) * .155) solid transparent;
   border-right: calc(var(--pin) * .155) solid transparent;
-  border-bottom: calc(var(--pin) * .29) solid #38bdf8;
+  /* ⚠️ Цвет НЕ задаём здесь: стрелка наследует его от родителя, а родителю
+     цвет ставит JS — цвет состояния (зелёный, когда едет). Владелец
+     05.09.2026: «она должна быть зелёного вообще». Своё `color` у этого
+     элемента перебивало наследование, и стрелка оставалась голубой. */
+  border-bottom: calc(var(--pin) * .29) solid currentColor;
   /* ⚠️ Треугольник из рамок растёт ВПРАВО-ВНИЗ от своей точки, а не от
      центра, и при повороте это смещение вращается вместе с ним — стрелка
      то отходила от плитки, то налезала на неё. Проценты тут не работают:
@@ -812,13 +843,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   margin-left: calc(var(--pin) * -.155);
   margin-top: calc(var(--pin) * -.145);
   filter: drop-shadow(0 0 2px rgba(5, 11, 22, .85))
-          drop-shadow(0 0 6px rgba(56, 189, 248, .55));
+          drop-shadow(0 0 5px rgba(255, 255, 255, .35));
   animation: monDir 1.6s ease-in-out infinite;
 }
 @keyframes monDir {
-  0%, 100% { opacity: .92; }
-  50% { opacity: 1; filter: drop-shadow(0 0 2px rgba(5, 11, 22, .85))
-                            drop-shadow(0 0 9px rgba(56, 189, 248, .95)); }
+  0%, 100% { opacity: .9; }
+  50% { opacity: 1; }
 }
 .mon-pin[data-dir] .mon-pin__dir { display: block; }
 .mon-pin__plate {
@@ -1182,22 +1212,22 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       <!-- Фильтр значков переехал из плеера сюда: плеер по центру карты
            должен быть узким (он закрывает саму дорогу), а список «что
            показывать» — спокойно живёт в боковой панели, как у Ставтрэка. -->
-      <div class="mon-tracks__ttl">Что показывать на треке</div>
+      <div class="mon-tracks__ttl">Что отмечать на треке</div>
       <div class="mon-play__filters" id="mon-play-filters">
         <button type="button" data-kind="driver"
-          title="Что водитель нажимал в боте: смена, рейс, фото, расходы"><i class="ph ph-hand-tap"></i>Водитель</button>
+          title="Смена, рейс, фото документов, расходы — всё, что водитель нажимал в боте"><i class="ph ph-hand-tap"></i>Кнопки водителя</button>
         <button type="button" data-kind="zone"
-          title="Приезды на РЦ и отъезды с них"><i class="ph ph-factory"></i>Геозоны</button>
+          title="Въезд в геозону распределительного центра и выезд из неё"><i class="ph ph-factory"></i>Приезды на РЦ</button>
         <button type="button" data-kind="alarm"
-          title="SOS, простои, «ехал без смены», пропал сигнал"><i class="ph ph-warning"></i>Тревоги</button>
+          title="SOS, долгий простой, «ехал без смены», пропал сигнал"><i class="ph ph-warning"></i>Тревоги</button>
         <button type="button" data-kind="stop"
-          title="Где машина стояла дольше 5 минут"><i class="ph ph-car-profile"></i>Стоянки</button>
+          title="Где машина стояла дольше пяти минут"><i class="ph ph-car-profile"></i>Где стоял</button>
         <button type="button" data-kind="engine"
-          title="Где заводили и где глушили двигатель"><i class="ph ph-key"></i>Двигатель</button>
+          title="Где заводили и где глушили двигатель"><i class="ph ph-key"></i>Завёл и заглушил</button>
         <button type="button" data-kind="speed"
-          title="Где машина шла быстрее 90 км/ч дольше минуты"><i class="ph ph-timer"></i>Превышения</button>
+          title="Где машина шла быстрее 90 км/ч дольше минуты"><i class="ph ph-timer"></i>Ехал быстро</button>
         <button type="button" data-kind="fuel"
-          title="Где заправлялись и где уровень упал слишком резко"><i class="ph ph-gas-pump"></i>Топливо</button>
+          title="Где заправлялись и где уровень в баке упал слишком резко"><i class="ph ph-gas-pump"></i>Заправки и сливы</button>
       </div>
     </div>
     <div class="mon-foot" data-pane="objects">
@@ -1365,7 +1395,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   var REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var STALE_MS = 10 * 60 * 1000;   // «свежая» точка — не старше 10 минут
   // Насколько стрелка направления отходит от кольца вокруг иконки.
-  var DIR_GAP = 9;
+  // ⚠️ 13, а не 9: на диагоналях угол плитки ближе, чем её бок, и стрелка
+  // задевала рисунок машины — владелец 05.09.2026: «она всё равно заходит
+  // за поля машины, отодвинь ещё».
+  var DIR_GAP = 16;
   var POLL_MS = 15000;             // Ставтрэк отдаёт пачки ~раз в 30-60 с
 
   // label — как в легенде; short — в чипе карточки, где место делится
@@ -2030,6 +2063,17 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           Math.round(sum.refuelled_l) + ' л</small>';
       }
       html += '</div>';
+      // ⚠️ Показываем, ИЗ ЧЕГО получилось число. Расход считается по балансу
+      // бака: сколько было − сколько стало + сколько залили. Владелец
+      // 05.09.2026 сравнил с Ставтрэком («у нас 12, у них 25») и без разбора
+      // проверить это было нечем: два числа, и оба «просто есть».
+      if (sum.start_l !== undefined && sum.end_l !== undefined) {
+        html += '<div class="mon-fuel-calc">было ' + Math.round(sum.start_l) +
+          ' л → стало ' + Math.round(sum.end_l) + ' л' +
+          (sum.refuelled_l > 0 ? ', залито ' + Math.round(sum.refuelled_l) + ' л' : '') +
+          '<br><span>Окно скользящее: последние 24 часа от текущей минуты, ' +
+          'а не с полуночи — с «сегодня» у поставщика числа не сойдутся.</span></div>';
+      }
       if (sum.drains && sum.drains.length) {
         // Резкое падение уровня за считанные минуты — это не расход.
         html += '<div class="mon-card__alert" style="margin:10px 0 0">Резкое падение уровня: ' +
@@ -2291,6 +2335,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (selected === null) {
         setFollow(null);
         hideTrack();
+        // ⚠️ И просмотр трека тоже. Раньше крестик закрывал карточку, а вехи
+        // и значки событий оставались висеть посреди карты — владелец
+        // 05.09.2026: «нажимаешь крестик, а пометки остаются».
+        if (play.shift) stopPlayback(false);
       }
       renderList();
       renderCard();
@@ -2372,8 +2420,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
             // GAP — зазор ЗА кольцом: стрелка идёт снаружи линии, которая
             // обводит иконку (владелец 05.09.2026), а не поверх неё.
             var half = pinSize || 44;
-            var rx = half * 0.72 + DIR_GAP;    // ширина плитки = pin × 1.3
-            var ry = half * 0.58 + DIR_GAP;
+            var rx = half * 0.78 + DIR_GAP;    // ширина плитки = pin × 1.3
+            var ry = half * 0.64 + DIR_GAP;
+            // Цвет стрелки = цвет состояния: едет — зелёная, как рамка.
+            dir.style.color = stateColor(key);
             dir.style.transform =
               'translate(' + (Math.sin(rad) * rx).toFixed(1) + 'px,' +
               (-Math.cos(rad) * ry).toFixed(1) + 'px) rotate(' + course + 'deg)';
