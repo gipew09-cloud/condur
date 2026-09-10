@@ -743,10 +743,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   font-size: 10.5px; font-weight: 800; line-height: 1.4;
   background: var(--mon-surface); border: 2px solid currentColor;
   box-shadow: 0 4px 12px -4px rgba(11,31,77,.6);
-  transform: translate(-50%, -140%);
+  /* ⚠️ Подпись стоит СПРАВА от точки, а не над ней. Над точкой она накрывала
+     саму машину: метку, номер и кружок проигрывателя — владелец 05.09.2026
+     дважды показал это скриншотом. Справа точка остаётся открытой, а этажи
+     разводят подписи между собой, когда события в одном дворе. */
+  /* Отступ вправо считается ОТ РАЗМЕРА ПЛИТКИ: она шире, чем выше (pin × 1.3),
+     и при 15 px подпись всё ещё лежала на рисунке машины — померено. */
+  transform: translate(calc(var(--pin) * .65 + 10px), -155%);
 }
-.mon-milestone[data-tier="1"] { transform: translate(-50%, 42%); }
-.mon-milestone[data-tier="2"] { transform: translate(-50%, 165%); }
+.mon-milestone[data-tier="1"] { transform: translate(calc(var(--pin) * .65 + 10px), -50%); }
+.mon-milestone[data-tier="2"] { transform: translate(calc(var(--pin) * .65 + 10px), 55%); }
 /* Значок действия водителя на линии трека. */
 /* ⚠️ Значок события — ЦВЕТНОЙ КРУЖОК с белым знаком внутри, а не эмодзи в
    белом круге. Эмодзи рисуются шрифтом системы: на Маке одни, на телефоне

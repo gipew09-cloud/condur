@@ -56,7 +56,10 @@ from app.models import (
     WebSession,
 )
 from app.config import settings
-from app.services import act_service, auth_service, billing, geocode_service, rc_service, telemetry_service
+from app.services import (
+    act_service, auth_service, billing, expense_service, geocode_service, rc_service,
+    telemetry_service,
+)
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
 from app.services.timeutil import (
@@ -67,6 +70,7 @@ from app.services.timeutil import (
     month_floor,
     owner_tz,
     smart_since_label,
+    to_owner_tz,
 )
 from app.web.insights import generate_insights
 
@@ -4095,6 +4099,39 @@ async def _driver_positions(session: AsyncSession, owner_id: int) -> list[dict]:
 _VOLTAGE_FALLBACK_WINDOW = timedelta(minutes=15)
 
 
+# Когда машина въехала в геозону, в которой стоит сейчас.
+#
+# ⚠️ Кэш в памяти процесса. Пока машина в той же зоне, время въезда не
+# меняется — а считается оно по истории точек за двое суток. Пересчитывать это
+# на каждый опрос (раз в 15 секунд у каждого открытого экрана) значило бы
+# перечитывать историю впустую. Ключ — машина, значение — (зона, время въезда).
+_ZONE_SINCE: dict[int, tuple[str, datetime]] = {}
+
+
+async def _zone_since(session, vehicle_id: int, zone, now: datetime):
+    """Начало текущей стоянки машины в геозоне. None — машина вне зон."""
+    if zone is None:
+        _ZONE_SINCE.pop(vehicle_id, None)
+        return None
+    cached = _ZONE_SINCE.get(vehicle_id)
+    if cached is not None and cached[0] == zone.name:
+        return cached[1]
+    radius = zone.geofence_radius_m or rc_service.RC_DEFAULT_RADIUS_M
+    started = await telemetry_service.rc_presence_started_at(
+        session,
+        vehicle_id=vehicle_id,
+        rc_lat=float(zone.latitude),
+        rc_lon=float(zone.longitude),
+        # Выездной радиус шире въездного — иначе машина, стоящая на самой
+        # границе, «выезжала» и «въезжала» от дрожания GPS каждые полминуты.
+        exit_radius_m=radius * 1.3,
+        now=now,
+        fallback=now,
+    )
+    _ZONE_SINCE[vehicle_id] = (zone.name, started)
+    return started
+
+
 @app.get("/api/drivers-locations")
 async def api_drivers_locations(
     owner: Annotated[Owner, Depends(current_owner)],
@@ -4245,9 +4282,17 @@ async def api_drivers_locations(
     # В какой геозоне РЦ машина стоит прямо сейчас. Считается по последней
     # точке из «быстрого слоя» — без запроса к истории, поэтому дёшево даже
     # при опросе раз в 15 секунд.
+    now_utc = datetime.now(timezone.utc)
     for v in vehicles:
         zone = rc_service.nearest_center_within(v["lat"], v["lon"], rc_objects)
         v["zone"] = zone.name if zone is not None else None
+        # Сколько машина стоит В ЭТОЙ геозоне. Владелец 09.09.2026: «нету
+        # информации по геозоне, сколько на геозоне машины стояли».
+        since = await _zone_since(session, v["vehicle_id"], zone, now_utc)
+        v["zone_since"] = since.isoformat() if since else None
+        v["zone_duration_label"] = (
+            telemetry_service.duration_label(since, now_utc) if since else None
+        )
     return {
         "drivers": await _driver_positions(session, owner.id),
         "vehicles": vehicles,
@@ -4915,6 +4960,411 @@ async def api_vehicle_events(
             "trip_id": event.trip_id,
         })
     return {"vehicle_id": vehicle_id, "events": events}
+
+
+# Лента событий владельца — то, что в приложении показывает кнопка «Журнал».
+#
+# ⚠️ Сюда идёт только то, что ПРОИЗОШЛО: действия водителя, тревоги, деньги.
+# Напоминания, опросы и служебные рассылки (`start_shift_reminder`,
+# `*_prompt`, `econometer_sent`, `location_sent`, `admin_*`) в ленту не
+# попадают — иначе журнал превратится в мусор, и владелец перестанет его
+# открывать. Он про это сказал прямо: «сыпь» ему не нужна.
+_FEED_EVENT_LABELS = {
+    **_TRACK_EVENT_LABELS,
+    "shift_completed": ("Смена закрыта", "shift"),
+    "shift_reassigned": ("Смену передали другому", "shift"),
+    "trip_reassigned": ("Рейс передали другому", "trip"),
+    "trip_route_edited": ("Маршрут рейса изменён", "trip"),
+    "trip_rc_confirmed": ("РЦ подтверждён", "zone"),
+    "trip_rc_mismatch": ("РЦ не совпал с заявленным", "alarm"),
+    "cash_confirmed": ("Деньги приняты", "money"),
+    "expense_approved": ("Расход утверждён", "money"),
+    "expense_rejected": ("Расход отклонён", "money"),
+    "expense_amount_edited": ("Сумма расхода исправлена", "money"),
+    "trip_revenue_from_driver": ("Выручку назвал водитель", "money"),
+    "trip_revenue_approved": ("Выручка утверждена", "money"),
+    "late_start_alert": ("Смена начата с опозданием", "alarm"),
+    "no_show_alert": ("Водитель не вышел", "alarm"),
+}
+
+# Потолок ленты. Больше двухсот строк за раз телефон не покажет, а тянуть их
+# по мобильному интернету — впустую.
+_FEED_LIMIT = 200
+
+
+def _feed_day_label(local: datetime, today) -> str:
+    """«Сегодня», «Вчера» или «8 сентября» — заголовок дня в ленте.
+
+    ⚠️ День считается в часовом поясе ВЛАДЕЛЬЦА, а не телефона. Иначе события
+    ночной смены разъедутся по разным дням, стоит ему уехать в другой пояс, —
+    и одно и то же событие в кабинете и в приложении окажется в разных днях.
+    """
+    days = (today - local.date()).days
+    if days == 0:
+        return "Сегодня"
+    if days == 1:
+        return "Вчера"
+    label = f"{local.day} {_RU_MONTHS_GEN[local.month - 1]}"
+    return label if local.year == today.year else f"{label} {local.year}"
+
+
+def _feed_int(value) -> int | None:
+    """Целое из payload. Там лежит что угодно: число, строка, None."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _feed_money(value) -> str | None:
+    """«4 500 ₽» из суммы. Ноль, мусор и пустое — это не сумма, а её отсутствие.
+
+    ⚠️ Ноль возвращать нельзя: в ленте «0 ₽» читается как «водитель сдал ноль»,
+    хотя на деле мы просто не знаем сумму.
+    """
+    if value is None:
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+    return telemetry_service.rub_label(amount)
+
+
+def _feed_route(trip) -> str | None:
+    """«Агропарк → Пятёрочка Шушары» — откуда и куда шёл рейс."""
+    if trip is None:
+        return None
+    origin = (trip.origin or "").strip()
+    destination = (trip.destination or "").strip()
+    if origin and destination:
+        return f"{origin} → {destination}"
+    return origin or destination or None
+
+
+def _feed_detail(event_type: str, payload: dict, expense, trip, zone) -> str | None:
+    """Вторая строка события: короткая подробность.
+
+    ⚠️ Собирается ТОЛЬКО из записанного: payload события, расход в базе, рейс,
+    справочник РЦ. Ничего не досчитываем и не предполагаем — нет данных, нет
+    строки. Владелец 08.09.2026 про такие ленты сказал прямо: «сыпь» не нужна,
+    а выдуманное число в журнале хуже пустого места, потому что журнал он
+    открывает, чтобы разобраться в споре.
+    """
+    p = payload or {}
+    parts: list[str | None] = []
+
+    if event_type in ("expense_submitted", "expense_approved", "expense_amount_edited"):
+        category = p.get("category") or (expense.category if expense is not None else None)
+        amount = p.get("amount")
+        if amount is None and expense is not None:
+            amount = expense.amount_rub
+        parts = [_EXPENSE_CAT_LABELS.get(category), _feed_money(amount)]
+    elif event_type in ("cash_submitted", "cash_confirmed"):
+        parts = [_feed_money(p.get("amount"))]
+    elif event_type in (
+        "trip_revenue_set", "trip_revenue_approved", "trip_revenue_from_driver"
+    ):
+        parts = [_feed_money(p.get("revenue") if p.get("revenue") is not None else p.get("amount"))]
+    elif event_type in ("rc_arrived", "rc_departed", "rc_downtime_alert", "trip_rc_confirmed",
+                        "trip_rc_mismatch"):
+        name = (zone.name if zone is not None else None) or p.get("rc_name")
+        waited = _feed_int(p.get("waited_minutes"))
+        parts = [
+            name,
+            f"стоял {telemetry_service.minutes_label(waited)}" if waited else None,
+            _feed_money(p.get("suggested_amount_rub")),
+        ]
+    elif event_type == "silence_alert":
+        hours = p.get("hours_silent")
+        parts = [f"нет сигнала {hours} ч" if hours is not None else None]
+    elif event_type == "no_show_alert":
+        hours = p.get("hours")
+        parts = [f"прошло {hours} ч" if hours is not None else None]
+    elif event_type == "late_start_alert":
+        expected = p.get("expected")
+        parts = [f"ждали к {expected}" if expected else None]
+    elif event_type == "fuel_overrun_alert":
+        percent = p.get("percent")
+        parts = [
+            f"на {round(float(percent))} % больше нормы" if percent is not None else None,
+            _feed_money(p.get("excess_rub")),
+        ]
+    elif event_type == "downtime":
+        parts = [p.get("label")]
+    elif event_type == "sos":
+        parts = [p.get("state")]
+    else:
+        # Рейсовые и складские события: куда шёл рейс. Для смен своей подробности
+        # нет — там всё сказано в самой строке.
+        parts = [_feed_route(trip)]
+
+    detail = " · ".join(str(part) for part in parts if part)
+    return detail or None
+
+
+def _feed_photo(event_type: str, expense, trip) -> str | None:
+    """Telegram file_id снимка, если он к этому событию есть.
+
+    Показывает такое фото `/api/photo/{file_id}` — там же и проверка, что оно
+    принадлежит этому владельцу. ⚠️ Своего хранилища у фото нет: это file_id
+    бота водителя (см. PROBLEMS.md, риск потери).
+    """
+    if event_type == "waybill_uploaded" and trip is not None:
+        return trip.waybill_photo_url
+    if event_type in ("expense_submitted", "expense_approved", "expense_amount_edited"):
+        return expense.receipt_photo_url if expense is not None else None
+    return None
+
+
+@app.get("/api/events")
+async def api_events(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    hours: int = 72,
+    limit: int = _FEED_LIMIT,
+):
+    """Лента событий владельца: что происходило по всем машинам.
+
+    Для кнопки «Журнал» в приложении. Показывает ФАКТЫ с временем и, где это
+    известно, машину, водителя, короткую подробность, фото и место.
+
+    ⚠️ Машину берём через смену или рейс события, а не «по времени». Водитель
+    за день может пересесть, и привязка по совпадению времени соврала бы.
+    Не удалось определить — строка остаётся без машины, это честнее выдумки.
+
+    ⚠️ Место (`lat`/`lon`) есть только у событий геозоны: там его знает
+    справочник РЦ. У остальных координат нет и взяться им неоткуда — на карте
+    они не показываются вовсе, а не ставятся «примерно».
+    """
+    hours = max(1, min(int(hours or 72), 24 * 30))
+    limit = max(1, min(int(limit or _FEED_LIMIT), _FEED_LIMIT))
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    rows = (await session.execute(
+        select(Event)
+        .where(
+            Event.owner_id == owner.id,
+            Event.created_at >= since,
+            Event.event_type.in_(list(_FEED_EVENT_LABELS)),
+        )
+        .order_by(Event.created_at.desc())
+        .limit(limit)
+    )).scalars().all()
+
+    shift_ids = {e.shift_id for e in rows if e.shift_id}
+    trip_ids = {e.trip_id for e in rows if e.trip_id}
+    driver_ids = {e.driver_id for e in rows if e.driver_id}
+    expense_ids = {
+        _feed_int((e.payload or {}).get("expense_id")) for e in rows
+    } - {None}
+    rc_ids = {_feed_int((e.payload or {}).get("rc_id")) for e in rows} - {None}
+
+    shift_vehicle = dict((await session.execute(
+        select(Shift.id, Shift.vehicle_id).where(Shift.id.in_(shift_ids or {0}))
+    )).all())
+    trips = {row.id: row for row in (await session.execute(
+        select(
+            Trip.id, Trip.vehicle_id, Trip.origin, Trip.destination,
+            Trip.waybill_photo_url,
+        ).where(Trip.id.in_(trip_ids or {0}))
+    )).all()}
+    plates = dict((await session.execute(
+        select(Vehicle.id, Vehicle.license_plate).where(Vehicle.owner_id == owner.id)
+    )).all())
+    drivers = dict((await session.execute(
+        select(Driver.id, Driver.full_name).where(Driver.id.in_(driver_ids or {0}))
+    )).all())
+    # ⚠️ Расход и РЦ берём с проверкой владельца: id приходит из payload, а
+    # payload пишут разные места. Чужую строку по чужому id отдавать нельзя.
+    expenses = {row.id: row for row in (await session.execute(
+        select(
+            Expense.id, Expense.amount_rub, Expense.category, Expense.status,
+            Expense.receipt_photo_url,
+        ).where(Expense.id.in_(expense_ids or {0}), Expense.owner_id == owner.id)
+    )).all()}
+    zones = {row.id: row for row in (await session.execute(
+        select(
+            DistributionCenter.id, DistributionCenter.name,
+            DistributionCenter.latitude, DistributionCenter.longitude,
+        ).where(
+            DistributionCenter.id.in_(rc_ids or {0}),
+            DistributionCenter.owner_id == owner.id,
+        )
+    )).all()}
+
+    tz = owner_tz(owner.timezone)
+    today = datetime.now(tz).date()
+    events = []
+    for event in rows:
+        payload = event.payload or {}
+        local = to_owner_tz(event.created_at, owner.timezone)
+        trip = trips.get(event.trip_id)
+        expense = expenses.get(_feed_int(payload.get("expense_id")))
+        zone = zones.get(_feed_int(payload.get("rc_id")))
+        vehicle_id = (
+            shift_vehicle.get(event.shift_id)
+            or (trip.vehicle_id if trip is not None else None)
+            or _feed_int(payload.get("vehicle_id"))
+        )
+        label, kind = _FEED_EVENT_LABELS[event.event_type]
+        events.append({
+            "id": event.id,
+            "at": event.created_at.isoformat(),
+            "at_label": fmt_dt(event.created_at, owner.timezone, "%d.%m, %H:%M"),
+            # Лента разбита на дни: в строке остаётся только время, дата стоит
+            # заголовком над группой — так день читается сверху вниз.
+            "time_label": fmt_dt(event.created_at, owner.timezone, "%H:%M"),
+            "day": local.date().isoformat(),
+            "day_label": _feed_day_label(local, today),
+            "type": event.event_type,
+            "kind": kind,
+            "label": label,
+            "detail": _feed_detail(event.event_type, payload, expense, trip, zone),
+            "vehicle_id": vehicle_id,
+            "plate": plates.get(vehicle_id),
+            "driver": drivers.get(event.driver_id),
+            "photo": _feed_photo(event.event_type, expense, trip),
+            # Ждёт решения владельца: расход, по которому он ещё не сказал ни
+            # «одобрить», ни «отклонить». Такие строки в приложении помечены.
+            "awaiting": bool(
+                expense is not None
+                and expense.status == "pending"
+                and event.event_type == "expense_submitted"
+            ),
+            "expense_id": expense.id if expense is not None else None,
+            "trip_id": event.trip_id,
+            "shift_id": event.shift_id,
+            "place": zone.name if zone is not None else None,
+            "lat": float(zone.latitude)
+            if zone is not None and zone.latitude is not None else None,
+            "lon": float(zone.longitude)
+            if zone is not None and zone.longitude is not None else None,
+        })
+    return {"hours": hours, "events": events}
+
+
+@app.post("/api/expenses/{expense_id}/decision")
+async def api_expense_decision(
+    request: Request,
+    expense_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    action: Annotated[str, Form()],
+    amount_rub: Annotated[str, Form()] = "",
+):
+    """Решение владельца по расходу — прямо из журнала в приложении.
+
+    Владелец 10.09.2026 про журнал: «отвечать на сообщения, вписывать какие-то
+    данные». В боте под расходом три кнопки: одобрить, изменить сумму,
+    отклонить. Здесь ровно то же самое и с теми же последствиями: тот же
+    статус, та же запись в события, то же (по флагу) сообщение водителю. Иначе
+    решение из телефона и решение из Telegram разошлись бы, а расход один.
+
+    ⚠️ Идемпотентно: уже решённый расход второй раз не переигрываем, а
+    возвращаем настоящий статус. В дороге связь рвётся, и повтор нажатия не
+    должен отменять первое решение.
+    """
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Bad action")
+
+    expense = await session.get(Expense, expense_id)
+    if expense is None or expense.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    was_pending = expense.status == "pending"
+
+    # Исправленная сумма вписывается ДО решения: одобряем уже то, что владелец
+    # поправил, а не то, что прислал водитель.
+    if amount_rub.strip() and was_pending:
+        try:
+            amount = Decimal(amount_rub.replace(",", ".").replace(" ", ""))
+        except InvalidOperation:
+            raise HTTPException(status_code=400, detail="Bad amount")
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Bad amount")
+        amount = amount.quantize(Decimal("0.01"))
+        if amount != expense.amount_rub:
+            old_amount = expense.amount_rub
+            expense.amount_rub = amount
+            await log_event(
+                session,
+                owner_id=owner.id,
+                driver_id=expense.driver_id,
+                shift_id=expense.shift_id,
+                trip_id=expense.trip_id,
+                event_type="expense_amount_edited",
+                payload={
+                    "expense_id": expense.id,
+                    "amount": str(amount),
+                    "old_amount": str(old_amount),
+                    "category": expense.category,
+                    "source": "app",
+                },
+            )
+
+    decided = await expense_service.decide_expense(
+        session, expense_id=expense_id, approve=action == "approve"
+    )
+    if decided is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if was_pending:
+        await log_event(
+            session,
+            owner_id=owner.id,
+            driver_id=decided.driver_id,
+            shift_id=decided.shift_id,
+            trip_id=decided.trip_id,
+            event_type=(
+                "expense_approved" if decided.status == "approved" else "expense_rejected"
+            ),
+            payload={
+                "expense_id": decided.id,
+                "amount": str(decided.amount_rub),
+                "category": decided.category,
+                "source": "app",
+            },
+        )
+    await session.commit()
+
+    # Водителю сообщаем только при включённом флаге — ровно как из бота.
+    # ⚠️ Правило про уведомления живёт в одном месте, и второго решения тут не
+    # заводим: иначе телефон будет писать водителю, а Telegram молчать.
+    if was_pending and settings.feature_notify_driver_approval:
+        driver = await session.get(Driver, decided.driver_id)
+        if driver is not None and driver.telegram_id is not None:
+            from app.bots import messages as bot_messages
+            from app.bots.notifications import notify_driver
+
+            template = (
+                bot_messages.EXPENSE_APPROVED_DRIVER
+                if decided.status == "approved"
+                else bot_messages.EXPENSE_REJECTED_DRIVER
+            )
+            await notify_driver(
+                request.app.state.driver_bot,
+                session,
+                driver.telegram_id,
+                template.format(
+                    category=expense_service.CATEGORY_LABELS.get(
+                        decided.category, decided.category
+                    ),
+                    amount=decided.amount_rub,
+                ),
+            )
+
+    return {
+        "expense_id": decided.id,
+        "status": decided.status,
+        "amount_rub": str(decided.amount_rub),
+        "label": "Одобрено" if decided.status == "approved" else "Отклонено",
+        # Решение было принято раньше — телефон покажет это словами, а не
+        # сделает вид, что нажатие сработало сейчас.
+        "already_decided": not was_pending,
+    }
 
 
 @app.get("/api/vehicles/{vehicle_id}/shifts")
