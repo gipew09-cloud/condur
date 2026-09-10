@@ -1461,7 +1461,9 @@ def test_event_pins_are_coloured_icons_not_emoji():
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     assert "var EVENT_COLORS = {" in src
-    assert "stop: 'ph-car-profile', engine_on: 'ph-key'" in src
+    # ⚠️ У стоянки не значок, а буква «P» — так у Ставтрэка, и её читают все.
+    assert "stop: 'letter:P', engine_on: 'ph-key'" in src
+    assert "icon.indexOf('letter:') === 0" in src
     assert "el.style.background = EVENT_COLORS[ev.kind]" in src
     # старых эмодзи в таблице значков не осталось
     icons = src.split("var EVENT_ICONS = {")[1].split("};")[0]
@@ -1551,3 +1553,21 @@ def test_legend_takes_two_columns():
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     legend = src.split(".mon-legend {")[1].split("}")[0]
     assert "grid-template-columns: 1fr 1fr" in legend
+
+
+def test_event_card_answers_where_and_how_long():
+    """Карточка события — как у Ставтрэка: что, дата, время, адрес, сколько.
+
+    Владелец 05.09.2026 прислал их вид: «Стоянка · Дата · Время · Адрес ·
+    Длительность». Без адреса «где это было» приходится искать на карте
+    глазами, а это главное, ради чего событие вообще открывают.
+    ⚠️ Адрес приезжает отдельным запросом и кэшируется — карточка не ждёт его.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "function showEventBalloon(ev, best, own, bestDiff)" in src
+    assert '<div class="meta">Дата: <b>' in src
+    assert '<div class="meta">Время: <b>' in src
+    assert "Длительность: <b>" in src
+    assert "function eventAddress(lat, lon, done)" in src
+    assert "/api/geocode/reverse?lat=" in src
+    assert "var eventAddrCache = {};" in src
