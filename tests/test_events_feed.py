@@ -31,9 +31,11 @@ from sqlalchemy.ext.compiler import compiles  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 from app.models import (  # noqa: E402
-    Base, DistributionCenter, Driver, Event, Expense, Owner, Shift, Vehicle,
+    Base, DistributionCenter, Driver, Event, Expense, Owner, Shift, Trip, Vehicle,
 )
-from app.web.router import api_events, api_expense_decision  # noqa: E402
+from app.web.router import (  # noqa: E402
+    api_events, api_expense_decision, shift_delete,
+)
 
 NOW = datetime.now(timezone.utc)
 
@@ -85,7 +87,7 @@ def test_служебный_шум_в_ленту_не_попадает():
         session, owner, vehicle, driver = await _db()
         session.add_all([
             Event(owner_id=owner.id, driver_id=driver.id,
-                  event_type="trip_in_transit", created_at=NOW - timedelta(hours=1)),
+                  event_type="waybill_uploaded", created_at=NOW - timedelta(hours=1)),
             # напоминания и опросы — не события, а рассылки
             Event(owner_id=owner.id, driver_id=driver.id,
                   event_type="start_shift_reminder", created_at=NOW - timedelta(hours=2)),
@@ -98,8 +100,8 @@ def test_служебный_шум_в_ленту_не_попадает():
 
         data = await api_events(owner, session)
         types = [e["type"] for e in data["events"]]
-        assert types == ["trip_in_transit"]
-        assert data["events"][0]["label"] == "Выехал"
+        assert types == ["waybill_uploaded"]
+        assert data["events"][0]["label"] == "Фото ТТН"
         await session.close()
     _run(scenario)
 
@@ -136,16 +138,16 @@ def test_свежие_события_сверху_и_старьё_не_тяне�
         session.add_all([
             Event(owner_id=owner.id, driver_id=driver.id, event_type="sos",
                   created_at=NOW - timedelta(hours=1)),
-            Event(owner_id=owner.id, driver_id=driver.id, event_type="trip_completed",
-                  created_at=NOW - timedelta(hours=10)),
-            Event(owner_id=owner.id, driver_id=driver.id, event_type="shift_started",
+            Event(owner_id=owner.id, driver_id=driver.id, event_type="cash_submitted",
+                  payload={"amount": "12000"}, created_at=NOW - timedelta(hours=10)),
+            Event(owner_id=owner.id, driver_id=driver.id, event_type="expense_submitted",
                   created_at=NOW - timedelta(days=20)),
         ])
         await session.commit()
 
         data = await api_events(owner, session, hours=48)
         types = [e["type"] for e in data["events"]]
-        assert types == ["sos", "trip_completed"]
+        assert types == ["sos", "cash_submitted"]
         await session.close()
     _run(scenario)
 
@@ -263,8 +265,8 @@ def test_день_считается_в_поясе_владельца_а_не_в
         # поясе Владивостока уже 10-е. День берём по поясу владельца.
         moscow_evening = datetime(2026, 9, 9, 18, 30, tzinfo=timezone.utc)
         session.add(Event(
-            owner_id=owner.id, driver_id=driver.id, event_type="shift_completed",
-            created_at=moscow_evening,
+            owner_id=owner.id, driver_id=driver.id, event_type="cash_submitted",
+            payload={"amount": "12000"}, created_at=moscow_evening,
         ))
         await session.commit()
 
@@ -410,5 +412,228 @@ def test_мусор_вместо_суммы_не_проходит():
         assert failed.value.status_code == 400
         # ⚠️ Расход остаётся нерешённым: полдела делать нельзя.
         assert expense.status == "pending"
+        await session.close()
+    _run(scenario)
+
+
+def test_приезд_на_рц_показывается_временем_приезда_а_не_обнаружения():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        rc = DistributionCenter(
+            owner_id=owner.id, name="Пятёрочка Шушары", address="Шушары",
+            latitude=Decimal("59.81"), longitude=Decimal("30.4"),
+        )
+        session.add(rc)
+        await session.flush()
+        # Машина встала в 17:12, сервер заметил это в 17:19: приезд считается
+        # только после 4 минут стоянки, а проверка крутится раз в 5 минут.
+        parked = NOW - timedelta(hours=2)
+        noticed = parked + timedelta(minutes=7)
+        session.add(Event(
+            owner_id=owner.id, driver_id=driver.id, event_type="rc_arrived",
+            payload={"rc_id": rc.id, "rc_name": "Пятёрочка Шушары",
+                     "parked_since": parked.isoformat()},
+            created_at=noticed,
+        ))
+        await session.commit()
+
+        row = (await api_events(owner, session))["events"][0]
+        # ⚠️ Владелец 10.09.2026: «правильно будет, когда она приехала».
+        assert row["at"].startswith(parked.isoformat()[:16])
+        assert row["time_label"] != row["seen_at_label"]
+        # Но и второе время не прячем: в споре нужны оба.
+        assert row["seen_at_label"] is not None
+        await session.close()
+    _run(scenario)
+
+
+def test_у_обычного_события_второго_времени_нет():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        session.add(Event(
+            owner_id=owner.id, driver_id=driver.id, event_type="cash_submitted",
+            payload={"amount": "500"}, created_at=NOW - timedelta(hours=1),
+        ))
+        await session.commit()
+
+        row = (await api_events(owner, session))["events"][0]
+        # Кнопку водитель нажал сам — время записи и есть время события.
+        assert row["seen_at_label"] is None
+        await session.close()
+    _run(scenario)
+
+
+def test_мусор_в_payload_не_двигает_время_события():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id, event_type="rc_arrived",
+                  payload={"parked_since": "позавчера"},
+                  created_at=NOW - timedelta(hours=1)),
+            Event(owner_id=owner.id, driver_id=driver.id, event_type="rc_arrived",
+                  payload={"parked_since": (NOW + timedelta(hours=5)).isoformat()},
+                  created_at=NOW - timedelta(hours=2)),
+        ])
+        await session.commit()
+
+        rows = (await api_events(owner, session))["events"]
+        # ⚠️ Ни строка-бессмыслица, ни время из будущего не должны попадать в
+        # ленту: остаётся время записи.
+        for row in rows:
+            assert row["seen_at_label"] is None
+        await session.close()
+    _run(scenario)
+
+
+def test_лента_отсортирована_по_настоящему_времени():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        base = NOW - timedelta(hours=3)
+        session.add_all([
+            # Приезд случился раньше, а записан позже соседнего события.
+            Event(owner_id=owner.id, driver_id=driver.id, event_type="rc_arrived",
+                  payload={"parked_since": base.isoformat()},
+                  created_at=base + timedelta(minutes=8)),
+            Event(owner_id=owner.id, driver_id=driver.id, event_type="cash_submitted",
+                  payload={"amount": "700"}, created_at=base + timedelta(minutes=4)),
+        ])
+        await session.commit()
+
+        types = [e["type"] for e in (await api_events(owner, session))["events"]]
+        assert types == ["cash_submitted", "rc_arrived"]
+        await session.close()
+    _run(scenario)
+
+
+def test_у_подмены_машины_видно_обе_машины():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        other = Vehicle(owner_id=owner.id, license_plate="В123АА47", is_active=True)
+        session.add(other)
+        await session.flush()
+        session.add(Event(
+            owner_id=owner.id, driver_id=driver.id,
+            event_type="vehicle_mixup_alert",
+            payload={"shift_vehicle_id": vehicle.id, "moving_vehicle_id": other.id},
+            created_at=NOW - timedelta(hours=1),
+        ))
+        await session.commit()
+
+        row = (await api_events(owner, session))["events"][0]
+        # «Необычная машина» ничего не объясняла — теперь видно, в чём дело.
+        assert row["label"] == "Возможно, не та машина"
+        assert row["detail"] == "Т557ОС178 стоит в смене · В123АА47 едет без смены"
+        await session.close()
+    _run(scenario)
+
+
+def test_удалённая_смена_исчезает_и_из_журнала():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=2), status="started")
+        session.add(shift)
+        await session.flush()
+        expense = Expense(
+            owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+            category="fuel", amount_rub=Decimal("3000"), status="pending",
+        )
+        session.add(expense)
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="shift_started", created_at=NOW - timedelta(hours=2)),
+            # Чек — это настоящий документ, он остаётся.
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="expense_submitted",
+                  payload={"category": "fuel", "amount": "3000"},
+                  created_at=NOW - timedelta(hours=1)),
+        ])
+        await session.commit()
+
+        await shift_delete(shift.id, owner, session)
+
+        types = [e["type"] for e in (await api_events(owner, session))["events"]]
+        # ⚠️ Владелец 10.09.2026: «удалил смену — а в приложении она всё равно есть».
+        assert "shift_started" not in types
+        # А расход остался: чек никуда не делся.
+        assert "expense_submitted" in types
+        assert await session.get(Shift, shift.id) is None
+        await session.close()
+    _run(scenario)
+
+
+def test_удаление_смены_убирает_и_записи_её_рейсов():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=3), status="started")
+        session.add(shift)
+        await session.flush()
+        trip = Trip(owner_id=owner.id, shift_id=shift.id, driver_id=driver.id,
+                    vehicle_id=vehicle.id, status="in_transit",
+                    origin="Агропарк", destination="Шушары")
+        session.add(trip)
+        await session.flush()
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  trip_id=trip.id, event_type="trip_in_transit",
+                  created_at=NOW - timedelta(hours=2)),
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  trip_id=trip.id, event_type="waybill_uploaded",
+                  created_at=NOW - timedelta(hours=1)),
+        ])
+        await session.commit()
+
+        await shift_delete(shift.id, owner, session)
+
+        types = [e["type"] for e in (await api_events(owner, session))["events"]]
+        assert "trip_in_transit" not in types
+        # Фото ТТН — снимок, он остаётся в журнале и без рейса.
+        assert "waybill_uploaded" in types
+        await session.close()
+    _run(scenario)
+
+
+def test_старые_сироты_удалённых_смен_в_ленту_не_попадают():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        # Так выглядят записи, оставшиеся от смены, удалённой ДО того, как
+        # появилась уборка: тип есть, а ссылки на смену уже нет.
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id,
+                  event_type="shift_started", created_at=NOW - timedelta(hours=5)),
+            Event(owner_id=owner.id, driver_id=driver.id,
+                  event_type="trip_completed", created_at=NOW - timedelta(hours=4)),
+            # А это не сирота: SOS и не должен быть привязан к смене.
+            Event(owner_id=owner.id, driver_id=driver.id,
+                  event_type="sos", payload={"state": "в рейсе"},
+                  created_at=NOW - timedelta(hours=3)),
+        ])
+        await session.commit()
+
+        types = [e["type"] for e in (await api_events(owner, session))["events"]]
+        # ⚠️ Владелец 11.09.2026: «удалил смену на сайте, а она у меня до сих
+        # пор есть 10 сентября».
+        assert types == ["sos"]
+        await session.close()
+    _run(scenario)
+
+
+def test_живая_смена_из_ленты_не_пропадает():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=2), status="started")
+        session.add(shift)
+        await session.flush()
+        session.add(Event(
+            owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+            event_type="shift_started", created_at=NOW - timedelta(hours=2),
+        ))
+        await session.commit()
+
+        rows = (await api_events(owner, session))["events"]
+        assert [e["type"] for e in rows] == ["shift_started"]
+        assert rows[0]["plate"] == "Т557ОС178"
         await session.close()
     _run(scenario)
