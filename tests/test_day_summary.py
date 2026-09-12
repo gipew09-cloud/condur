@@ -140,3 +140,50 @@ def test_общее_время_не_меньше_стоянки():
     summary = TS.day_summary(quiet, window_end=START + timedelta(minutes=16))
     assert summary["total_seconds"] >= summary["stop_seconds"]
     assert summary["total_seconds"] == pytest.approx(16 * 60, abs=60)
+
+
+def test_одометр_складывает_шаги_а_не_вычитает_края():
+    base = datetime(2026, 9, 9, 6, 0, tzinfo=timezone.utc)
+    # Машина проехала 10 + 12 = 22 км, а один пакет пришёл с мусором.
+    points = [
+        (base, Decimal("100000")),
+        (base + timedelta(minutes=20), Decimal("100010")),
+        # ⚠️ Кривой пакет: счётчик «прыгнул» на 25 км за минуту. Раньше он
+        # раздувал сутки целиком, потому что пробег считался max − min.
+        (base + timedelta(minutes=21), Decimal("100035")),
+        (base + timedelta(minutes=22), Decimal("100010")),
+        (base + timedelta(minutes=50), Decimal("100022")),
+    ]
+    assert TS.odometer_distance_km(points) == Decimal("22")
+
+
+def test_сброс_счётчика_не_уходит_в_минус_и_не_считается():
+    base = datetime(2026, 9, 9, 6, 0, tzinfo=timezone.utc)
+    points = [
+        (base, Decimal("99998")),
+        (base + timedelta(minutes=30), Decimal("100003")),
+        # Прибор поменяли, счётчик начался заново.
+        (base + timedelta(minutes=40), Decimal("12")),
+        (base + timedelta(minutes=70), Decimal("20")),
+    ]
+    assert TS.odometer_distance_km(points) == Decimal("13")
+
+
+def test_одна_точка_это_не_пробег():
+    base = datetime(2026, 9, 9, 6, 0, tzinfo=timezone.utc)
+    assert TS.odometer_distance_km([(base, Decimal("100"))]) is None
+    assert TS.odometer_distance_km([]) is None
+
+
+def test_время_без_связи_считается_отдельно():
+    # Пять минут езды, дыра на час, потом снова точки.
+    points = _drive(5)
+    resumed = [
+        (START + timedelta(hours=1, minutes=i), 60.0 + 0.01 * i, 30.3, Decimal(60), True)
+        for i in range(0, 6)
+    ]
+    summary = TS.day_summary(points + resumed, window_end=START + timedelta(hours=2))
+
+    # ⚠️ Дыра не идёт ни в движение, ни в стоянку — но её видно отдельно,
+    # иначе непонятно, почему наш пробег меньше, чем у Ставтрэка.
+    assert summary["blind_seconds"] > 30 * 60
