@@ -989,6 +989,127 @@ def build_track_segments(
     return out
 
 
+
+# Скорость, ниже которой машина считается стоящей: дрожание GPS даёт 1–2 км/ч
+# и у заглушенной машины.
+SUMMARY_IDLE_SPEED_KMH = Decimal("3")
+
+# ⚠️ Дырку в данных длиннее этого НЕ засчитываем ни в моточасы, ни в холостой
+# ход. Пропала связь на два часа — мы не знаем, работал ли двигатель, и
+# записать это в моточасы значило бы выдумать.
+SUMMARY_MAX_GAP_SECONDS = 600
+
+
+def day_summary(
+    points: list[tuple[datetime, float, float, Decimal | float | int | None, bool | None]],
+    *,
+    window_end: datetime,
+) -> dict:
+    """Сводка за период: сколько проехали, сколько стояли, как работал мотор.
+
+    points — [(observed_at, lat, lon, speed_kmh, ignition)] по возрастанию
+    времени, только достоверные координаты. window_end — конец периода
+    (сейчас или конец суток): по нему закрывается последний отрезок.
+
+    ⚠️ Считается ИЗ ТЕХ ЖЕ отрезков, что рисуют трек (`build_track_segments`).
+    Второй расчёт рядом развёл бы цифры: на треке одно, в сводке другое —
+    и владельцу пришлось бы гадать, какой верить.
+
+    ⚠️ Где данных нет — там None, а не ноль. Ноль читается как факт («мотор не
+    работал»), хотя на деле датчика просто не было. То же правило, что в
+    приложении: «нет данных» пишется словами.
+
+    Возвращает:
+      distance_km      — путь по точкам GPS (не одометр);
+      total_seconds    — от первой точки до последней;
+      moving_seconds   — время в движении;
+      stop_seconds     — время стоянок;
+      avg_speed_kmh    — путь ÷ время В ДВИЖЕНИИ (не ÷ сутки!);
+      max_speed_kmh    — самая быстрая точка;
+      engine_seconds   — сколько работал двигатель (None — зажигание не пришло);
+      idle_seconds     — работал на месте (холостой ход);
+      points           — сколько точек участвовало.
+    """
+    pts = sorted(
+        (
+            (
+                _utc(t),
+                float(lat),
+                float(lon),
+                Decimal(str(speed if speed is not None else 0)),
+                ign,
+            )
+            for t, lat, lon, speed, ign in points
+            if t is not None and lat is not None and lon is not None
+        ),
+        key=lambda p: p[0],
+    )
+    empty = {
+        "distance_km": None, "total_seconds": None, "moving_seconds": None,
+        "stop_seconds": None, "avg_speed_kmh": None, "max_speed_kmh": None,
+        "engine_seconds": None, "idle_seconds": None, "points": 0,
+    }
+    if len(pts) < 2:
+        return empty
+
+    segments = build_track_segments(
+        [(t, lat, lon, speed) for t, lat, lon, speed, _ in pts],
+        window_end=window_end,
+    )
+    distance = Decimal("0")
+    moving = 0
+    standing = 0
+    for seg in segments:
+        start = datetime.fromisoformat(seg["start"])
+        end = datetime.fromisoformat(seg["end"])
+        seconds = max(0, int((end - start).total_seconds()))
+        if seg["kind"] == "move":
+            distance += Decimal(str(seg["distance_km"]))
+            moving += seconds
+        elif seg["kind"] == "stop":
+            standing += seconds
+        # «нет связи» не считаем ни движением, ни стоянкой: мы не знаем, что
+        # было в эту дыру.
+
+    max_speed = max(p[3] for p in pts)
+    total = int((pts[-1][0] - pts[0][0]).total_seconds())
+
+    # Двигатель: идём по парам соседних точек. Засчитываем промежуток, только
+    # если в его начале зажигание известно и дырка не больше допустимой.
+    engine = 0
+    idle = 0
+    seen_ignition = False
+    for prev, cur in zip(pts, pts[1:]):
+        if prev[4] is None:
+            continue
+        seen_ignition = True
+        gap = int((cur[0] - prev[0]).total_seconds())
+        if gap <= 0 or gap > SUMMARY_MAX_GAP_SECONDS:
+            continue
+        if not prev[4]:
+            continue
+        engine += gap
+        if prev[3] <= SUMMARY_IDLE_SPEED_KMH:
+            idle += gap
+
+    return {
+        "distance_km": float(round(distance, 1)),
+        "total_seconds": total,
+        "moving_seconds": moving,
+        "stop_seconds": standing,
+        # ⚠️ Средняя скорость — путь ÷ время В ДВИЖЕНИИ. Делить на сутки нельзя:
+        # так получаются те самые «79 л/100 км» у конкурента — число есть, а
+        # смысла нет.
+        "avg_speed_kmh": (
+            int(distance / Decimal(moving) * 3600) if moving > 0 and distance > 0
+            else None
+        ),
+        "max_speed_kmh": int(max_speed),
+        "engine_seconds": engine if seen_ignition else None,
+        "idle_seconds": idle if seen_ignition else None,
+        "points": len(pts),
+    }
+
 def int_or_none(value) -> int | None:
     """Безопасно привести значение из JSON/env/form к int.
 

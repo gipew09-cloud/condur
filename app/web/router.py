@@ -18,6 +18,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from datetime import date as date_cls
 from decimal import Decimal, InvalidOperation
 import os
 from pathlib import Path
@@ -311,7 +312,12 @@ async def _session_from_request(
     if ws is None:
         return None
     now = datetime.now(timezone.utc)
-    if ws.last_seen_at is None or (now - ws.last_seen_at).total_seconds() > 300:
+    # ⚠️ Postgres отдаёт время с поясом, SQLite (в тестах) — без. Без этой
+    # правки сравнение падало с «can't subtract offset-naive and offset-aware».
+    last_seen = ws.last_seen_at
+    if last_seen is not None and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    if last_seen is None or (now - last_seen).total_seconds() > 300:
         ws.last_seen_at = now
         await session.commit()
     return ws
@@ -4882,7 +4888,7 @@ _TRACK_EVENT_LABELS = {
     "sos": ("SOS", "alarm"),
     "downtime": ("Простой", "alarm"),
     "moving_without_shift_alert": ("Ехал без открытой смены", "alarm"),
-    "vehicle_mixup_alert": ("Необычная машина", "alarm"),
+    "vehicle_mixup_alert": ("Возможно, не та машина", "alarm"),
     "silence_alert": ("Пропал сигнал", "alarm"),
     "fuel_overrun_alert": ("Перерасход топлива", "alarm"),
     "rc_downtime_alert": ("Долго стоит на РЦ", "alarm"),
@@ -5008,6 +5014,51 @@ def _feed_day_label(local: datetime, today) -> str:
     return label if local.year == today.year else f"{label} {local.year}"
 
 
+def _feed_happened_at(event_type: str, payload: dict, created_at: datetime) -> datetime:
+    """Когда событие ПРОИЗОШЛО на самом деле.
+
+    ⚠️ Владелец 10.09.2026: «приехал на РЦ — это время, когда он приехал, или
+    когда сообщение дошло? Правильно будет, когда она приехала». Он прав:
+    приезд на РЦ засчитывается, только когда машина простояла в зоне
+    RC_MIN_PARKED_MINUTES, а сама проверка крутится раз в пять минут — запись в
+    журнале появляется на 4–9 минут позже настоящего приезда.
+
+    Настоящее время лежит в payload (`parked_since` — когда машина встала,
+    `departed_at` — когда уехала). Берём его. Нет его в payload — остаётся
+    время записи: выдумывать поправку нельзя.
+    """
+    raw = None
+    if event_type == "rc_arrived":
+        raw = (payload or {}).get("parked_since")
+    elif event_type == "rc_departed":
+        raw = (payload or {}).get("departed_at")
+    if not raw:
+        return created_at
+    try:
+        happened = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return created_at
+    # ⚠️ Postgres отдаёт время с поясом, SQLite в тестах — без. Сравнивать их
+    # напрямую нельзя, поэтому оба приводим к UTC.
+    if happened.tzinfo is None:
+        happened = happened.replace(tzinfo=timezone.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    # Будущее и слишком старое — это мусор в payload, а не факт.
+    if happened > created_at or (created_at - happened) > timedelta(days=1):
+        return created_at
+    return happened
+
+
+def _feed_lag_seconds(created_at: datetime, happened_at: datetime) -> float:
+    """На сколько запись отстала от самого события, в секундах."""
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if happened_at.tzinfo is None:
+        happened_at = happened_at.replace(tzinfo=timezone.utc)
+    return (created_at - happened_at).total_seconds()
+
+
 def _feed_int(value) -> int | None:
     """Целое из payload. Там лежит что угодно: число, строка, None."""
     try:
@@ -5044,7 +5095,9 @@ def _feed_route(trip) -> str | None:
     return origin or destination or None
 
 
-def _feed_detail(event_type: str, payload: dict, expense, trip, zone) -> str | None:
+def _feed_detail(
+    event_type: str, payload: dict, expense, trip, zone, plates: dict | None = None
+) -> str | None:
     """Вторая строка события: короткая подробность.
 
     ⚠️ Собирается ТОЛЬКО из записанного: payload события, расход в базе, рейс,
@@ -5096,6 +5149,15 @@ def _feed_detail(event_type: str, payload: dict, expense, trip, zone) -> str | N
         parts = [p.get("label")]
     elif event_type == "sos":
         parts = [p.get("state")]
+    elif event_type == "vehicle_mixup_alert":
+        # Обе машины разом: одна стоит в смене, другая едет без смены.
+        by_id = plates or {}
+        standing = by_id.get(_feed_int(p.get("shift_vehicle_id")))
+        moving = by_id.get(_feed_int(p.get("moving_vehicle_id")))
+        parts = [
+            f"{standing} стоит в смене" if standing else None,
+            f"{moving} едет без смены" if moving else None,
+        ]
     else:
         # Рейсовые и складские события: куда шёл рейс. Для смен своей подробности
         # нет — там всё сказано в самой строке.
@@ -5149,6 +5211,20 @@ async def api_events(
             Event.owner_id == owner.id,
             Event.created_at >= since,
             Event.event_type.in_(list(_FEED_EVENT_LABELS)),
+            # ⚠️ Сироты удалённых смен и рейсов. Владелец 11.09.2026: «удалил
+            # смену на сайте, а она у меня до сих пор есть 10 сентября».
+            # Уборка при удалении появилась позже, и старые записи остались
+            # висеть без смены. Такие события создаются ТОЛЬКО со ссылкой на
+            # свою смену или рейс — значит пустая ссылка и есть признак того,
+            # что описываемого больше нет.
+            ~and_(
+                Event.event_type.in_(_SHIFT_OWN_EVENTS),
+                Event.shift_id.is_(None),
+            ),
+            ~and_(
+                Event.event_type.in_(_TRIP_OWN_EVENTS),
+                Event.trip_id.is_(None),
+            ),
         )
         .order_by(Event.created_at.desc())
         .limit(limit)
@@ -5200,7 +5276,9 @@ async def api_events(
     events = []
     for event in rows:
         payload = event.payload or {}
-        local = to_owner_tz(event.created_at, owner.timezone)
+        # Время события — настоящее, а не «когда сервер заметил».
+        happened_at = _feed_happened_at(event.event_type, payload, event.created_at)
+        local = to_owner_tz(happened_at, owner.timezone)
         trip = trips.get(event.trip_id)
         expense = expenses.get(_feed_int(payload.get("expense_id")))
         zone = zones.get(_feed_int(payload.get("rc_id")))
@@ -5212,17 +5290,27 @@ async def api_events(
         label, kind = _FEED_EVENT_LABELS[event.event_type]
         events.append({
             "id": event.id,
-            "at": event.created_at.isoformat(),
-            "at_label": fmt_dt(event.created_at, owner.timezone, "%d.%m, %H:%M"),
+            "at": happened_at.isoformat(),
+            "at_label": fmt_dt(happened_at, owner.timezone, "%d.%m, %H:%M"),
             # Лента разбита на дни: в строке остаётся только время, дата стоит
             # заголовком над группой — так день читается сверху вниз.
-            "time_label": fmt_dt(event.created_at, owner.timezone, "%H:%M"),
+            "time_label": fmt_dt(happened_at, owner.timezone, "%H:%M"),
             "day": local.date().isoformat(),
             "day_label": _feed_day_label(local, today),
+            # Когда об этом узнал сервер. Показываем ТОЛЬКО если разошлось
+            # больше чем на минуту: у приезда на РЦ разрыв 4–9 минут, и в
+            # споре важно видеть оба времени, а не одно вместо другого.
+            "seen_at_label": (
+                fmt_dt(event.created_at, owner.timezone, "%H:%M")
+                if _feed_lag_seconds(event.created_at, happened_at) >= 60
+                else None
+            ),
             "type": event.event_type,
             "kind": kind,
             "label": label,
-            "detail": _feed_detail(event.event_type, payload, expense, trip, zone),
+            "detail": _feed_detail(
+                event.event_type, payload, expense, trip, zone, plates
+            ),
             "vehicle_id": vehicle_id,
             "plate": plates.get(vehicle_id),
             "driver": drivers.get(event.driver_id),
@@ -5243,6 +5331,9 @@ async def api_events(
             "lon": float(zone.longitude)
             if zone is not None and zone.longitude is not None else None,
         })
+    # ⚠️ Пересортировка обязательна: у приезда на РЦ показанное время раньше
+    # записи в базу, и без этого строка встала бы в ленте не на своё место.
+    events.sort(key=lambda e: e["at"], reverse=True)
     return {"hours": hours, "events": events}
 
 
@@ -5364,6 +5455,105 @@ async def api_expense_decision(
         # Решение было принято раньше — телефон покажет это словами, а не
         # сделает вид, что нажатие сработало сейчас.
         "already_decided": not was_pending,
+    }
+
+
+def _seconds_label(seconds: int | None) -> str | None:
+    """«13 ч 4 мин» из секунд. None — значит данных нет, и это не ноль."""
+    if seconds is None:
+        return None
+    return telemetry_service.minutes_label(int(seconds) // 60)
+
+
+@app.get("/api/vehicles/{vehicle_id}/summary")
+async def api_vehicle_summary(
+    vehicle_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    date: Annotated[str | None, Query()] = None,
+):
+    """Сводка машины за сутки — то, что в приложении открывает кнопка «Сводка».
+
+    Владелец 12.09.2026 показал такой экран у Ставтрэка и попросил свой:
+    пробег, общее время, время в движении и стоянки, средняя и максимальная
+    скорость, моточасы, холостой ход.
+
+    ⚠️ Сутки считаются в часовом поясе ВЛАДЕЛЬЦА, а не сервера: иначе «12
+    сентября» в приложении и в кабинете окажется разными сутками.
+
+    ⚠️ Где данных нет — там null, а не ноль. Ноль читается как факт («мотор не
+    работал»), хотя датчика могло не быть вовсе.
+    """
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    tz = owner_tz(owner.timezone)
+    today = datetime.now(tz).date()
+    try:
+        day = date_cls.fromisoformat(date) if date else today
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Bad date")
+
+    start_local = datetime(day.year, day.month, day.day, tzinfo=tz)
+    since = start_local.astimezone(timezone.utc)
+    until = (start_local + timedelta(days=1)).astimezone(timezone.utc)
+    now_utc = datetime.now(timezone.utc)
+    # Сегодняшние сутки ещё не кончились: последний отрезок закрываем «сейчас».
+    window_end = min(until, now_utc)
+
+    rows = (await session.execute(
+        select(
+            VehicleTelemetryPoint.observed_at,
+            VehicleTelemetryPoint.latitude,
+            VehicleTelemetryPoint.longitude,
+            VehicleTelemetryPoint.speed_kmh,
+            VehicleTelemetryPoint.ignition,
+        )
+        .where(
+            VehicleTelemetryPoint.vehicle_id == vehicle_id,
+            VehicleTelemetryPoint.owner_id == owner.id,
+            VehicleTelemetryPoint.is_valid.is_(True),
+            VehicleTelemetryPoint.observed_at.is_not(None),
+            VehicleTelemetryPoint.observed_at >= since,
+            VehicleTelemetryPoint.observed_at < until,
+            VehicleTelemetryPoint.latitude.is_not(None),
+            VehicleTelemetryPoint.longitude.is_not(None),
+        )
+        .order_by(VehicleTelemetryPoint.observed_at)
+        .limit(_TRACK_POINT_LIMIT)
+    )).all()
+
+    summary = telemetry_service.day_summary(
+        [(t, lat, lon, speed, ign) for t, lat, lon, speed, ign in rows],
+        window_end=window_end,
+    )
+    distance = summary["distance_km"]
+    return {
+        "vehicle_id": vehicle_id,
+        "plate": vehicle.license_plate,
+        "date": day.isoformat(),
+        "date_label": f"{day.day} {_RU_MONTHS_GEN[day.month - 1]}",
+        "is_today": day == today,
+        # Дальше сегодняшнего дня ходить некуда — там пусто по определению.
+        "has_next": day < today,
+        "has_data": summary["points"] > 0,
+        "distance_km": distance,
+        "distance_label": f"{round(distance)} км" if distance is not None else None,
+        "total_label": _seconds_label(summary["total_seconds"]),
+        "moving_label": _seconds_label(summary["moving_seconds"]),
+        "stop_label": _seconds_label(summary["stop_seconds"]),
+        "engine_label": _seconds_label(summary["engine_seconds"]),
+        "idle_label": _seconds_label(summary["idle_seconds"]),
+        "avg_speed_label": (
+            f"{summary['avg_speed_kmh']} км/ч"
+            if summary["avg_speed_kmh"] is not None else None
+        ),
+        "max_speed_label": (
+            f"{summary['max_speed_kmh']} км/ч"
+            if summary["max_speed_kmh"] is not None else None
+        ),
+        "points": summary["points"],
     }
 
 
@@ -6461,6 +6651,24 @@ async def shift_detail(
     )
 
 
+# События, которые описывают САМУ смену и САМ рейс. Владелец 10.09.2026:
+# «начал смену и удалил её сразу же — а в приложении она всё равно есть».
+# Он прав: смена удаляется насовсем, а записи «Смена начата» оставались висеть
+# в журнале и описывали то, чего больше нет.
+#
+# ⚠️ Удаляем ТОЛЬКО эти записи. Деньги, фото и тревоги остаются: они про
+# настоящие чеки, снимки и происшествия, которые никуда не делись, — у них
+# просто отвязывается ссылка на смену.
+_SHIFT_OWN_EVENTS = (
+    "shift_started", "shift_completed", "shift_added_manual", "shift_reassigned",
+)
+_TRIP_OWN_EVENTS = (
+    "trip_created", "trip_in_transit", "trip_unloading", "trip_completed",
+    "trip_added_manual", "trip_reassigned", "trip_route_edited",
+    "trip_rc_confirmed", "trip_rc_mismatch",
+)
+
+
 @app.post("/shifts/{shift_id}/delete")
 async def shift_delete(
     shift_id: int,
@@ -6485,6 +6693,14 @@ async def shift_delete(
             .where(Expense.owner_id == owner.id, Expense.trip_id.in_(trip_ids))
             .values(trip_id=None)
         )
+        # Записи про сами рейсы уходят вместе с рейсами.
+        await session.execute(
+            delete(Event).where(
+                Event.owner_id == owner.id,
+                Event.trip_id.in_(trip_ids),
+                Event.event_type.in_(_TRIP_OWN_EVENTS),
+            )
+        )
         await session.execute(
             update(Event)
             .where(Event.owner_id == owner.id, Event.trip_id.in_(trip_ids))
@@ -6504,6 +6720,14 @@ async def shift_delete(
         update(Expense)
         .where(Expense.owner_id == owner.id, Expense.shift_id == shift.id)
         .values(shift_id=None)
+    )
+    # То же самое для самой смены: «Смена начата» без смены — это мусор.
+    await session.execute(
+        delete(Event).where(
+            Event.owner_id == owner.id,
+            Event.shift_id == shift.id,
+            Event.event_type.in_(_SHIFT_OWN_EVENTS),
+        )
     )
     await session.execute(
         update(Event)
