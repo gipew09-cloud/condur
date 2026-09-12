@@ -1060,7 +1060,8 @@ def day_summary(
     empty = {
         "distance_km": None, "total_seconds": None, "moving_seconds": None,
         "stop_seconds": None, "avg_speed_kmh": None, "max_speed_kmh": None,
-        "engine_seconds": None, "idle_seconds": None, "points": 0,
+        "engine_seconds": None, "idle_seconds": None, "blind_seconds": None,
+        "points": 0,
     }
     if len(pts) < 2:
         return empty
@@ -1072,6 +1073,7 @@ def day_summary(
     distance = Decimal("0")
     moving = 0
     standing = 0
+    blind = 0
     for seg in segments:
         start = datetime.fromisoformat(seg["start"])
         end = datetime.fromisoformat(seg["end"])
@@ -1081,8 +1083,11 @@ def day_summary(
             moving += seconds
         elif seg["kind"] == "stop":
             standing += seconds
-        # «нет связи» не считаем ни движением, ни стоянкой: мы не знаем, что
-        # было в эту дыру.
+        else:
+            # ⚠️ «Нет связи» не идёт ни в движение, ни в стоянку — мы не знаем,
+            # что было в эту дыру. Но само время считаем и отдаём: именно оно
+            # объясняет, почему наш путь по GPS короче, чем у Ставтрэка.
+            blind += seconds
 
     max_speed = max(p[3] for p in pts)
     # ⚠️ Общее время — от первой точки суток до КОНЦА ОКНА (сейчас или конец
@@ -1126,6 +1131,7 @@ def day_summary(
         "max_speed_kmh": int(max_speed),
         "engine_seconds": engine if seen_ignition else None,
         "idle_seconds": idle if seen_ignition else None,
+        "blind_seconds": blind,
         "points": len(pts),
     }
 
@@ -1170,34 +1176,76 @@ def rc_billable_downtime_rub(waited_minutes) -> int:
     return blocks * RC_BILLABLE_DOWNTIME_RUB
 
 
+# Больше этого за один шаг счётчик прибавить не может: между точками проходят
+# секунды-минуты, а не сутки. Всё, что выше, — кривой пакет.
+ODOMETER_MAX_STEP_KM = Decimal("300")
+
+
+def odometer_distance_km(points: list[tuple[datetime, object]]) -> Decimal | None:
+    """Пробег по счётчику прибора за период, км. None — данных нет.
+
+    points — [(observed_at, mileage_km)] в любом порядке.
+
+    ⚠️ НЕ «максимум минус минимум». Так было раньше, и один кривой пакет с
+    чужим значением одометра раздувал сутки целиком: владелец 12.09.2026 поймал
+    47 км у машины, которая по данным Ставтрэка проехала 32. Теперь складываем
+    только правдоподобные приращения между соседними точками:
+
+      * приращение ≤ 0 — пропускаем (счётчик сбросили, пакет пришёл повторно
+        или задним числом);
+      * приращение больше {cap} км за шаг — пропускаем (мусор в пакете);
+      * приращение, которое требует скорости выше {speed} км/ч, — пропускаем:
+        столько машина проехать не могла, это тот же признак, по которому мы
+        ловим «телепорт» GPS.
+    """.format(cap=ODOMETER_MAX_STEP_KM, speed=TRACK_LEG_MAX_KMH)
+    rows = sorted(
+        (
+            (_utc(t), Decimal(str(km)))
+            for t, km in points
+            if t is not None and km is not None and Decimal(str(km)) > 0
+        ),
+        key=lambda r: r[0],
+    )
+    if len(rows) < 2:
+        return None
+
+    total = Decimal("0")
+    for (prev_at, prev_km), (at, km) in zip(rows, rows[1:]):
+        step = km - prev_km
+        if step <= 0 or step > ODOMETER_MAX_STEP_KM:
+            continue
+        seconds = (at - prev_at).total_seconds()
+        if seconds > 0:
+            kmh = float(step) / (seconds / 3600)
+            if kmh > TRACK_LEG_MAX_KMH:
+                continue
+        total += step
+    return total
+
+
 async def gps_mileage_for_period(
     session: AsyncSession, *, vehicle_id: int, start: datetime, end: datetime
 ) -> Decimal | None:
     """Пробег машины за период по счётчику трекера, км. None — данных нет."""
-    from sqlalchemy import func, select
+    from sqlalchemy import select
 
     from app.models import VehicleTelemetryPoint
 
-    row = (
+    rows = (
         await session.execute(
             select(
-                func.min(VehicleTelemetryPoint.mileage_km),
-                func.max(VehicleTelemetryPoint.mileage_km),
-                func.count(VehicleTelemetryPoint.id),
+                VehicleTelemetryPoint.observed_at,
+                VehicleTelemetryPoint.mileage_km,
             ).where(
                 VehicleTelemetryPoint.vehicle_id == vehicle_id,
                 VehicleTelemetryPoint.observed_at >= start,
                 VehicleTelemetryPoint.observed_at <= end,
                 VehicleTelemetryPoint.mileage_km.is_not(None),
                 VehicleTelemetryPoint.mileage_km > 0,
-            )
+            ).order_by(VehicleTelemetryPoint.observed_at)
         )
-    ).one()
-    mn, mx, cnt = row
-    if mn is None or mx is None or cnt < 2:
-        return None
-    distance = Decimal(mx) - Decimal(mn)
-    return distance if distance >= 0 else None
+    ).all()
+    return odometer_distance_km([(t, km) for t, km in rows])
 
 
 def sum_engine_off_seconds(

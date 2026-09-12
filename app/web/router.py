@@ -5539,9 +5539,28 @@ async def api_vehicle_summary(
     # пробега в одной плашке». Он прав: путь по точкам всегда короче реального
     # (точки раз в 30–60 секунд, повороты срезаются, а куски без связи мы
     # честно не считаем вовсе). Одометр же считает сам прибор — по колесу.
-    odometer = await telemetry_service.gps_mileage_for_period(
+    # ⚠️ Пробег по одометру берём ИЗ СМЕНЫ, если водитель вписал его с фото.
+    # Это самый достоверный источник: цифры сняты с приборной панели машины.
+    # Владелец 12.09.2026 поймал расхождение: по фото 1913 → 1977, то есть
+    # 64 км, а у нас стояло 47 — потому что считался счётчик ТРЕКЕРА, а он
+    # свой и теряет километры в дырах связи и питания.
+    shift_km = (await session.execute(
+        select(func.sum(Shift.distance_km)).where(
+            Shift.owner_id == owner.id,
+            Shift.vehicle_id == vehicle_id,
+            Shift.distance_km.is_not(None),
+            Shift.started_at < until,
+            or_(Shift.ended_at.is_(None), Shift.ended_at >= since),
+        )
+    )).scalar()
+    # Запасной вариант — счётчик трекера: смены может не быть вовсе.
+    tracker_km = await telemetry_service.gps_mileage_for_period(
         session, vehicle_id=vehicle_id, start=since, end=until
     )
+    if shift_km:
+        odometer, odometer_source = Decimal(shift_km), "одометр"
+    else:
+        odometer, odometer_source = tracker_km, "счётчик прибора"
 
     # Рейсы за день — по времени создания. Сколько раз машина выходила на
     # маршрут, столько строк и было у водителя.
@@ -5580,7 +5599,18 @@ async def api_vehicle_summary(
         "distance_km": distance,
         "distance_label": f"{round(distance)} км" if distance is not None else None,
         "odometer_km": float(odometer) if odometer is not None else None,
+        # Сколько времени за сутки связи не было. ⚠️ Эти километры в путь по
+        # GPS НЕ вошли: рисовать прямую через полгорода и называть это пробегом
+        # мы не будем. Подпись объясняет владельцу разницу с одометром.
+        "blind_label": (
+            telemetry_service.minutes_label(summary["blind_seconds"] // 60)
+            if summary["blind_seconds"] else None
+        ),
         "odometer_label": f"{round(float(odometer))} км" if odometer is not None else None,
+        # Откуда число: «одометр» — с фото приборной панели (вписал водитель),
+        # «счётчик прибора» — из телеметрии трекера. Это разные вещи, и путать
+        # их нельзя: в споре признают первое.
+        "odometer_source": odometer_source if odometer is not None else None,
         "trips": len(trips),
         "waybills": waybills,
         # Есть ли на машине топливный датчик вообще. Владелец 12.09.2026: «если
