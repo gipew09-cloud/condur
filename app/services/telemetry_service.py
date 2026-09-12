@@ -1030,17 +1030,30 @@ def day_summary(
       idle_seconds     — работал на месте (холостой ход);
       points           — сколько точек участвовало.
     """
+    def _engine(ign, volt):
+        """Работал ли двигатель в этой точке.
+
+        ⚠️ По НАПРЯЖЕНИЮ бортсети, а не по сырому биту зажигания. 18.07.2026 у
+        трекера Т557ОС178 бит `ign` залип в единице при заглушенном двигателе —
+        по нему моточасы намотали бы сутки на стоянке. Напряжение честнее:
+        работает генератор — ~28 В, заглушен — ~25 В. Это то же правило, по
+        которому судит Ставтрэк и весь остальной наш код.
+        Напряжения нет — остаётся бит, другого источника у нас нет.
+        """
+        by_voltage = engine_running_from_voltage(volt)
+        return by_voltage if by_voltage is not None else ign
+
     pts = sorted(
         (
             (
-                _utc(t),
-                float(lat),
-                float(lon),
-                Decimal(str(speed if speed is not None else 0)),
-                ign,
+                _utc(row[0]),
+                float(row[1]),
+                float(row[2]),
+                Decimal(str(row[3] if row[3] is not None else 0)),
+                _engine(row[4], row[5] if len(row) > 5 else None),
             )
-            for t, lat, lon, speed, ign in points
-            if t is not None and lat is not None and lon is not None
+            for row in points
+            if row[0] is not None and row[1] is not None and row[2] is not None
         ),
         key=lambda p: p[0],
     )
@@ -1072,7 +1085,13 @@ def day_summary(
         # было в эту дыру.
 
     max_speed = max(p[3] for p in pts)
-    total = int((pts[-1][0] - pts[0][0]).total_seconds())
+    # ⚠️ Общее время — от первой точки суток до КОНЦА ОКНА (сейчас или конец
+    # суток), а не до последней точки. Владелец 12.09.2026 поймал нестыковку:
+    # «общее время 1 мин», а стоянка при этом 16 минут. Так и было: стоянка
+    # тянется до «сейчас», а общее время обрывалось на последней точке.
+    total = int((window_end - pts[0][0]).total_seconds())
+    if total < 0:
+        total = int((pts[-1][0] - pts[0][0]).total_seconds())
 
     # Двигатель: идём по парам соседних точек. Засчитываем промежуток, только
     # если в его начале зажигание известно и дырка не больше допустимой.

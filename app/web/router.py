@@ -5509,6 +5509,10 @@ async def api_vehicle_summary(
             VehicleTelemetryPoint.longitude,
             VehicleTelemetryPoint.speed_kmh,
             VehicleTelemetryPoint.ignition,
+            VehicleTelemetryPoint.fuel_level_raw,
+            # Напряжение — по нему определяется работающий двигатель, сырому
+            # биту зажигания доверять нельзя (он залипал).
+            VehicleTelemetryPoint.voltage,
         )
         .where(
             VehicleTelemetryPoint.vehicle_id == vehicle_id,
@@ -5525,10 +5529,45 @@ async def api_vehicle_summary(
     )).all()
 
     summary = telemetry_service.day_summary(
-        [(t, lat, lon, speed, ign) for t, lat, lon, speed, ign in rows],
+        [(t, lat, lon, speed, ign, volt) for t, lat, lon, speed, ign, _, volt in rows],
         window_end=window_end,
     )
     distance = summary["distance_km"]
+
+    # ⚠️ Одометр — ОТДЕЛЬНОЕ число, а не замена пути по GPS. Владелец
+    # 12.09.2026: «у нас 40 км, а по GPS Ставтрэка 49 — может, лучше сразу два
+    # пробега в одной плашке». Он прав: путь по точкам всегда короче реального
+    # (точки раз в 30–60 секунд, повороты срезаются, а куски без связи мы
+    # честно не считаем вовсе). Одометр же считает сам прибор — по колесу.
+    odometer = await telemetry_service.gps_mileage_for_period(
+        session, vehicle_id=vehicle_id, start=since, end=until
+    )
+
+    # Рейсы за день — по времени создания. Сколько раз машина выходила на
+    # маршрут, столько строк и было у водителя.
+    # ⚠️ Рейсы считаем ПО ПЕРЕСЕЧЕНИЮ с сутками, а не по дате создания.
+    # Владелец 12.09.2026 спросил прямо: «как он определит рейс, если рейс
+    # будет два или три дня — за какой день запишет?». Ответ: рейс попадает в
+    # КАЖДЫЙ день, в который он шёл. Иначе длинный рейс исчез бы из всех суток,
+    # кроме первой, и в сводке за вчера стояло бы «рейсов 0» у машины, которая
+    # весь день везла груз.
+    trips = (await session.execute(
+        select(Trip.id, Trip.waybill_photo_url).where(
+            Trip.owner_id == owner.id,
+            Trip.vehicle_id == vehicle_id,
+            Trip.created_at < until,
+            or_(Trip.completed_at.is_(None), Trip.completed_at >= since),
+        )
+    )).all()
+    waybills = sum(1 for _, photo in trips if photo)
+
+    # Расход топлива — только если на машине есть датчик И вписана тарировка.
+    # Нет одного из двух — пишем «нет данных», а не ноль: ноль читается как
+    # «не заправлялся и не тратил», хотя мы просто не знаем.
+    fuel = telemetry_service.fuel_summary(
+        [(t, raw) for t, _, _, _, _, raw, _ in rows if raw is not None],
+        vehicle.fuel_calibration,
+    )
     return {
         "vehicle_id": vehicle_id,
         "plate": vehicle.license_plate,
@@ -5540,6 +5579,22 @@ async def api_vehicle_summary(
         "has_data": summary["points"] > 0,
         "distance_km": distance,
         "distance_label": f"{round(distance)} км" if distance is not None else None,
+        "odometer_km": float(odometer) if odometer is not None else None,
+        "odometer_label": f"{round(float(odometer))} км" if odometer is not None else None,
+        "trips": len(trips),
+        "waybills": waybills,
+        # Есть ли на машине топливный датчик вообще. Владелец 12.09.2026: «если
+        # нету датчика топлива, то лучше вообще даже не писать расход». Признак —
+        # вписанная тарировка: без неё литров не бывает по определению.
+        "has_fuel": bool(vehicle.fuel_calibration),
+        "fuel_spent_label": (
+            f"{round(fuel['spent_l'])} л"
+            if fuel is not None and fuel.get("spent_l") is not None else None
+        ),
+        "fuel_refuelled_label": (
+            f"{round(fuel['refuelled_l'])} л"
+            if fuel is not None and (fuel.get("refuelled_l") or 0) > 0 else None
+        ),
         "total_label": _seconds_label(summary["total_seconds"]),
         "moving_label": _seconds_label(summary["moving_seconds"]),
         "stop_label": _seconds_label(summary["stop_seconds"]),
