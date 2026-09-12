@@ -104,3 +104,39 @@ def test_максимальная_скорость_берётся_из_само�
     points.append((START + timedelta(minutes=11), 60.1, 30.3, Decimal(93), True))
     summary = TS.day_summary(points, window_end=START + timedelta(hours=1))
     assert summary["max_speed_kmh"] == 93
+
+
+def test_моточасы_считаются_по_напряжению_а_не_по_залипшему_биту():
+    # ⚠️ 18.07.2026 у Т557ОС178 бит зажигания залип в единице при заглушенном
+    # двигателе. По нему моточасы намотали бы всю стоянку.
+    stuck = [
+        (START + timedelta(minutes=i), 59.9, 30.3, Decimal(0), True, Decimal("25.1"))
+        for i in range(0, 61)
+    ]
+    summary = TS.day_summary(stuck, window_end=START + timedelta(hours=2))
+    # Напряжение 25 В — генератор не работает, двигатель заглушен.
+    assert summary["engine_seconds"] == 0
+    assert summary["idle_seconds"] == 0
+
+    running = [
+        (START + timedelta(minutes=i), 59.9, 30.3, Decimal(0), False, Decimal("28.2"))
+        for i in range(0, 61)
+    ]
+    hot = TS.day_summary(running, window_end=START + timedelta(hours=2))
+    # А здесь наоборот: бит говорит «выключено», но генератор заряжает.
+    assert hot["engine_seconds"] > 3000
+    assert hot["idle_seconds"] > 3000
+
+
+def test_общее_время_не_меньше_стоянки():
+    # Машина прислала две точки и замолчала — стоянка тянется до «сейчас».
+    # ⚠️ Владелец 12.09.2026: «не понимаю, что такое общее время 1 минута», а
+    # стоянка при этом 16 минут. Раньше общее время обрывалось на последней
+    # точке, и числа противоречили друг другу.
+    quiet = [
+        (START, 59.9, 30.3, Decimal(0), False),
+        (START + timedelta(minutes=1), 59.9, 30.3, Decimal(0), False),
+    ]
+    summary = TS.day_summary(quiet, window_end=START + timedelta(minutes=16))
+    assert summary["total_seconds"] >= summary["stop_seconds"]
+    assert summary["total_seconds"] == pytest.approx(16 * 60, abs=60)
