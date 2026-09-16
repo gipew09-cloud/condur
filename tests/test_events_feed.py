@@ -637,3 +637,47 @@ def test_живая_смена_из_ленты_не_пропадает():
         assert rows[0]["plate"] == "Т557ОС178"
         await session.close()
     _run(scenario)
+
+
+def test_тишина_водителя_не_выдаётся_за_потерю_сигнала():
+    """Владелец 12.09.2026: «что за баг, почему пропал сигнал, если на экране
+    всё видно» и «что за 4.0 или 4.4 часа, почему нельзя нормально».
+
+    Трекер в этот момент шлёт точки — молчит не он, а водитель с открытой
+    сменой. И длительность читается человеком, а не пересчитывается из
+    десятых долей часа.
+    """
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        session.add(Event(
+            owner_id=owner.id, driver_id=driver.id,
+            event_type="silence_alert", created_at=NOW - timedelta(minutes=30),
+            payload={"hours_silent": 4.4, "minutes_silent": 264},
+        ))
+        await session.commit()
+
+        data = await api_events(owner, session)
+        row = data["events"][0]
+        assert row["label"] == "Водитель не выходит на связь"
+        assert "сигнал" not in row["label"].lower()
+        assert row["detail"] == "нет вестей 4 ч 24 мин"
+        await session.close()
+    _run(scenario)
+
+
+def test_у_старой_тишины_часы_превращаются_в_минуты():
+    """Записи до 12.09.2026 знают только «4.0 ч» — строка всё равно должна
+    читаться так же, иначе в одной ленте два разных языка."""
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        session.add(Event(
+            owner_id=owner.id, driver_id=driver.id,
+            event_type="silence_alert", created_at=NOW - timedelta(hours=1),
+            payload={"hours_silent": 4.0},
+        ))
+        await session.commit()
+
+        data = await api_events(owner, session)
+        assert data["events"][0]["detail"] == "нет вестей 4 ч"
+        await session.close()
+    _run(scenario)

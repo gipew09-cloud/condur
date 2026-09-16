@@ -132,3 +132,49 @@ def test_receiver_wialon_data_without_login_drops():
     store = AsyncMock()
     _run_receiver(b"#SD#160726;205000;5951.6834;N;03028.8636;E;54;120;15;8\r\n", store)
     store.assert_not_awaited()
+
+
+# ------------------------------------------ стоянка без спутников — не сбой
+def test_стоянка_без_спутников_не_сбой_gps():
+    """Владелец 15.09.2026: Т557ОС178 стоит на «Верном», связь «1 мин», место
+    верное — а в приложении «GPS сбой». Параметры взяты из лога сервера того
+    дня: на стоянке трекер шлёт нули вместо координат и `motion: 0`."""
+    from app.services import telemetry_service
+
+    parked = {
+        "power": 25.55, "ignition": 1, "battery": 4.22, "fuel2": 2402,
+        "motion": 0, "lastSatTime": 1789487652, "speedLimit": 0.0,
+    }
+    assert telemetry_service.parked_without_fix(parked) is True
+
+
+def test_едет_без_координат_это_сбой():
+    """Трекер говорит «еду», а координат нет — глушилка или отвалилась
+    антенна. Здесь «GPS сбой» честный, и прятать его нельзя."""
+    from app.services import telemetry_service
+
+    assert telemetry_service.parked_without_fix({"motion": 1}) is False
+
+
+def test_без_флага_движения_судить_нельзя():
+    """Нет `motion` — нет и оснований смягчать. Скорость в пакете без
+    координат всегда ноль, по ней «стоит» сказать нельзя."""
+    from app.services import telemetry_service
+
+    assert telemetry_service.parked_without_fix({"power": 25.5}) is False
+    assert telemetry_service.parked_without_fix({}) is False
+    assert telemetry_service.parked_without_fix(None) is False
+    assert telemetry_service.parked_without_fix({"motion": "мусор"}) is False
+
+
+def test_нулевые_координаты_из_ставтрэка_разбираются_как_ноль():
+    """Так Ставтрэк передаёт пакет стоянки: координаты нулями. Разбор должен
+    дать 0.0, а не упасть, — дальше приёмник сам поймёт, что это не место."""
+    msg = wialon.parse_message(
+        "#D#150926;155912;0000.0000;N;00000.0000;E;0;0;0;0;NA;0;0;;NA;"
+        "motion:1:0,power:2:25.55"
+    )
+    assert msg.kind == "D"
+    point = msg.points[0]
+    assert abs(point.latitude) < 0.001 and abs(point.longitude) < 0.001
+    assert point.params.get("motion") == 0

@@ -217,3 +217,39 @@ def test_session_cookie_name_is_frozen():
     from app.services import auth_service
 
     assert auth_service.SESSION_COOKIE == "session"
+
+
+def test_описание_api_наружу_не_отдаётся():
+    """Проверка 15.09.2026: /docs и /openapi.json на боевом открывались без
+    входа и перечисляли все адреса кабинета, включая удаление рейсов и
+    добавление админов. Адреса защищены входом, но их полный список
+    злоумышленнику ни к чему."""
+    # ⚠️ Без TestClient: ему нужен httpx, а его в зависимостях нет (PROBLEMS №27).
+    from app.web.router import app
+
+    assert app.docs_url is None
+    assert app.redoc_url is None
+    assert app.openapi_url is None
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert not paths & {"/docs", "/redoc", "/openapi.json"}
+
+
+def test_все_адреса_кроме_входа_требуют_входа():
+    """Каждый адрес кабинета, кроме входа, выхода и проверки здоровья, обязан
+    зависеть от current_owner. Новый адрес без проверки — дыра, и этот тест
+    её поймает раньше, чем кто-нибудь снаружи."""
+    from fastapi.routing import APIRoute
+    from app.web.router import app
+
+    def names(dependant, found):
+        for d in dependant.dependencies:
+            found.add(getattr(d.call, "__name__", ""))
+            names(d, found)
+        return found
+
+    open_paths = {
+        r.path for r in app.routes
+        if isinstance(r, APIRoute)
+        and "current_owner" not in names(r.dependant, set())
+    }
+    assert open_paths == {"/login", "/logout", "/health"}
