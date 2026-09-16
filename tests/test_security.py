@@ -250,6 +250,33 @@ def test_все_адреса_кроме_входа_требуют_входа():
     open_paths = {
         r.path for r in app.routes
         if isinstance(r, APIRoute)
-        and "current_owner" not in names(r.dependant, set())
+        and not names(r.dependant, set()) & {"current_owner", "current_driver"}
     }
-    assert open_paths == {"/login", "/logout", "/health"}
+    # Без входа: вход и выход владельца, проверка здоровья, вход водителя по
+    # коду (с ограничением попыток) и страница ссылки, которая ничего не гасит.
+    assert open_paths == {
+        "/login", "/logout", "/health", "/api/driver/redeem", "/d/{token}",
+    }
+
+
+def test_адреса_водителя_не_пускают_в_кабинет():
+    """Всё под /api/driver/ — только вход водителя; ни один адрес кабинета не
+    принимает вход водителя."""
+    from fastapi.routing import APIRoute
+    from app.web.router import app
+
+    def names(dependant, found):
+        for d in dependant.dependencies:
+            found.add(getattr(d.call, "__name__", ""))
+            names(d, found)
+        return found
+
+    for r in app.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        deps = names(r.dependant, set())
+        if r.path.startswith("/api/driver/") and r.path != "/api/driver/redeem":
+            assert deps & {"current_driver"}, r.path
+            assert "current_owner" not in deps, r.path
+        if "current_driver" in deps:
+            assert r.path.startswith("/api/driver/"), r.path

@@ -1072,21 +1072,24 @@ def test_receiver_stores_voltage_from_both_protocols():
     assert "voltage=last_good.voltage" in src
 
 
-def test_fuel_period_is_named_by_hours_not_by_the_word_day():
-    """«Расход за сутки» читалось как «за календарные сутки» или «за всё время».
+def test_fuel_card_counts_today_like_the_app():
+    """Карточка кабинета считает расход ЗА СЕГОДНЯ, как сводка приложения.
 
-    На деле окно скользящее: всегда последние 24 часа от текущего момента,
-    в полночь оно не обнуляется. Владелец 27.08.2026 засомневался в цифре
-    именно из-за названия — пишем число часов, а не слово «сутки».
+    История: 27.08.2026 «расход за сутки» читался как «за всё время», и окно
+    сделали скользящим («за 24 часа»). 16.09.2026 владелец увидел за один день
+    21 л в кабинете и 10 л в приложении и решил: «нужно просто сделать
+    одинаковый расход». Теперь окно одно — с полуночи, — и считает его одна
+    функция на сервере.
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
-    assert "Расход за 24 часа" in src
+    assert "Расход за сегодня" in src
+    assert "Расход за 24 часа" not in src
     assert "Расход за сутки" not in src
-    # и запрашиваем ровно те же 24 часа, что обещаем в подписи
-    assert "/fuel?hours=24" in src
+    assert "/fuel?period=today" in src
 
     router = open("app/web/router.py", encoding="utf-8").read()
-    assert "since = datetime.now(timezone.utc) - timedelta(hours=hours)" in router
+    # Оба адреса — кабинета и сводки приложения — зовут один расчёт.
+    assert router.count("await _fuel_summary_between(") == 2
 
 
 def test_track_paint_follows_the_car_between_points():
@@ -1539,13 +1542,13 @@ def test_fuel_card_shows_where_the_number_came_from():
     """Под расходом видно, из чего он посчитан, и каким окном.
 
     Владелец 05.09.2026: «у нас 12 л, а у Ставтрэка 25». Без разбора это два
-    числа, и проверить нечем: расход считается по балансу бака, а окно у нас
-    скользящее (последние 24 часа), а не «с полуночи».
+    числа, и проверить нечем: расход считается по балансу бака. Окно с
+    16.09.2026 — с полуночи, как в сводке приложения.
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     assert "mon-fuel-calc" in src
     assert "html += '<div class=\"mon-fuel-calc\">было ' + Math.round(sum.start_l)" in src
-    assert "Окно скользящее" in src
+    assert "С 00:00" in src
 
 
 def test_legend_takes_two_columns():
