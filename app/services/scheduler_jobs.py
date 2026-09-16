@@ -384,8 +384,13 @@ async def silence_detector_job(owner_bot: Bot) -> None:
                     continue
                 owners_cache[owner_id] = owner
             hours = (now - last_seen).total_seconds() / 3600
+            # ⚠️ Пишем МИНУТЫ, а не «4.4 ч». Владелец 12.09.2026: «что за 4.0
+            # или 4.4 часа, почему нельзя нормально». Десятые доли часа в голове
+            # никто не пересчитывает — из минут собирается «4 ч 24 мин».
+            minutes = int((now - last_seen).total_seconds() // 60)
+            silent = telemetry_service.minutes_label(minutes)
             text = (
-                f"⚠️ <b>{full_name}</b> не выходит на связь {hours:.0f} ч.\n"
+                f"⚠️ <b>{full_name}</b> не выходит на связь {silent}.\n"
                 f"Смена открыта с {started_at.astimezone(owner_tz(owner.timezone)):%H:%M %d.%m}."
             )
             await notify_owner(owner_bot, session, owner, text)
@@ -393,7 +398,12 @@ async def silence_detector_job(owner_bot: Bot) -> None:
             await log_event(
                 session, owner_id=owner_id, driver_id=driver_id,
                 shift_id=shift_id, event_type="silence_alert",
-                payload={"hours_silent": round(hours, 1)},
+                # hours_silent оставляем для старых записей и отчётов, читаем
+                # в журнале minutes_silent.
+                payload={
+                    "hours_silent": round(hours, 1),
+                    "minutes_silent": minutes,
+                },
             )
         await session.commit()
 

@@ -425,11 +425,14 @@ async def _store_wialon_points(
 
         last_good: VehicleTelemetryPoint | None = None
         last_any: VehicleTelemetryPoint | None = None
+        # Трекер в последнем пакете сам сказал «стою» — см. ниже, у is_valid.
+        last_parked = False
         for wp in points:
             zeroish = (
                 wp.latitude is not None and wp.longitude is not None
                 and abs(wp.latitude) < 0.001 and abs(wp.longitude) < 0.001
             )
+            last_parked = telemetry_service.parked_without_fix(wp.params)
             good = wp.is_valid and not zeroish
             jump = None
             if good:
@@ -548,6 +551,19 @@ async def _store_wialon_points(
                     "motion_since_at", "is_valid", "anomaly_reason",
                 )
             else:
+                # ⚠️ Стоит на месте и спутники не держит — это не «GPS сбой».
+                # Владелец 15.09.2026: «на каком основании GPS сбой, всё было
+                # нормально». Трекер на стоянке шлёт нули и `motion: 0`; место
+                # то же, что в последней достоверной точке, и оно известно.
+                # Сама точка при этом остаётся недостоверной (в трек, пробег и
+                # геозоны не идёт) — меняется только то, что видит владелец.
+                # Условие — прежнее место достоверно: иначе показывать нечего.
+                parked = (
+                    last_parked
+                    and prior is not None
+                    and prior.is_valid
+                    and prior.latitude is not None
+                )
                 values = dict(
                     vehicle_id=vehicle.id,
                     terminal_id=terminal_id,
@@ -555,8 +571,10 @@ async def _store_wialon_points(
                     ignition=last_any.ignition,
                     motion_status=motion_status,
                     motion_since_at=motion_since_at,
-                    is_valid=False,
-                    anomaly_reason="нет достоверных координат (GPS)",
+                    is_valid=parked,
+                    anomaly_reason=(
+                        None if parked else "нет достоверных координат (GPS)"
+                    ),
                     fuel_level_raw=last_any.fuel_level_raw,
                     fuel_temp_c=last_any.fuel_temp_c,
                 )

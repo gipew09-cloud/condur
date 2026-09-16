@@ -225,7 +225,13 @@ templates.env.filters["statusru"] = _status_ru
 templates.env.filters["localdt"] = _local_dt
 templates.env.filters["backdated"] = _backdated
 
-app = FastAPI(title="TMS Cabinet")
+# ⚠️ Описание API наружу НЕ отдаём. Проверка 15.09.2026: на боевом /docs и
+# /openapi.json открывались без входа и перечисляли все 78 адресов кабинета,
+# включая удаление рейсов и добавление админов. Сами адреса защищены входом,
+# но карта всех дверей злоумышленнику ни к чему. Тест: test_security.py.
+app = FastAPI(
+    title="TMS Cabinet", docs_url=None, redoc_url=None, openapi_url=None
+)
 
 
 # --------- безопасность: заголовки + троттлинг входа ----------
@@ -4889,7 +4895,11 @@ _TRACK_EVENT_LABELS = {
     "downtime": ("Простой", "alarm"),
     "moving_without_shift_alert": ("Ехал без открытой смены", "alarm"),
     "vehicle_mixup_alert": ("Возможно, не та машина", "alarm"),
-    "silence_alert": ("Пропал сигнал", "alarm"),
+    # ⚠️ Не «пропал сигнал»: трекер при этом шлёт точки, машина видна на карте.
+    # Тревога о ДРУГОМ — по водителю с открытой сменой несколько часов ничего не
+    # происходит. Владелец 12.09.2026: «что за баг, почему пропал сигнал, если
+    # на экране всё видно».
+    "silence_alert": ("Водитель не выходит на связь", "alarm"),
     "fuel_overrun_alert": ("Перерасход топлива", "alarm"),
     "rc_downtime_alert": ("Долго стоит на РЦ", "alarm"),
 }
@@ -5131,8 +5141,18 @@ def _feed_detail(
             _feed_money(p.get("suggested_amount_rub")),
         ]
     elif event_type == "silence_alert":
-        hours = p.get("hours_silent")
-        parts = [f"нет сигнала {hours} ч" if hours is not None else None]
+        # Минуты пишем с 12.09.2026; у старых записей есть только часы с одной
+        # десятой — переводим их в минуты, чтобы строка везде читалась одинаково.
+        minutes = _feed_int(p.get("minutes_silent"))
+        if minutes is None and p.get("hours_silent") is not None:
+            try:
+                minutes = int(round(float(p["hours_silent"]) * 60))
+            except (TypeError, ValueError):
+                minutes = None
+        parts = [
+            f"нет вестей {telemetry_service.minutes_label(minutes)}"
+            if minutes is not None else None
+        ]
     elif event_type == "no_show_alert":
         hours = p.get("hours")
         parts = [f"прошло {hours} ч" if hours is not None else None]
