@@ -70,4 +70,23 @@
     {% endfor %}
   </div>
 {% endif %}
+<script>
+  // Скопировать ссылку доступа водителю. Запасной путь — выделить текст:
+  // в старых браузерах буфер обмена без HTTPS недоступен.
+  function drvCopy(id, btn) {
+    var field = document.getElementById(id);
+    if (!field) return;
+    var done = function () {
+      var was = btn.textContent;
+      btn.textContent = 'Скопировано';
+      setTimeout(function () { btn.textContent = was; }, 1600);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(field.value).then(done, function () { field.select(); });
+    } else {
+      field.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+    }
+  }
+</script>
 {% endblock %}

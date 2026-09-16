@@ -45,7 +45,9 @@
   <div class="sp-vcard__top">
     <span class="sp-ava">{{ initials or '—' }}</span>
     <div class="grow">
-      <div class="sp-vcard__title">{{ d.full_name }}{% if d.telegram_id is none %} <span class="pill pill--neutral">не активирован</span>{% endif %}</div>
+      {# «Не активирован» — только если нет ни бота, ни приложения: водитель,
+         вошедший через приложение, в Telegram может и не быть. #}
+      <div class="sp-vcard__title">{{ d.full_name }}{% if d.telegram_id is none and not row.app_devices %} <span class="pill pill--neutral">не активирован</span>{% endif %}{% if row.app_devices %} <span class="pill pill--neutral" title="Телефонов с приложением">📱 {{ row.app_devices }}</span>{% endif %}</div>
       <div class="sp-vcard__sub">{{ salary_labels.get(d.salary_type, d.salary_type) }} · {{ d.salary_rate }}{% if d.per_diem_rub %} + сут. {{ d.per_diem_rub }}{% endif %}{% if row.default_vehicle_plate %} · обычно на {{ row.default_vehicle_plate }}{% endif %}</div>
     </div>
     {% if row.active_shift %}<span class="pill pill--success">в смене</span>
@@ -60,7 +62,11 @@
   </div>
   <div class="sp-vcard__foot">
     <span class="sp-vcard__sub">{% if row.idle_label %}простаивает с {{ row.idle_label }}{% else %}топливо {{ "{:,.0f}".format(row.fuel_cost).replace(',', ' ') }} ₽{% endif %}</span>
-    <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">✎ Изменить</a>
+    <span class="drv-foot-links">
+      <a href="#" hx-get="/drivers/{{ d.id }}/app" hx-target="#driver-app-{{ d.id }}" hx-swap="outerHTML">📱 Приложение</a>
+      <a href="#" hx-get="/drivers/{{ d.id }}/edit" hx-target="#driver-row-{{ d.id }}" hx-swap="outerHTML">✎ Изменить</a>
+    </span>
   </div>
+  <div id="driver-app-{{ d.id }}"></div>
 </div>
 {% endif %}

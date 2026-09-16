@@ -14,19 +14,21 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from datetime import date as date_cls
 from decimal import Decimal, InvalidOperation
+from html import escape as html_escape
 import os
 from pathlib import Path
 from typing import Annotated, AsyncIterator
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
@@ -42,6 +44,7 @@ from app.models import (
     Customer,
     DistributionCenter,
     Driver,
+    DriverSession,
     Event,
     Expense,
     ManualEntry,
@@ -58,8 +61,8 @@ from app.models import (
 )
 from app.config import settings
 from app.services import (
-    act_service, auth_service, billing, expense_service, geocode_service, rc_service,
-    telemetry_service,
+    act_service, auth_service, billing, driver_access_service, driver_actions_service,
+    expense_service, geocode_service, rc_service, telemetry_service,
 )
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
@@ -258,6 +261,21 @@ def _login_rate_ok(ip: str) -> bool:
     return True
 
 
+_REDEEM_HITS: dict[str, _deque] = {}
+_REDEEM_MAX_PER_WINDOW = 15
+
+
+def _redeem_rate_ok(ip: str) -> bool:
+    now = _time.monotonic()
+    dq = _REDEEM_HITS.setdefault(ip, _deque())
+    while dq and now - dq[0] > _LOGIN_WINDOW_SEC:
+        dq.popleft()
+    if len(dq) >= _REDEEM_MAX_PER_WINDOW:
+        return False
+    dq.append(now)
+    return True
+
+
 @app.middleware("http")
 async def _security_middleware(request: Request, call_next):
     # Троттлинг только на POST /login (перебор кода). Остальное не трогаем.
@@ -265,6 +283,14 @@ async def _security_middleware(request: Request, call_next):
         ip = (request.client.host if request.client else "?") or "?"
         if not _login_rate_ok(ip):
             return Response("Слишком много попыток входа. Подождите 5 минут.", status_code=429)
+    # Вход водителя по коду — отдельный счётчик: код можно было бы подбирать.
+    if request.method == "POST" and request.url.path == "/api/driver/redeem":
+        ip = (request.client.host if request.client else "?") or "?"
+        if not _redeem_rate_ok(ip):
+            return JSONResponse(
+                {"ok": False, "message": "Слишком много попыток. Подождите 5 минут."},
+                status_code=429,
+            )
     response = await call_next(request)
     # Заголовки безопасности. CSP намеренно НЕ ставим здесь: страницы грузят
     # внешние CSS/шрифты/карты (jsdelivr, google fonts, yandex), неверный CSP
@@ -1202,6 +1228,7 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
         ).all()
     )
 
+    app_devices = await driver_access_service.device_counts(session, owner_id)
     rows = []
     for d in drivers:
         # Простой/невыход (Блок F): активна ли смена и с какого времени тишина.
@@ -1250,6 +1277,7 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
             "active_shift": active_shift,
             "idle_label": idle_label,
             "default_vehicle_plate": plates.get(d.default_vehicle_id),
+            "app_devices": app_devices.get(d.id, 0),
         })
     return rows
 
@@ -1440,6 +1468,435 @@ async def driver_cancel_edit(
     return templates.TemplateResponse(
         "_driver_row.html", {"request": request, "row": row, "edit": False}
     )
+
+
+# =========================================================================
+# ПРИЛОЖЕНИЕ ВОДИТЕЛЯ: выдача доступа (кабинет) и вход с телефона (API)
+# =========================================================================
+# Решения 16.09.2026 — `DRIVER_ACCESS_AI_ANSWERS.md`. Паролей нет: владелец
+# выдаёт одноразовую ссылку и код, водитель гасит их в приложении.
+# ⚠️ Сессия водителя — своя таблица и своя cookie: current_owner её не читает,
+# открыть кабинет владельца телефоном водителя невозможно.
+
+
+def _client_ip(request: Request) -> str | None:
+    return (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
+        request.client.host if request.client else None
+    )
+
+
+def _app_access_link(request: Request, token: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    if settings.cookie_secure and base.startswith("http://"):
+        base = "https://" + base[len("http://"):]
+    return f"{base}/d/{token}"
+
+
+async def _driver_app_panel(
+    request: Request, session: AsyncSession, owner: Owner, driver: Driver,
+    issued: dict | None = None, notice: str | None = None,
+):
+    tz_name = owner.timezone
+    devices = await driver_access_service.active_devices(session, driver.id)
+    pending = await driver_access_service.pending_grant(session, driver.id)
+    return templates.TemplateResponse(
+        "_driver_app.html",
+        {
+            "request": request,
+            "driver": driver,
+            "issued": issued,
+            "notice": notice,
+            "max_devices": driver_access_service.MAX_ACTIVE_DEVICES,
+            "pending_until": (
+                fmt_dt(pending.expires_at, tz_name, "%H:%M") if pending else None
+            ),
+            "devices": [
+                {
+                    "id": d.id,
+                    "label": d.device_label or "Телефон",
+                    "platform": {"ios": "iPhone", "android": "Android"}.get(
+                        (d.platform or "").lower(), d.platform or ""
+                    ),
+                    "app_version": d.app_version,
+                    "created": fmt_dt(d.created_at, tz_name, "%d.%m %H:%M"),
+                    "seen": fmt_dt(d.last_seen_at, tz_name, "%d.%m %H:%M")
+                    if d.last_seen_at else "—",
+                }
+                for d in devices
+            ],
+        },
+    )
+
+
+async def _owned_driver(session: AsyncSession, owner: Owner, driver_id: int) -> Driver:
+    driver = await session.get(Driver, driver_id)
+    if driver is None or driver.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    return driver
+
+
+@app.get("/drivers/{driver_id}/app", response_class=HTMLResponse)
+async def driver_app_panel(
+    request: Request,
+    driver_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    driver = await _owned_driver(session, owner, driver_id)
+    return await _driver_app_panel(request, session, owner, driver)
+
+
+@app.post("/drivers/{driver_id}/app/grant", response_class=HTMLResponse)
+async def driver_app_grant(
+    request: Request,
+    driver_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Выдать доступ: ссылка и код показываются ОДИН раз — в базе их нет."""
+    driver = await _owned_driver(session, owner, driver_id)
+    if not driver.is_active:
+        raise HTTPException(status_code=404)
+    issued = await driver_access_service.issue_grant(
+        session, driver=driver,
+        issued_by_telegram_id=await _viewer_telegram_id(request, session),
+    )
+    await log_event(
+        session, owner_id=owner.id, driver_id=driver.id,
+        event_type="driver_access_issued",
+        payload={"grant_id": issued.grant.id},
+    )
+    await session.commit()
+    return await _driver_app_panel(
+        request, session, owner, driver,
+        issued={
+            "link": _app_access_link(request, issued.token),
+            "code": driver_access_service.format_code(issued.code),
+            "until": fmt_dt(issued.grant.expires_at, owner.timezone, "%H:%M"),
+        },
+    )
+
+
+@app.post("/drivers/{driver_id}/app/devices/{session_id}/revoke", response_class=HTMLResponse)
+async def driver_app_revoke_device(
+    request: Request,
+    driver_id: int,
+    session_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    driver = await _owned_driver(session, owner, driver_id)
+    ds = await driver_access_service.revoke_device(
+        session, owner_id=owner.id, session_id=session_id,
+    )
+    if ds is None or ds.driver_id != driver.id:
+        raise HTTPException(status_code=404)
+    await log_event(
+        session, owner_id=owner.id, driver_id=driver.id,
+        event_type="driver_device_revoked",
+        payload={"session_id": ds.id, "device": ds.device_label},
+    )
+    await session.commit()
+    return await _driver_app_panel(
+        request, session, owner, driver, notice="Телефон отключён."
+    )
+
+
+@app.post("/drivers/{driver_id}/app/revoke-all", response_class=HTMLResponse)
+async def driver_app_revoke_all(
+    request: Request,
+    driver_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Потерял телефон или уволился: отключить всё разом.
+
+    ⚠️ Открытую смену не закрываем — это создало бы факт, которого не было.
+    """
+    driver = await _owned_driver(session, owner, driver_id)
+    count = await driver_access_service.revoke_all(session, driver=driver)
+    await log_event(
+        session, owner_id=owner.id, driver_id=driver.id,
+        event_type="driver_devices_revoked", payload={"count": count},
+    )
+    await session.commit()
+    return await _driver_app_panel(
+        request, session, owner, driver,
+        notice="Все телефоны отключены." if count else "Подключённых телефонов не было.",
+    )
+
+
+@app.get("/api/drivers/{driver_id}/app-access")
+async def api_driver_app_access(
+    driver_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """То же, что панель в кабинете, — для приложения владельца."""
+    driver = await _owned_driver(session, owner, driver_id)
+    devices = await driver_access_service.active_devices(session, driver.id)
+    pending = await driver_access_service.pending_grant(session, driver.id)
+    return {
+        "driver_id": driver.id,
+        "max_devices": driver_access_service.MAX_ACTIVE_DEVICES,
+        "pending_until": pending.expires_at.isoformat() if pending else None,
+        "devices": [
+            {
+                "id": d.id,
+                "label": d.device_label,
+                "platform": d.platform,
+                "app_version": d.app_version,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
+            }
+            for d in devices
+        ],
+    }
+
+
+_LINK_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,100}$")
+
+
+@app.get("/d/{token}", response_class=HTMLResponse)
+async def driver_link_page(request: Request, token: str):
+    """Страница ссылки доступа, если её открыли в браузере.
+
+    ⚠️ Ничего не гасит и в базу не ходит. Мессенджеры сами открывают ссылки,
+    чтобы нарисовать превью: гаси мы выдачу на GET — она сгорала бы раньше,
+    чем водитель до неё доберётся. И ничего не рассказывает о водителе.
+    """
+    if not _LINK_TOKEN_RE.match(token):
+        raise HTTPException(status_code=404)
+    response = templates.TemplateResponse(
+        "driver_link.html", {"request": request, "token": token}
+    )
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
+# ---------------------------------------------------------------- API телефона
+class DriverContext:
+    def __init__(self, driver: Driver, driver_session: DriverSession, owner: Owner):
+        self.driver = driver
+        self.session = driver_session
+        self.owner = owner
+
+
+async def current_driver(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DriverContext:
+    """Водитель по cookie `driver_session`. Не вошёл — 401 (а не редирект:
+    это API для приложения, страница входа ему ни к чему)."""
+    ds = await driver_access_service.session_by_token(
+        session, request.cookies.get(driver_access_service.DRIVER_COOKIE)
+    )
+    if ds is None:
+        raise HTTPException(status_code=401, detail="driver_auth_required")
+    driver = await session.get(Driver, ds.driver_id)
+    owner = await session.get(Owner, ds.owner_id)
+    if driver is None or owner is None or not driver.is_active or driver.owner_id != owner.id:
+        raise HTTPException(status_code=401, detail="driver_auth_required")
+    if session.dirty:
+        await session.commit()   # last_seen обновился
+    return DriverContext(driver, ds, owner)
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_json")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="bad_json")
+    return body
+
+
+def _set_driver_cookie(response: Response, raw: str) -> None:
+    expires = datetime.now(timezone.utc) + timedelta(
+        seconds=auth_service.SESSION_COOKIE_MAX_AGE
+    )
+    response.set_cookie(
+        driver_access_service.DRIVER_COOKIE, raw,
+        max_age=auth_service.SESSION_COOKIE_MAX_AGE, expires=expires,
+        path="/", httponly=True, secure=settings.cookie_secure, samesite="lax",
+    )
+
+
+async def _notify_owner_quietly(request: Request, session: AsyncSession, owner: Owner, text: str):
+    """Уведомление владельцу не должно ронять ответ телефону."""
+    try:
+        from app.bots.notifications import notify_owner
+        bot = getattr(request.app.state, "owner_bot", None)
+        if bot is not None:
+            await notify_owner(bot, session, owner, text)
+    except Exception:
+        logging.getLogger(__name__).exception("Не ушло уведомление владельцу")
+
+
+@app.post("/api/driver/redeem")
+async def api_driver_redeem(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Водитель вводит код или открывает ссылку — получает вход на этот телефон."""
+    body = await _json_body(request)
+    try:
+        done = await driver_access_service.redeem(
+            session,
+            token=body.get("token") if isinstance(body.get("token"), str) else None,
+            code=body.get("code") if isinstance(body.get("code"), str) else None,
+            device_id=str(body.get("device_id") or ""),
+            device_label=str(body.get("device_label") or "") or None,
+            platform=str(body.get("platform") or "") or None,
+            app_version=str(body.get("app_version") or "") or None,
+            ip=_client_ip(request),
+        )
+    except driver_access_service.RedeemError as error:
+        await session.rollback()
+        return JSONResponse({"ok": False, "message": str(error)}, status_code=400)
+    driver = done.driver
+    owner = await session.get(Owner, driver.owner_id)
+    await log_event(
+        session, owner_id=driver.owner_id, driver_id=driver.id,
+        event_type="driver_app_login",
+        payload={
+            "session_id": done.driver_session.id,
+            "device": done.driver_session.device_label,
+            "platform": done.driver_session.platform,
+        },
+    )
+    await session.commit()
+    if owner is not None:
+        device = done.driver_session.device_label or "телефона"
+        await _notify_owner_quietly(
+            request, session, owner,
+            f"📱 <b>{html_escape(driver.full_name)}</b> вошёл в приложение "
+            f"с {html_escape(device)}.",
+        )
+    response = JSONResponse({
+        "ok": True,
+        "driver": {"id": driver.id, "full_name": driver.full_name},
+        "company": (owner.company_name or owner.full_name) if owner else None,
+    })
+    _set_driver_cookie(response, done.token)
+    return response
+
+
+@app.get("/api/driver/me")
+async def api_driver_me(
+    ctx: Annotated[DriverContext, Depends(current_driver)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Всё, что нужно главному экрану водителя: кто он, открыта ли смена и на
+    каких машинах её можно начать."""
+    from app.services import shift_service
+    driver, owner = ctx.driver, ctx.owner
+    active = await shift_service.get_active_shift(session, driver.id)
+    vehicles = (await session.execute(
+        select(Vehicle)
+        .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
+        .order_by(Vehicle.license_plate)
+    )).scalars().all()
+    busy = set((await session.execute(
+        select(Shift.vehicle_id).where(
+            Shift.owner_id == owner.id, Shift.status == "started",
+            Shift.driver_id != driver.id,
+        )
+    )).scalars().all())
+    shift = None
+    if active is not None:
+        vehicle = await session.get(Vehicle, active.vehicle_id)
+        shift = {
+            "id": active.id,
+            "vehicle_id": active.vehicle_id,
+            "plate": vehicle.license_plate if vehicle else None,
+            "started_at": active.started_at.isoformat() if active.started_at else None,
+            "started_label": fmt_dt(active.started_at, owner.timezone, "%H:%M")
+            if active.started_at else None,
+            "odometer_start": active.odometer_start,
+        }
+    return {
+        "driver": {"id": driver.id, "full_name": driver.full_name},
+        "company": owner.company_name or owner.full_name,
+        "device": {"id": ctx.session.id, "label": ctx.session.device_label},
+        "shift": shift,
+        "default_vehicle_id": driver.default_vehicle_id,
+        "vehicles": [
+            {"id": v.id, "plate": v.license_plate, "busy": v.id in busy}
+            for v in vehicles
+        ],
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/driver/logout")
+async def api_driver_logout(
+    ctx: Annotated[DriverContext, Depends(current_driver)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    await driver_access_service.revoke_device(
+        session, owner_id=ctx.owner.id, session_id=ctx.session.id,
+    )
+    await session.commit()
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(
+        driver_access_service.DRIVER_COOKIE, path="/",
+        secure=settings.cookie_secure, samesite="lax",
+    )
+    return response
+
+
+@app.post("/api/driver/actions")
+async def api_driver_actions(
+    request: Request,
+    ctx: Annotated[DriverContext, Depends(current_driver)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Действие водителя из очереди телефона. Повтор — прежний ответ.
+
+    Ответ 200 — окончательный (принято или отказ с причиной): телефон больше
+    не повторяет. 400 — запрос собран неверно. 401 — вход отозван.
+    """
+    body = await _json_body(request)
+    # ⚠️ Всё нужное берём ДО коммита: если соседний запрос успел записать тот
+    # же номер, наша транзакция откатится, и объекты сессии «протухнут» —
+    # обращение к ним после отката роняет асинхронную сессию.
+    driver_id, tz_name = ctx.driver.id, ctx.owner.timezone
+    try:
+        outcome = await driver_actions_service.apply(
+            session, driver_session=ctx.session, driver=ctx.driver, body=body,
+        )
+    except driver_actions_service.BadRequest as error:
+        await session.rollback()
+        return JSONResponse(
+            {"ok": False, "status": "bad_request", "message": str(error)},
+            status_code=400,
+        )
+    outcome = await driver_actions_service.commit_or_replay(
+        session, driver_id=driver_id, outcome=outcome,
+    )
+    if outcome.duplicate:
+        return JSONResponse(outcome.body())
+    notice = driver_actions_service.owner_notice(
+        outcome, driver=ctx.driver, tz_name=tz_name,
+    )
+    if notice:
+        await _notify_owner_quietly(request, session, ctx.owner, notice)
+        closed = outcome.after_commit.get("closed")
+        if closed is not None:
+            try:
+                from app.bots.driver_bot import _maybe_fuel_overrun_alert
+                bot = getattr(request.app.state, "owner_bot", None)
+                if bot is not None:
+                    await _maybe_fuel_overrun_alert(
+                        session, bot, ctx.owner, ctx.driver, closed.shift,
+                        closed.approved_expenses,
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception("Контроль топлива не сработал")
+    return JSONResponse(outcome.body())
 
 
 # =========================================================================
@@ -4361,46 +4818,82 @@ async def api_geocode_reverse(
 # =========================================================================
 # /api/vehicles/{id}/fuel — расход, заправки и подозрения на слив за период
 # =========================================================================
+async def _fuel_summary_between(
+    session: AsyncSession, owner_id: int, vehicle: Vehicle,
+    since: datetime, until: datetime,
+) -> dict | None:
+    """Расход топлива за окно — ОДИН расчёт для кабинета и приложения.
+
+    ⚠️ Владелец 16.09.2026: «на сайте 21 л, в приложении 10 л» — и попросил
+    сделать одинаково. Расходились две вещи сразу:
+    1. окно: кабинет брал скользящие сутки, сводка — с полуночи;
+    2. точки: сводка брала уровень бака только из пакетов с ДОСТОВЕРНЫМ GPS.
+       А на стоянке трекер шлёт нули вместо координат — уровень бака в этих
+       пакетах настоящий, но сводка его выбрасывала.
+    Уровень топлива от GPS не зависит, поэтому здесь фильтра по GPS нет.
+    """
+    if not vehicle.fuel_calibration:
+        return None
+    rows = (await session.execute(
+        select(
+            VehicleTelemetryPoint.observed_at,
+            VehicleTelemetryPoint.fuel_level_raw,
+        )
+        .where(
+            VehicleTelemetryPoint.vehicle_id == vehicle.id,
+            VehicleTelemetryPoint.owner_id == owner_id,
+            VehicleTelemetryPoint.observed_at.is_not(None),
+            VehicleTelemetryPoint.observed_at >= since,
+            VehicleTelemetryPoint.observed_at < until,
+            VehicleTelemetryPoint.fuel_level_raw.is_not(None),
+        )
+        .order_by(VehicleTelemetryPoint.observed_at)
+        .limit(20000)
+    )).all()
+    return telemetry_service.fuel_summary(
+        [(observed_at, raw) for observed_at, raw in rows],
+        vehicle.fuel_calibration,
+    )
+
+
 @app.get("/api/vehicles/{vehicle_id}/fuel")
 async def api_vehicle_fuel(
     vehicle_id: int,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
     hours: int = 12,
+    period: str | None = None,
 ):
-    """Что было с топливом за период. Без тарировки не считаем — соврём."""
+    """Что было с топливом за период. Без тарировки не считаем — соврём.
+
+    `period=today` — с полуночи по часам владельца. Так считает и сводка в
+    приложении, и «Сегодня» у Ставтрэка: одно окно — одно число.
+    """
     vehicle = await session.get(Vehicle, vehicle_id)
     if vehicle is None or vehicle.owner_id != owner.id:
         raise HTTPException(status_code=404, detail="Not found")
     if not vehicle.fuel_calibration:
         return {"vehicle_id": vehicle_id, "calibrated": False, "summary": None}
 
-    hours = max(1, min(int(hours or 12), 24 * 31))
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    rows = (
-        await session.execute(
-            select(
-                VehicleTelemetryPoint.observed_at,
-                VehicleTelemetryPoint.fuel_level_raw,
-            )
-            .where(
-                VehicleTelemetryPoint.vehicle_id == vehicle_id,
-                VehicleTelemetryPoint.owner_id == owner.id,
-                VehicleTelemetryPoint.observed_at.is_not(None),
-                VehicleTelemetryPoint.observed_at >= since,
-                VehicleTelemetryPoint.fuel_level_raw.is_not(None),
-            )
-            .order_by(VehicleTelemetryPoint.observed_at)
-            .limit(20000)
+    now_utc = datetime.now(timezone.utc)
+    if period == "today":
+        tz = owner_tz(owner.timezone)
+        local = datetime.now(tz)
+        since = datetime(local.year, local.month, local.day, tzinfo=tz).astimezone(
+            timezone.utc
         )
-    ).all()
-    summary = telemetry_service.fuel_summary(
-        [(observed_at, raw) for observed_at, raw in rows], vehicle.fuel_calibration
+        hours = None
+    else:
+        hours = max(1, min(int(hours or 12), 24 * 31))
+        since = now_utc - timedelta(hours=hours)
+    summary = await _fuel_summary_between(
+        session, owner.id, vehicle, since, now_utc + timedelta(minutes=1)
     )
     return {
         "vehicle_id": vehicle_id,
         "calibrated": True,
         "hours": hours,
+        "period": "today" if period == "today" else "hours",
         "tank_litres": vehicle.tank_litres,
         "summary": summary,
     }
@@ -5001,6 +5494,10 @@ _FEED_EVENT_LABELS = {
     "trip_revenue_approved": ("Выручка утверждена", "money"),
     "late_start_alert": ("Смена начата с опозданием", "alarm"),
     "no_show_alert": ("Водитель не вышел", "alarm"),
+    # Владелец 12.09.2026: «я же их должен видеть» — входы водителей в
+    # приложение видны в журнале. Выдача и отключение доступа — действия
+    # самого владельца, в ленту их не кладём.
+    "driver_app_login": ("Вошёл в приложение", "shift"),
 }
 
 # Потолок ленты. Больше двухсот строк за раз телефон не покажет, а тянуть их
@@ -5165,6 +5662,9 @@ def _feed_detail(
             f"на {round(float(percent))} % больше нормы" if percent is not None else None,
             _feed_money(p.get("excess_rub")),
         ]
+    elif event_type == "driver_app_login":
+        device = (p.get("device") or "").strip()
+        parts = [f"с {device}" if device else None]
     elif event_type == "downtime":
         parts = [p.get("label")]
     elif event_type == "sos":
@@ -5603,9 +6103,9 @@ async def api_vehicle_summary(
     # Расход топлива — только если на машине есть датчик И вписана тарировка.
     # Нет одного из двух — пишем «нет данных», а не ноль: ноль читается как
     # «не заправлялся и не тратил», хотя мы просто не знаем.
-    fuel = telemetry_service.fuel_summary(
-        [(t, raw) for t, _, _, _, _, raw, _ in rows if raw is not None],
-        vehicle.fuel_calibration,
+    # Тот же расчёт, что у карточки кабинета: одно окно — одно число.
+    fuel = await _fuel_summary_between(
+        session, owner.id, vehicle, since, min(until, now_utc + timedelta(minutes=1))
     )
     return {
         "vehicle_id": vehicle_id,

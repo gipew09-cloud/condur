@@ -2049,9 +2049,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         metric('Температура топлива', temp, '');
     }
 
-    // Расход за последние 24 часа. Именно СКОЛЬЗЯЩИЕ сутки: окно всегда
-    // «от сейчас минус 24 часа», в полночь оно не обнуляется. Владелец 27.08
-    // принял это за «за всё время» — отсюда и название с числом, а не «сутки».
+    // Расход ЗА СЕГОДНЯ — с полуночи по часам владельца.
+    // ⚠️ Раньше здесь были скользящие сутки («последние 24 часа»), и 16.09.2026
+    // владелец увидел в кабинете 21 л, а в сводке приложения 10 л за тот же
+    // день: «нужно просто сделать одинаковый расход». Теперь окно то же, что в
+    // сводке приложения и в «Сегодня» у Ставтрэка, и считает его одна функция
+    // на сервере (_fuel_summary_between).
     // Считается на сервере по кривой уровня:
     // отдельно спуски (расход) и отдельно подъёмы (заправки) — иначе заправка
     // посреди периода съела бы весь расход.
@@ -2063,9 +2066,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       var hit = fuelCache[v.vehicle_id];
       if (hit && Date.now() - hit.at < 120000) { paintFuelSummary(hit.data); return; }
       box.hidden = false;
-      box.innerHTML = '<div class="mon-metric__k">Расход за 24 часа</div>' +
+      box.innerHTML = '<div class="mon-metric__k">Расход за сегодня</div>' +
         '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">считаю…</div>';
-      fetch('/api/vehicles/' + v.vehicle_id + '/fuel?hours=24')
+      fetch('/api/vehicles/' + v.vehicle_id + '/fuel?period=today')
         .then(function (r) { return r.ok ? r.json() : Promise.reject('HTTP ' + r.status); })
         .then(function (data) {
           fuelCache[v.vehicle_id] = { at: Date.now(), data: data };
@@ -2074,7 +2077,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         .catch(function (err) {
           console.warn('Расход не посчитался:', err);
           if (selected === v.vehicle_id) {
-            box.innerHTML = '<div class="mon-metric__k">Расход за 24 часа</div>' +
+            box.innerHTML = '<div class="mon-metric__k">Расход за сегодня</div>' +
               '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">не посчитался</div>';
           }
         });
@@ -2085,11 +2088,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (!box) return;
       var sum = data && data.summary;
       if (!sum) {
-        box.innerHTML = '<div class="mon-metric__k">Расход за 24 часа</div>' +
+        box.innerHTML = '<div class="mon-metric__k">Расход за сегодня</div>' +
           '<div class="mon-metric__v is-text" style="color:var(--mon-text-3)">данных мало</div>';
         return;
       }
-      var html = '<div class="mon-metric__k">Расход за 24 часа</div>' +
+      var html = '<div class="mon-metric__k">Расход за сегодня</div>' +
         '<div class="mon-metric__v">' + Math.round(sum.spent_l) + ' л';
       if (sum.refuelled_l > 0) {
         html += '<small style="color:var(--mon-text-3)"> · заправлено ' +
@@ -2104,8 +2107,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         html += '<div class="mon-fuel-calc">было ' + Math.round(sum.start_l) +
           ' л → стало ' + Math.round(sum.end_l) + ' л' +
           (sum.refuelled_l > 0 ? ', залито ' + Math.round(sum.refuelled_l) + ' л' : '') +
-          '<br><span>Окно скользящее: последние 24 часа от текущей минуты, ' +
-          'а не с полуночи — с «сегодня» у поставщика числа не сойдутся.</span></div>';
+          '<br><span>С 00:00 — так же, как в сводке приложения ' +
+          'и в «Сегодня» у Ставтрэка.</span></div>';
       }
       if (sum.drains && sum.drains.length) {
         // Резкое падение уровня за считанные минуты — это не расход.

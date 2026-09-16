@@ -50,12 +50,12 @@ from app.models import Driver, Expense, Owner, RouteTemplate, Shift, Trip, Vehic
 from app.services import (
     expense_service,
     receipt_ocr,
-    salary_service,
     shift_service,
     telemetry_service,
     trip_service,
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
+from app.services import shift_flow
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
 from app.services.timeutil import fmt_time, owner_tz
@@ -272,34 +272,12 @@ async def _do_start_shift(
     """Создать смену и уведомить. Общий хвост для всех путей старта.
     Фото-режим (Правка 1): водитель прислал только фото — оно уходит владельцу
     с кнопкой «Указать пробег», число км вписывает владелец."""
-    shift = await shift_service.start_shift(
-        session,
-        owner_id=driver.owner_id,
-        driver_id=driver.id,
-        vehicle_id=vehicle.id,
-        odometer_start=odometer_start,
-        photo_file_id=photo_file_id,
+    # Сама смена, зажигание и журнал — общие с приложением (shift_flow).
+    opened = await shift_flow.open_shift(
+        session, driver=driver, vehicle=vehicle,
+        odometer_start=odometer_start, photo_ref=photo_file_id, source="bot",
     )
-    await session.flush()
-    # Зажигание на момент открытия смены: завели двигатель до смены или ещё
-    # нет — уходит владельцу и в событие (GPS-точки живут 180 дней, события — вечно).
-    started_moment = datetime.now(timezone.utc)
-    ignition = await telemetry_service.shift_ignition_snapshot(
-        session, vehicle_id=vehicle.id, moment=started_moment
-    )
-    await log_event(
-        session,
-        owner_id=driver.owner_id,
-        driver_id=driver.id,
-        shift_id=shift.id,
-        event_type="shift_started",
-        payload={
-            "vehicle_id": vehicle.id,
-            "odometer_start": odometer_start,
-            "engine_on": None if ignition is None else ignition["on"],
-            "engine_since": ignition["since"].isoformat() if ignition else None,
-        },
-    )
+    shift, ignition, started_moment = opened.shift, opened.ignition, opened.started_at
     await session.commit()
     await state.clear()
 
@@ -329,16 +307,9 @@ async def _do_start_shift(
             reply_markup=kb.odometer_set_keyboard(shift.id, "start"),
         )
         return
-    if odometer_start is not None:
-        owner_text = msg.NOTIFY_SHIFT_STARTED.format(
-            driver=driver.full_name, plate=vehicle.license_plate, km=odometer_start
-        )
-    else:
-        owner_text = msg.NOTIFY_SHIFT_STARTED_SIMPLE.format(
-            driver=driver.full_name, plate=vehicle.license_plate
-        )
-    if ignition_line:
-        owner_text += f"\n{ignition_line}"
+    owner_text = shift_flow.shift_started_owner_text(
+        opened, driver=driver, vehicle=vehicle, tz_name=owner.timezone
+    )
     await notify_owner(owner_bot, session, owner, owner_text)
 
 
@@ -711,47 +682,12 @@ async def _do_end_shift(
     Зарплату водителю показываем только при FEATURE_SHOW_SALARY."""
     data = await state.get_data()
     end_photo = data.get("odometer_photo")
-    ended_moment = datetime.now(timezone.utc)
-    await shift_service.end_shift(
-        session,
-        shift=shift,
-        odometer_end=odometer_end,
-        photo_file_id=data.get("odometer_photo"),
-        ended_at=ended_moment,
+    # Сама смена, итоги и журнал — общие с приложением (shift_flow).
+    closed = await shift_flow.close_shift(
+        session, driver=driver, shift=shift,
+        odometer_end=odometer_end, photo_ref=end_photo, source="bot",
     )
-    await session.flush()
-    await session.refresh(shift)
-    # Зажигание на момент закрытия: заглушил двигатель или уехал с работающим.
-    ignition = await telemetry_service.shift_ignition_snapshot(
-        session, vehicle_id=shift.vehicle_id, moment=ended_moment
-    )
-
-    trips = await shift_service.get_shift_trips(session, shift.id)
-    revenue = sum((t.revenue_rub or Decimal(0)) for t in trips) or Decimal(0)
-    pending_revenue = sum((t.driver_revenue_pending_rub or Decimal(0)) for t in trips) or Decimal(0)
-
-    approved_expenses = await session.execute(
-        select(Expense).where(Expense.shift_id == shift.id, Expense.status == "approved")
-    )
-    approved_list = list(approved_expenses.scalars().all())
-    expenses_total = sum((e.amount_rub or Decimal(0)) for e in approved_list) or Decimal(0)
-
-    salary = salary_service.calculate_salary(driver, shift, trips)
-
-    await log_event(
-        session,
-        owner_id=driver.owner_id,
-        driver_id=driver.id,
-        shift_id=shift.id,
-        event_type="shift_completed",
-        payload={
-            "distance_km": shift.distance_km,
-            "trips": len(trips),
-            "salary": str(salary),
-            "engine_on": None if ignition is None else ignition["on"],
-            "engine_since": ignition["since"].isoformat() if ignition else None,
-        },
-    )
+    trips, approved_list = closed.trips, closed.approved_expenses
     await session.commit()
     await state.clear()
 
@@ -762,37 +698,11 @@ async def _do_end_shift(
 
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
-        # В фото-режиме пробег/зарплата ещё не известны — не показываем нули.
-        if odometer_end is None:
-            owner_text = msg.NOTIFY_SHIFT_COMPLETED_PENDING.format(
-                driver=driver.full_name, trips=len(trips),
-                revenue=f"{revenue:.0f}", expenses=f"{expenses_total:.0f}",
-            )
-        else:
-            owner_text = msg.NOTIFY_SHIFT_COMPLETED.format(
-                driver=driver.full_name, distance=shift.distance_km or 0,
-                trips=len(trips), revenue=f"{revenue:.0f}",
-                expenses=f"{expenses_total:.0f}", salary=f"{salary:.0f}",
-            )
-        if pending_revenue:
-            owner_text += f"\n⏳ Выручка на подтверждении: <b>{pending_revenue:.0f} ₽</b>"
-        # Честность цифры: если по части рейсов выручка ещё не вписана,
-        # говорим это прямо — иначе «Рейсов: 3 · Выручка: 50000» выглядит
-        # как ошибка, хотя просто не всё введено.
-        no_revenue = sum(
-            1 for t in trips
-            if t.revenue_rub is None and t.driver_revenue_pending_rub is None
+        # В фото-режиме пробег/зарплата ещё не известны — нули не показываем
+        # (это решает shift_flow, так же, как для приложения).
+        owner_text = shift_flow.shift_completed_owner_text(
+            closed, driver=driver, tz_name=owner.timezone
         )
-        if no_revenue:
-            owner_text += (
-                f"\n⚠️ По {no_revenue} из {len(trips)} рейс(ам) выручка ещё не "
-                "указана — итог смены вырастет после ввода."
-            )
-        ignition_line = telemetry_service.ignition_shift_line(
-            ignition, moment=ended_moment, tz_name=owner.timezone, closing=True
-        )
-        if ignition_line:
-            owner_text += f"\n{ignition_line}"
         await notify_owner(owner_bot, session, owner, owner_text)
         # Контроль топлива: сумма fuel-расходов смены vs норма
         await _maybe_fuel_overrun_alert(session, owner_bot, owner, driver, shift, approved_list)

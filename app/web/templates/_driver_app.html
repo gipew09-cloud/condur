@@ -1,0 +1,68 @@
+{# Панель «Приложение» в карточке водителя: выдача доступа и его телефоны.
+   Ссылка и код показываются ОДИН раз — в базе только их отпечатки. #}
+<div class="drv-app" id="driver-app-{{ driver.id }}">
+  <div class="drv-app__head">
+    <strong>📱 Приложение водителя</strong>
+    <span class="sp-vcard__sub">{{ devices|length }} из {{ max_devices }} телефонов</span>
+  </div>
+
+  {% if notice %}<p class="drv-app__notice">{{ notice }}</p>{% endif %}
+
+  {% if issued %}
+  <div class="drv-app__issued">
+    <div class="drv-app__k">Код для входа</div>
+    <div class="drv-app__code" id="drv-code-{{ driver.id }}">{{ issued.code }}</div>
+    <div class="drv-app__k">или ссылка</div>
+    <div class="drv-app__link">
+      <input type="text" readonly value="{{ issued.link }}" id="drv-link-{{ driver.id }}"
+             onclick="this.select()">
+      <button type="button" class="secondary outline"
+              onclick="drvCopy('drv-link-{{ driver.id }}', this)">Скопировать</button>
+    </div>
+    <p class="sp-vcard__sub">
+      Действует до {{ issued.until }} и только один раз. Передайте водителю лично
+      или в мессенджере: он откроет приложение Condur и введёт код.
+      Здесь код больше не покажется — если не успели, выдайте новый.
+    </p>
+  </div>
+  {% elif pending_until %}
+  <p class="sp-vcard__sub">Выдан доступ, ждёт входа до {{ pending_until }}.</p>
+  {% endif %}
+
+  {% for d in devices %}
+  <div class="drv-app__device">
+    <div>
+      <b>{{ d.label }}</b>{% if d.platform %} <span class="pill pill--neutral">{{ d.platform }}</span>{% endif %}
+      <div class="sp-vcard__sub">вход {{ d.created }} · был {{ d.seen }}{% if d.app_version %} · версия {{ d.app_version }}{% endif %}</div>
+    </div>
+    <button type="button" class="secondary outline"
+            hx-post="/drivers/{{ driver.id }}/app/devices/{{ d.id }}/revoke"
+            hx-target="#driver-app-{{ driver.id }}" hx-swap="outerHTML"
+            hx-confirm="Отключить {{ d.label }}? Водитель выйдет из приложения на этом телефоне.">
+      Отключить
+    </button>
+  </div>
+  {% else %}
+  {% if not issued %}<p class="sp-vcard__sub">Телефонов пока нет.</p>{% endif %}
+  {% endfor %}
+
+  <div class="drv-app__actions">
+    {% if devices|length < max_devices %}
+    <button type="button"
+            hx-post="/drivers/{{ driver.id }}/app/grant"
+            hx-target="#driver-app-{{ driver.id }}" hx-swap="outerHTML">
+      {% if issued or pending_until %}Выдать новый код{% else %}Выдать доступ{% endif %}
+    </button>
+    {% else %}
+    <span class="sp-vcard__sub">Подключено {{ max_devices }} телефона — чтобы добавить ещё, отключите один.</span>
+    {% endif %}
+    {% if devices %}
+    <button type="button" class="contrast outline"
+            hx-post="/drivers/{{ driver.id }}/app/revoke-all"
+            hx-target="#driver-app-{{ driver.id }}" hx-swap="outerHTML"
+            hx-confirm="Отключить все телефоны {{ driver.full_name }}? Открытая смена останется открытой — её закроете вы.">
+      Отключить все
+    </button>
+    {% endif %}
+  </div>
+</div>

@@ -149,6 +149,94 @@ class Driver(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ========== ПРИЛОЖЕНИЕ ВОДИТЕЛЯ: доступ, телефоны, действия ==========
+class DriverAccessGrant(Base):
+    """
+    Выдача доступа водителю в приложение — одноразовая ссылка и код.
+
+    Владелец жмёт «Выдать доступ» в кабинете; водитель гасит выдачу ссылкой
+    или кодом и получает постоянную сессию на своём телефоне. Паролей нет.
+    В базе только отпечатки (SHA-256) — утечка базы не даёт войти.
+    ⚠️ Ссылка и код — два способа погасить ОДНУ выдачу, а не два фактора:
+    погасили одним — сгорело и второе.
+    """
+    __tablename__ = "driver_access_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # Кто выдал: Telegram ID владельца или админа — для журнала.
+    issued_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DriverSession(Base):
+    """
+    Вход водителя с одного телефона.
+
+    ⚠️ Отдельная таблица и отдельная cookie (`driver_session`), а не общая с
+    кабинетом: сессия водителя физически не может открыть кабинет владельца —
+    проверка владельца её просто не читает.
+    `device_id` — случайный номер, который приложение придумывает само при
+    установке. На Android ID и IMEI не опираемся: после сброса они меняются.
+    """
+    __tablename__ = "driver_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id", ondelete="CASCADE"), index=True)
+    grant_id: Mapped[int | None] = mapped_column(ForeignKey("driver_access_grants.id", ondelete="SET NULL"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_id: Mapped[str] = mapped_column(String(64))
+    device_label: Mapped[str | None] = mapped_column(String(120))  # «iPhone 15 · iOS 26»
+    platform: Mapped[str | None] = mapped_column(String(20))       # ios / android
+    app_version: Mapped[str | None] = mapped_column(String(20))
+    ip: Mapped[str | None] = mapped_column(String(45))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DriverAction(Base):
+    """
+    Действие водителя из приложения — с защитой от повторов.
+
+    Телефон придумывает номер действия (`client_op_id`) ДО первой отправки и
+    шлёт его при каждом повторе. Пришёл тот же номер второй раз — сервер
+    возвращает прежний ответ, а не создаёт вторую смену. Без этого плохая связь
+    на складе плодит дубли: запрос дошёл, а ответ потерялся — телефон повторяет.
+
+    Два времени: когда водитель нажал (часы телефона, им доверяем не до конца)
+    и когда сервер принял.
+    """
+    __tablename__ = "driver_actions"
+    __table_args__ = (
+        UniqueConstraint("driver_id", "client_op_id", name="uq_driver_action_op"),
+        CheckConstraint("status IN ('accepted','rejected')", name="ck_driver_action_status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id", ondelete="CASCADE"), index=True)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("driver_sessions.id", ondelete="SET NULL"))
+    device_id: Mapped[str | None] = mapped_column(String(64))
+    client_op_id: Mapped[str] = mapped_column(String(64))
+    action_type: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    # Порядковый номер действия на телефоне: события, пришедшие вразнобой,
+    # встают по нему на место.
+    device_seq: Mapped[int | None] = mapped_column(BigInteger)
+    client_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    status: Mapped[str] = mapped_column(String(20))
+    result: Mapped[dict | None] = mapped_column(JSONB)
+
+
 # ========== МАШИНЫ ==========
 # Палитра цветов машины для метки на мониторинге. Ключ хранится в
 # vehicles.color, набор повторяет Ставтрэк — владелец выбирает привычные
