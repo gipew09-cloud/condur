@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots import messages as msg
 from app.models import Driver, Expense, Shift, Trip, Vehicle
-from app.services import salary_service, shift_service, telemetry_service
+from app.services import odometer_check, salary_service, shift_service, telemetry_service
 from app.services.event_service import log_event
 
 
@@ -112,6 +112,8 @@ class ClosedShift:
     approved_expenses: list[Expense] = field(default_factory=list)
     expenses_total: Decimal = Decimal(0)
     salary: Decimal = Decimal(0)
+    # Пробег по счётчику трекера за смену (None — трекер молчал).
+    gps_km: Decimal | None = None
 
 
 async def close_shift(
@@ -150,6 +152,9 @@ async def close_shift(
     )).scalars().all())
     expenses_total = sum((e.amount_rub or Decimal(0)) for e in approved) or Decimal(0)
     salary = salary_service.calculate_salary(driver, shift, trips)
+    gps_km = await telemetry_service.gps_mileage_for_period(
+        session, vehicle_id=shift.vehicle_id, start=shift.started_at, end=ended_at,
+    ) if shift.started_at is not None else None
 
     await log_event(
         session,
@@ -170,6 +175,7 @@ async def close_shift(
         shift=shift, ended_at=ended_at, ignition=ignition, trips=trips,
         revenue=revenue, pending_revenue=pending_revenue,
         approved_expenses=approved, expenses_total=expenses_total, salary=salary,
+        gps_km=gps_km,
     )
 
 
@@ -206,6 +212,17 @@ def shift_completed_owner_text(
             f"\n⚠️ По {no_revenue} из {len(trips)} рейс(ам) выручка ещё не "
             "указана — итог смены вырастет после ввода."
         )
+    shift = closed.shift
+    same = odometer_check.same_reading_warning(shift, closed.gps_km)
+    if same:
+        text += f"\n{same}"
+    elif shift.odometer_end is not None and shift.distance_km is not None and closed.gps_km is not None:
+        text += "\n" + telemetry_service.format_mileage_comparison(
+            shift.distance_km, closed.gps_km
+        )
+    elif closed.gps_km is not None:
+        # Одометра ещё нет (фото-режим) — пробег по GPS хотя бы для сведения.
+        text += f"\n📡 По GPS за смену: <b>{closed.gps_km:.0f} км</b>."
     line = telemetry_service.ignition_shift_line(
         closed.ignition, moment=closed.ended_at, tz_name=tz_name, closing=True
     )

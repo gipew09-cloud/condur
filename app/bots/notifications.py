@@ -175,10 +175,31 @@ async def transfer_photo_to_owner(
         return None
     if buf is None:
         return None
-
-    message_id: int | None = None
     try:
         photo_bytes = buf.read()
+    finally:
+        buf.close()
+    return await send_photo_to_owner(
+        owner_bot=owner_bot, session=session, owner=owner,
+        photo_bytes=photo_bytes, caption=caption, reply_markup=reply_markup,
+    )
+
+
+async def send_photo_to_owner(
+    *,
+    owner_bot: Bot,
+    session: AsyncSession,
+    owner: Owner,
+    photo_bytes: bytes,
+    caption: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> int | None:
+    """Отправить владельцу (и админам) фото, которое уже у нас на руках —
+    например, из приложения водителя. Возвращает message_id владельцу."""
+    if not owner.notifications_enabled or owner.telegram_id is None:
+        return None
+    message_id: int | None = None
+    try:
         photo = BufferedInputFile(photo_bytes, filename="photo.jpg")
         sent = await owner_bot.send_photo(
             owner.telegram_id, photo, caption=caption, reply_markup=reply_markup
@@ -189,8 +210,6 @@ async def transfer_photo_to_owner(
         await _disable(session, owner.id)
     except TelegramBadRequest as exc:
         logger.error("Failed to send photo to owner %s: %s", owner.id, exc)
-    finally:
-        buf.close()
 
     # дубли фото админам (второй телефон владельца); ошибки — молча пропускаем
     for chat_id in await _admin_chat_ids(session, owner.id):

@@ -616,6 +616,12 @@ async def _store_wialon_points(
             )
 
 
+def egts_accepted() -> bool:
+    """Принимать ли EGTS. По умолчанию — да (как было). `EGTS_ACCEPT=0`
+    выключает: EGTS пароля не знает, и поток могут подделать."""
+    return (os.environ.get("EGTS_ACCEPT") or "1").strip().lower() not in ("0", "false", "no")
+
+
 def _wialon_login_ok(password: str | None) -> bool:
     """Пускать ли трекер: пароль из пакета логина против TELEMETRY_PASSWORD.
 
@@ -786,6 +792,16 @@ async def handle_client(
                     desynced = True
                     break
                 if len(buffer) < need:
+                    break
+                if not egts_accepted():
+                    # Аудит 17.09: в EGTS нет пароля — любой, кто знает номер
+                    # трекера, подсунет координаты. Трекеры шлют через
+                    # Ставтрэк (Wialon IPS) — EGTS можно выключить совсем.
+                    logger.warning(
+                        "EGTS выключен (EGTS_ACCEPT=0) — закрываем соединение %s",
+                        peer_label,
+                    )
+                    desynced = True
                     break
                 packet, buffer = buffer[:need], buffer[need:]
                 try:

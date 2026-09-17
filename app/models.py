@@ -202,6 +202,41 @@ class DriverSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DriverPhoto(Base):
+    """
+    Фото из приложения водителя: одометр, ТТН, чек.
+
+    Хранится в базе, а не на диске: Railway стирает диск при каждой выкладке
+    (PROBLEMS №7). В полях смены/рейса/расхода фото записано ссылкой
+    `app-<id>` — так кабинет отличает его от фото из Telegram (там file_id).
+
+    `client_id` придумывает телефон: фото, отправленное дважды из-за плохой
+    связи, не ляжет второй раз. `sha256` — чтобы узнать одно и то же фото,
+    присланное и в начале, и в конце смены.
+
+    `source` — откуда фото: `camera` (снято сейчас) или `gallery` (выбрано из
+    галереи — могло быть снято когда угодно). Владелец 17.09.2026: «нужно для
+    владельца добавить, откуда фотка была — из камеры или галереи».
+    """
+    __tablename__ = "driver_photos"
+    __table_args__ = (
+        UniqueConstraint("driver_id", "client_id", name="uq_driver_photo_client"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id", ondelete="CASCADE"), index=True)
+    client_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(30))
+    content_type: Mapped[str] = mapped_column(String(40))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    taken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str | None] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class DriverAction(Base):
     """
     Действие водителя из приложения — с защитой от повторов.

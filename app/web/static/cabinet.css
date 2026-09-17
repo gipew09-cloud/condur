@@ -952,15 +952,24 @@ summary[role="button"]:active,
 .drv-foot-links { display: inline-flex; gap: 14px; }
 .drv-app { margin-top: 12px; padding: 14px; border-radius: 14px; background: #f6f8fb;
   border: 1px solid #e6eaf0; display: grid; gap: 10px; }
-.drv-app__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.drv-app__head { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 8px; flex-wrap: wrap; }
 .drv-app__notice { margin: 0; font-weight: 600; color: var(--accent); }
 .drv-app__issued { display: grid; gap: 6px; padding: 12px; border-radius: 12px;
   background: #fff; border: 1px dashed var(--accent); }
 .drv-app__k { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .drv-app__code { font: 700 28px/1.2 ui-monospace, "JetBrains Mono", Menlo, monospace; letter-spacing: .12em; }
-.drv-app__link { display: flex; gap: 8px; align-items: center; }
-.drv-app__link input { margin: 0; font-size: 13px; }
+/* Карточка водителя узкая (четыре в ряд): поле ссылки на всю ширину, кнопка
+   под ним — иначе кнопка съедала поле и ссылку не было видно (16.09.2026). */
+.drv-app__link { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.drv-app__link input { margin: 0; font-size: 13px; flex: 1 1 100%; min-width: 0; }
 .drv-app__link button, .drv-app__device button, .drv-app__actions button { margin: 0; width: auto; padding: 6px 12px; font-size: 13px; }
 .drv-app__device { display: flex; justify-content: space-between; align-items: center; gap: 10px;
   padding-top: 10px; border-top: 1px solid #e6eaf0; flex-wrap: wrap; }
 .drv-app__actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* Откуда фото из приложения водителя: камера или галерея (17.09.2026).
+   Галерея — заметнее: такое фото могло быть снято когда угодно. */
+.photo-origin { display: inline-block; margin-left: 4px; padding: 1px 7px; border-radius: 999px;
+  font-size: .78rem; font-weight: 600; white-space: nowrap;
+  background: rgba(34, 197, 94, .12); color: #15803d; }
+.photo-origin--gallery { background: rgba(224, 163, 46, .18); color: #a16207; }

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_photo_origin.html" import photo_origin %}
 {% block title %}Смена #{{ shift.id }}{% endblock %}
 {% set history_section = 'shifts' %}
 
@@ -10,6 +11,14 @@
   <h1>Смена #{{ shift.id }}{% if shift.is_manual %} <span class="badge badge--neutral" style="font-size:.55em; vertical-align:middle;">вручную</span>{% endif %}</h1>
   <p class="sub">{{ driver.full_name if driver else '—' }} · {{ vehicle.license_plate if vehicle else '—' }}</p>
 </div>
+{% set gps_km = gps_km if gps_km is defined else none %}
+{% if same_photo is defined and (same_photo or same_odometer) %}
+<div class="add-banner add-banner--warn" role="status">
+  ⚠️ {% if same_photo %}Фото одометра в начале и в конце смены — одно и то же.{% else %}Одометр в начале и в конце одинаковый — пробег 0.{% endif %}
+  {% if gps_km is not none %}По GPS за смену — {{ '%.0f' | format(gps_km) }} км.{% endif %}
+  Проверьте фото ниже и при необходимости поправьте одометр.
+</div>
+{% endif %}
 <section class="kpi-grid">
   <div class="kpi"><small>Водитель</small><strong>{{ driver.full_name if driver else '—' }}</strong></div>
   <div class="kpi"><small>Машина</small><strong>{{ vehicle.license_plate if vehicle else '—' }}</strong></div>
@@ -17,7 +26,10 @@
   <div class="kpi"><small>Завершена</small><strong>{{ shift.ended_at | localdt(owner.timezone) }}</strong></div>
   <div class="kpi"><small>Одометр начало</small><strong>{{ shift.odometer_start or '—' }} км</strong></div>
   <div class="kpi"><small>Одометр конец</small><strong>{{ shift.odometer_end or '—' }} км</strong></div>
-  <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km or '—' }} км</strong></div>
+  <div class="kpi"><small>Пробег</small><strong>{{ shift.distance_km if shift.distance_km is not none else '—' }} км</strong></div>
+  {% if gps_km is not none %}
+  <div class="kpi"><small>Пробег · по GPS</small><strong>📡 {{ '%.0f' | format(gps_km) }} км</strong></div>
+  {% endif %}
   <div class="kpi"><small>Статус</small><strong><span class="pill {{ shift.status | pillclass }}">{% if shift.status == 'started' %}в смене{% elif shift.status == 'completed' %}завершена{% elif shift.status == 'cancelled' %}отменена{% else %}{{ shift.status }}{% endif %}</span></strong></div>
   {% if gps_seen %}
   <div class="kpi"><small>Выехал · по GPS</small><strong>
@@ -128,6 +140,7 @@
     <small>
       Начало смены ({{ shift.odometer_start or '?' }} км)
       {% if photo_start_at %} · загружено {{ photo_start_at | localdt(owner.timezone, '%d.%m в %H:%M') }}{% endif %}
+      {{ photo_origin(photo_origins, shift.odometer_start_photo_url) }}
     </small>
     <a href="/api/photo/{{ shift.odometer_start_photo_url }}" target="_blank">
       <img src="/api/photo/{{ shift.odometer_start_photo_url }}"
@@ -140,6 +153,7 @@
     <small>
       Конец смены ({{ shift.odometer_end or '?' }} км)
       {% if photo_end_at %} · загружено {{ photo_end_at | localdt(owner.timezone, '%d.%m в %H:%M') }}{% endif %}
+      {{ photo_origin(photo_origins, shift.odometer_end_photo_url) }}
     </small>
     <a href="/api/photo/{{ shift.odometer_end_photo_url }}" target="_blank">
       <img src="/api/photo/{{ shift.odometer_end_photo_url }}"
@@ -189,6 +203,7 @@
       <td data-label="Чек">
         {% if e.receipt_photo_url %}
           <a href="/api/photo/{{ e.receipt_photo_url }}" target="_blank">📷</a>
+          {{ photo_origin(photo_origins, e.receipt_photo_url) }}
         {% else %}—{% endif %}
       </td>
     </tr>

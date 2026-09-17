@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_photo_origin.html" import photo_origin %}
 {% block title %}Все расходы{% endblock %}
 {% block head %}{% include "_sp_styles.html" %}{% endblock %}
 {% set history_section = 'expenses' %}
@@ -124,6 +125,7 @@
           <a href="/api/expense-receipt/{{ expense.id }}" target="_blank">📷 Открыть</a>
         {% elif expense.receipt_photo_url %}
           <a href="/api/photo/{{ expense.receipt_photo_url }}" target="_blank">📷 Открыть</a>
+          {{ photo_origin(photo_origins, expense.receipt_photo_url) }}
         {% else %}—{% endif %}
       </td>
       <td style="white-space:nowrap;">

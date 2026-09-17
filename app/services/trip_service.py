@@ -90,9 +90,13 @@ async def complete_trip(
     одобрения, а P&L уже хочется видеть). Выручку владелец укажет позже
     отдельным callback'ом.
     """
+    # ⚠️ Отклонённое владельцем топливо — не расход рейса. Прочие расходы
+    # отклонённые уже не считали, а топливо считало (найдено 17.09.2026).
     fuel_total = await session.execute(
         select(Expense.amount_rub).where(
-            Expense.trip_id == trip.id, Expense.category == "fuel"
+            Expense.trip_id == trip.id,
+            Expense.category == "fuel",
+            Expense.status != "rejected",
         )
     )
     fuel_sum = sum((row[0] or Decimal(0)) for row in fuel_total.all()) or Decimal(0)

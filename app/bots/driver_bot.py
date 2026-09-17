@@ -8,6 +8,7 @@
   из БД и сбрасывает залипший FSM.
 """
 import asyncio
+import hashlib
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -55,7 +56,7 @@ from app.services import (
     trip_service,
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
-from app.services import shift_flow
+from app.services import driver_photos, expense_flow, odometer_check, shift_flow, trip_flow
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
 from app.services.timeutil import fmt_time, owner_tz
@@ -655,7 +656,9 @@ async def shift_end_odometer_photo(
     # Одометр в конце смены раньше не распознавался вообще — владелец вписывал
     # обе цифры руками. Пробег в смене считается базой как разница, так что
     # хватает того, чтобы обе цифры доехали.
-    if _odometer_ocr_on() and file_id is not None:
+    # ⚠️ Проверяем всегда, а не только при включённом распознавании: одно и
+    # то же фото в начале и в конце видно и без него (случай 17.09).
+    if file_id is not None:
         asyncio.create_task(_odometer_followup(
             bot=bot, owner_bot=owner_bot, file_id=file_id, shift_id=shift_id,
             owner_id=owner_id, driver_name=driver_name, plate=plate,
@@ -1094,15 +1097,9 @@ async def _finalize_new_trip(
         await state.clear()
         await _refresh_ui(reply_target, session, driver, msg.TRIP_NEED_SHIFT)
         return
-    trip = await trip_service.create_trip(
-        session, shift=shift, origin=origin, destination=destination, cargo_name=cargo,
-    )
-    await session.flush()
-    await log_event(
-        session,
-        owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_created",
-        payload={"origin": origin, "destination": destination},
+    trip = await trip_flow.create_trip(
+        session, driver=driver, shift=shift,
+        origin=origin, destination=destination, cargo=cargo, source="bot",
     )
     await session.commit()
     await state.clear()
@@ -1115,11 +1112,7 @@ async def _finalize_new_trip(
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
         await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_TRIP_CREATED.format(
-                driver=driver.full_name, origin=origin,
-                destination=destination, cargo=cargo_display,
-            ),
+            owner_bot, session, owner, trip_flow.created_owner_text(trip, driver=driver),
         )
 
 
@@ -1215,28 +1208,16 @@ async def _do_depart(
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
         return
 
-    await trip_service.set_trip_status(session, trip=trip, status="in_transit")
-    await log_event(
-        session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_in_transit",
+    await trip_flow.depart(
+        session, driver=driver, shift=shift, trip=trip, source="bot", location=location,
     )
-    if location is not None:
-        await log_event(
-            session, owner_id=driver.owner_id, driver_id=driver.id,
-            shift_id=shift.id, trip_id=trip.id, event_type="location_sent",
-            payload={"lat": location[0], "lon": location[1], "context": "depart"},
-        )
     await session.commit()
     await state.clear()
     await _refresh_ui(message, session, driver, msg.TRIP_IN_TRANSIT_DRIVER)
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
         await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_TRIP_IN_TRANSIT.format(
-                driver=driver.full_name, origin=trip.origin or "—",
-                destination=trip.destination or "—",
-            ),
+            owner_bot, session, owner, trip_flow.departed_owner_text(trip, driver=driver),
         )
 
 
@@ -1244,11 +1225,8 @@ async def _do_depart(
 # ВЫГРУЗКА (in_transit → unloading) — с геопозицией
 # =========================================================================
 def _can_end_trip_status(status: str) -> bool:
-    """Из каких статусов разрешено «Сдал груз». При выключенных промежуточных
-    статусах (FEATURE_TRIP_STATUS_STEPS) рейс завершается прямо из in_transit."""
-    if settings.feature_trip_status_steps:
-        return status == "unloading"
-    return status in ("in_transit", "unloading")
+    """Из каких статусов разрешено «Сдал груз» — правило живёт в trip_flow."""
+    return trip_flow.can_finish(status)
 
 
 @driver_router.message(F.text == kb.BTN_TRIP_UNLOADING, StateFilter(any_state))
@@ -1316,17 +1294,9 @@ async def _do_unloading(
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
         return
 
-    await trip_service.set_trip_status(session, trip=trip, status="unloading")
-    await log_event(
-        session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_unloading",
+    await trip_flow.start_unloading(
+        session, driver=driver, shift=shift, trip=trip, source="bot", location=location,
     )
-    if location is not None:
-        await log_event(
-            session, owner_id=driver.owner_id, driver_id=driver.id,
-            shift_id=shift.id, trip_id=trip.id, event_type="location_sent",
-            payload={"lat": location[0], "lon": location[1], "context": "unloading"},
-        )
     await session.commit()
     await state.clear()
 
@@ -1334,10 +1304,7 @@ async def _do_unloading(
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
         await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_TRIP_UNLOADING.format(
-                driver=driver.full_name, destination=trip.destination or "—",
-            ),
+            owner_bot, session, owner, trip_flow.unloading_owner_text(trip, driver=driver),
         )
 
 
@@ -1503,23 +1470,10 @@ async def _do_end_trip(
         await _refresh_ui(message, session, driver, msg.TRIP_WRONG_STATUS)
         return
 
-    await trip_service.complete_trip(session, trip=trip)
-    await session.flush()
-    await session.refresh(trip)
-    fuel = Decimal(trip.fuel_cost_rub or 0)
-    liters = trip_service.liters_from_rub(fuel) if fuel else Decimal(0)
-
-    if location is not None:
-        await log_event(
-            session, owner_id=driver.owner_id, driver_id=driver.id,
-            shift_id=shift.id, trip_id=trip.id, event_type="location_sent",
-            payload={"lat": location[0], "lon": location[1], "context": "trip_end"},
-        )
-    await log_event(
-        session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_completed",
-        payload={"fuel_cost": str(fuel)},
+    fuel = await trip_flow.finish(
+        session, driver=driver, shift=shift, trip=trip, source="bot", location=location,
     )
+    liters = trip_service.liters_from_rub(fuel) if fuel else Decimal(0)
     await session.commit()
     await state.clear()
 
@@ -1539,24 +1493,15 @@ async def _do_end_trip(
     if owner is not None:
         owner_msg_id = await notify_owner(
             owner_bot, session, owner,
-            msg.NOTIFY_TRIP_COMPLETED.format(
-                driver=driver.full_name,
-                origin=trip.origin or "—", destination=trip.destination or "—",
-                fuel=f"{fuel:.0f}",
-            ),
-            reply_markup=kb.trip_revenue_keyboard(trip.id),
+            trip_flow.completed_owner_text(trip, driver=driver, fuel=fuel),
+            reply_markup=trip_flow.revenue_markup(trip),
         )
     # Запоминаем id обоих сообщений с кнопками выручки: когда один укажет сумму,
     # у другого кнопка гасится (иначе висят два «живых» запроса на один рейс).
-    await log_event(
-        session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_revenue_prompt",
-        payload={
-            "driver_chat_id": driver_prompt.chat.id,
-            "driver_msg_id": driver_prompt.message_id,
-            "owner_chat_id": owner.telegram_id if owner else None,
-            "owner_msg_id": owner_msg_id,
-        },
+    await trip_flow.remember_revenue_prompt(
+        session, driver=driver, trip=trip,
+        owner_chat_id=owner.telegram_id if owner else None, owner_msg_id=owner_msg_id,
+        driver_chat_id=driver_prompt.chat.id, driver_msg_id=driver_prompt.message_id,
     )
     await session.commit()
 
@@ -1689,13 +1634,10 @@ async def btn_expense(message: Message, state: FSMContext, session: AsyncSession
         return
     # Расход можно вносить в любой момент — смена НЕ обязательна (Правка 3).
     # Защита от спама: если уже есть MAX_PENDING расходов, ждём решения владельца.
-    pending = await expense_service.count_pending_expenses(session, driver.id)
-    if pending >= expense_service.MAX_PENDING_PER_DRIVER:
-        await _refresh_ui(
-            message, session, driver,
-            f"⚠️ У тебя уже {pending} расходов ожидают проверки владельцем.\n"
-            "Подожди, пока он их рассмотрит, и попробуй снова."
-        )
+    try:
+        await expense_flow.ensure_can_submit(session, driver)
+    except expense_flow.Refused as refused:
+        await _refresh_ui(message, session, driver, str(refused))
         return
     await state.set_state(NewExpense.selecting_category)
     await message.answer(msg.EXPENSE_PICK_CATEGORY, reply_markup=kb.expense_category_keyboard())
@@ -1770,67 +1712,33 @@ async def _finalize_expense(
     owner_bot: Bot,
     reply_target: Message,
 ) -> None:
+    """Логика — общая с приложением (`expense_flow`)."""
     data = await state.get_data()
-    # Смена не обязательна (Правка 3): расход может быть вне смены — shift_id=None.
-    shift = await shift_service.get_active_shift(session, driver.id)
-    trip = await trip_service.get_active_trip(session, shift.id) if shift else None
     amount = Decimal(data["amount"])
     category = data["category"]
     description = data.get("description")
-
-    # Защита от двойного нажатия: если за последнюю минуту уже создан точно
-    # такой же расход (та же сумма + категория) — скорее всего лаг сети.
-    if await expense_service.is_duplicate_expense(session, driver_id=driver.id, category=category, amount_rub=amount):
-        await state.clear()
-        await _refresh_ui(
-            reply_target, session, driver,
-            f"⚠️ Расход {expense_service.CATEGORY_LABELS[category]} {amount:.0f} ₽ "
-            "уже был добавлен только что.\n"
-            "Если это другой расход — подожди минуту и попробуй снова."
+    try:
+        submitted = await expense_flow.submit(
+            session, driver=driver, category=category, amount=amount,
+            description=description, receipt_ref=receipt_file_id,
         )
+    except expense_flow.Refused as refused:
+        await state.clear()
+        await _refresh_ui(reply_target, session, driver, str(refused))
         return
-
-    expense = await expense_service.create_expense(
-        session,
-        owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id if shift else None, trip_id=trip.id if trip else None,
-        category=category, amount_rub=amount,
-        receipt_photo_id=receipt_file_id,
-        description=description,
-    )
-    await session.flush()
-    await log_event(
-        session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id if shift else None, trip_id=trip.id if trip else None,
-        event_type="expense_submitted",
-        payload={"expense_id": expense.id, "category": category, "amount": str(amount)},
-    )
     await session.commit()
     await state.clear()
 
-    # подсказка по литрам для топлива
-    liters_hint = ""
-    if category == "fuel":
-        liters = trip_service.liters_from_rub(amount)
-        liters_hint = f" (~{liters:.0f} л)"
-
     await _refresh_ui(
-        reply_target, session, driver,
-        msg.EXPENSE_SUBMITTED + (f"\n\nТопливо: {amount:.0f} ₽{liters_hint}" if category == "fuel" else ""),
+        reply_target, session, driver, expense_flow.driver_text(category, amount),
     )
 
     owner = await session.get(Owner, driver.owner_id)
     if owner is None:
         return
 
-    caption = msg.NOTIFY_EXPENSE.format(
-        driver=driver.full_name,
-        category=expense_service.CATEGORY_LABELS[category],
-        amount=f"{amount:.0f}" + liters_hint,
-    )
-    if description:
-        caption += f"\nОписание: {description}"
-    markup = kb.expense_decision_keyboard(expense.id)
+    caption = expense_flow.owner_caption(driver.full_name, category, amount, description)
+    markup = expense_flow.owner_markup(submitted.expense.id)
 
     if receipt_file_id is not None:
         await transfer_photo_to_owner(
@@ -1852,41 +1760,18 @@ async def _receipt_amount_followup(
     driver_name: str,
     typed: Decimal | None,
 ) -> None:
-    """Распознать чек и, если сумма разошлась, догнать владельца сообщением.
-
-    Работает уже после ответа водителю, поэтому:
-    — своя сессия БД: та, что была у обработчика, к этому моменту закрыта;
-    — ничего не бросает наружу: сбой распознавания не должен всплывать нигде,
-      расход уже сохранён с суммой водителя.
-
-    Распознанная сумма НЕ подменяет введённую: OCR ошибётся — расход уедет с
-    неверной цифрой, и никто не заметит. Решает владелец.
-    """
+    """Скачать чек из Telegram и проверить его — проверка общая с приложением
+    (`expense_flow.receipt_followup`): распознанная сумма НЕ подменяет
+    введённую, расхождение уходит владельцу. Наружу ничего не бросаем."""
     try:
-        buf = await bot.download(file_id)
-        reading = await receipt_ocr.recognize(buf.read())
-        if not (reading and reading.amount_rub):
-            logger.info("OCR чека: сумма не распозналась, оставляем введённую водителем")
-            return
-        logger.info(
-            "OCR чека: распознано %s ₽, водитель ввёл %s ₽",
-            reading.amount_rub, typed if typed is not None else "—",
-        )
-        if typed is not None and abs(reading.amount_rub - typed) <= Decimal("1"):
-            return  # сходится — владельца не дёргаем
-
-        text = (
-            f"🧾 Чек от <b>{driver_name}</b>: на чеке распознано "
-            f"<b>{reading.amount_rub:.2f} ₽</b>"
-        )
-        text += f", водитель ввёл {typed:.0f} ₽. Проверьте." if typed is not None else "."
-        async with async_session() as ocr_session:
-            owner = await ocr_session.get(Owner, owner_id)
-            if owner is not None:
-                await notify_owner(owner_bot, ocr_session, owner, text)
-                await ocr_session.commit()
+        image = (await bot.download(file_id)).read()
     except Exception as exc:  # noqa: BLE001 — распознавание не критично
         logger.warning("OCR чека не отработал: %s", exc)
+        return
+    await expense_flow.receipt_followup(
+        owner_bot=owner_bot, owner_id=owner_id, driver_name=driver_name,
+        typed=typed, image_bytes=image,
+    )
 
 
 def _odometer_ocr_on() -> bool:
@@ -1897,6 +1782,28 @@ def _odometer_ocr_on() -> bool:
     сеть и упадёт в лог.
     """
     return settings.feature_odometer_ocr and receipt_ocr.is_enabled()
+
+
+async def _same_photo_as_start(bot: Bot, shift_id: int, end_file_id: str) -> bool:
+    """То же самое фото одометра, что в начале смены (случай 17.09, смена 119).
+
+    Telegram у одного и того же файла даёт один `file_unique_id`; на всякий
+    случай сверяем и сами байты.
+    """
+    async with async_session() as session:
+        shift = await session.get(Shift, shift_id)
+        start_ref = shift.odometer_start_photo_url if shift is not None else None
+    if not start_ref or driver_photos.is_app_ref(start_ref):
+        return False
+    if start_ref == end_file_id:
+        return True
+    first = await bot.get_file(start_ref)
+    last = await bot.get_file(end_file_id)
+    if first.file_unique_id and first.file_unique_id == last.file_unique_id:
+        return True
+    a = (await bot.download(start_ref)).read()
+    b = (await bot.download(end_file_id)).read()
+    return bool(a) and hashlib.sha256(a).digest() == hashlib.sha256(b).digest()
 
 
 async def _odometer_followup(
@@ -1910,48 +1817,31 @@ async def _odometer_followup(
     plate: str,
     closing: bool,
 ) -> None:
-    """Прочитать одометр с фото уже ПОСЛЕ того, как водитель отпущен.
+    """Проверить фото одометра уже ПОСЛЕ того, как водитель отпущен.
 
     ⚠️ Почему в фоне. Раньше распознавание шло прямо в обработчике: водитель
     отправлял фото и сидел перед экраном, пока отвечает LlamaParse — на чеке
     это заняло 18 секунд. Смена (или её закрытие) уже сохранена, фото владельцу
     ушло, кнопка «Указать пробег» под ним есть. Цифра догоняет отдельно.
 
-    ⚠️ Распознанное НЕ затирает то, что владелец успел вписать руками.
-    Человек здесь главнее машины: OCR ошибётся — пробег уедет неверный, и
-    никто не заметит, потому что цифра выглядит правдоподобно.
-
-    Наружу ничего не бросаем: сбой распознавания не должен ронять смену.
+    Сама проверка — общая с приложением (`odometer_check`): одно и то же фото
+    в начале и в конце, число не больше утреннего, распознанное не затирает
+    вписанное руками. Наружу ничего не бросаем.
     """
-    field = "odometer_end" if closing else "odometer_start"
+    same = False
+    image = None
     try:
-        buf = await bot.download(file_id)
-        reading = await receipt_ocr.recognize_odometer(buf.read())
-        if not (reading and reading.km):
-            logger.info("OCR одометра (%s): не распозналось, ждём владельца", field)
-            return
-
-        async with async_session() as ocr_session:
-            shift = await ocr_session.get(Shift, shift_id)
-            if shift is None:
-                return
-            if getattr(shift, field) is not None:
-                logger.info("OCR одометра (%s): владелец уже вписал, не трогаем", field)
-                return
-            setattr(shift, field, reading.km)
-            owner = await ocr_session.get(Owner, owner_id)
-            if owner is not None:
-                km = f"{reading.km:,}".replace(",", " ")
-                when = "в конце смены" if closing else "в начале смены"
-                await notify_owner(
-                    owner_bot, ocr_session, owner,
-                    f"🤖 Одометр {when} — <b>{plate}</b>, {driver_name}: "
-                    f"<b>{km} км</b>. Вписал автоматически с фото. "
-                    f"Неверно — поправьте кнопкой «Указать пробег» под фото.",
-                )
-            await ocr_session.commit()
-    except Exception as exc:  # noqa: BLE001 — распознавание не критично
-        logger.warning("OCR одометра (%s) не отработал: %s", field, exc)
+        if closing:
+            same = await _same_photo_as_start(bot, shift_id, file_id)
+        if not same and _odometer_ocr_on():
+            image = (await bot.download(file_id)).read()
+    except Exception as exc:  # noqa: BLE001 — проверка не критична
+        logger.warning("Фото одометра не скачалось для проверки: %s", exc)
+    await odometer_check.followup(
+        owner_bot=owner_bot, shift_id=shift_id, owner_id=owner_id,
+        driver_name=driver_name, plate=plate, closing=closing,
+        image_bytes=image, same_photo_as_start=same,
+    )
 
 
 @driver_router.message(NewExpense.waiting_for_receipt, F.photo)
@@ -2231,41 +2121,13 @@ async def cb_sos_confirm(
         await call.answer(msg.DRIVER_LINK_EXPECTED, show_alert=True)
         return
 
-    shift = await shift_service.get_active_shift(session, driver.id)
-    trip = await trip_service.get_active_trip(session, shift.id) if shift else None
-    vehicle = await session.get(Vehicle, shift.vehicle_id) if shift else None
-
-    if trip is not None:
-        _st = {"created": "создан", "in_transit": "в пути", "unloading": "на выгрузке"}.get(
-            trip.status, trip.status
-        )
-        state_descr = f"рейс {_st}, {trip.origin or '—'} → {trip.destination or '—'}"
-    elif shift is not None:
-        state_descr = "в смене, без активного рейса"
-    else:
-        state_descr = "вне смены"
-
-    await log_event(
-        session,
-        owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id if shift else None,
-        trip_id=trip.id if trip else None,
-        event_type="sos",
-        payload={"state": state_descr},
-    )
+    # Логика — общая с приложением (`expense_flow.send_sos`).
+    sent = await expense_flow.send_sos(session, driver=driver)
     await session.commit()
 
     owner = await session.get(Owner, driver.owner_id)
     if owner is not None:
-        await notify_owner(
-            owner_bot, session, owner,
-            msg.NOTIFY_SOS.format(
-                driver=driver.full_name,
-                plate=vehicle.license_plate if vehicle else "—",
-                phone=driver.phone or "—",
-                state=state_descr,
-            ),
-        )
+        await notify_owner(owner_bot, session, owner, sent.owner_text(driver))
 
     await call.message.delete()
     await _refresh_ui(call.message, session, driver, msg.SOS_SENT)

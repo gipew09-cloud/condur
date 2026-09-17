@@ -1,0 +1,13 @@
+{#- Откуда фото из приложения водителя: камера или галерея.
+    Владелец 17.09.2026: «нужно для владельца добавить, откуда фотка была —
+    из камеры или галереи». У фото из Telegram отметки нет: Telegram этого
+    не сообщает. `origins` — словарь «ссылка → camera/gallery» от роутера;
+    нет словаря (старый роутер) — отметки просто нет. -#}
+{% macro photo_origin(origins, ref) -%}
+{%- set source = (origins or {}).get(ref) if ref else none -%}
+{%- if source == 'camera' -%}
+<span class="photo-origin" title="Снято камерой в приложении">📷 камера</span>
+{%- elif source == 'gallery' -%}
+<span class="photo-origin photo-origin--gallery" title="Выбрано из галереи — могло быть снято раньше">🖼 галерея</span>
+{%- endif -%}
+{%- endmacro %}

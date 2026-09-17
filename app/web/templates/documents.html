@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_photo_origin.html" import photo_origin %}
 {% block title %}Документы (ТТН){% endblock %}
 {% set history_section = 'documents' %}
 
@@ -20,7 +21,8 @@
            style="width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:6px; background:#eee;">
       <div style="margin-top:.5rem;">
         <strong style="font-size:.95rem; display:block;">{{ trip.origin or '—' }} → {{ trip.destination or '—' }}</strong>
-        <small>{{ driver_name }} · {{ plate }}</small><br>
+        <small>{{ driver_name }} · {{ plate }}</small>
+        {{ photo_origin(photo_origins, trip.waybill_photo_url) }}<br>
         <small style="color: var(--text-muted);">
           📎 Загружено {{ waybill_times.get(trip.id) | localdt(owner.timezone, '%d.%m.%Y в %H:%M') }}
         </small>

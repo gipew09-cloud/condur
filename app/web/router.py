@@ -62,7 +62,8 @@ from app.models import (
 from app.config import settings
 from app.services import (
     act_service, auth_service, billing, driver_access_service, driver_actions_service,
-    expense_service, geocode_service, rc_service, telemetry_service,
+    driver_photos, expense_flow, expense_service, geocode_service, rc_service,
+    telemetry_service,
 )
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
@@ -1485,11 +1486,17 @@ def _client_ip(request: Request) -> str | None:
     )
 
 
-def _app_access_link(request: Request, token: str) -> str:
+def _public_base(request: Request) -> str:
+    """Адрес сайта снаружи. За прокси Railway запрос приходит по http —
+    при включённых защищённых cookie сайт на самом деле https."""
     base = str(request.base_url).rstrip("/")
     if settings.cookie_secure and base.startswith("http://"):
         base = "https://" + base[len("http://"):]
-    return f"{base}/d/{token}"
+    return base
+
+
+def _app_access_link(request: Request, token: str) -> str:
+    return f"{_public_base(request)}/d/{token}"
 
 
 async def _driver_app_panel(
@@ -1658,21 +1665,76 @@ _LINK_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,100}$")
 
 
 @app.get("/d/{token}", response_class=HTMLResponse)
-async def driver_link_page(request: Request, token: str):
+async def driver_link_page(
+    request: Request,
+    token: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
     """Страница ссылки доступа, если её открыли в браузере.
 
-    ⚠️ Ничего не гасит и в базу не ходит. Мессенджеры сами открывают ссылки,
-    чтобы нарисовать превью: гаси мы выдачу на GET — она сгорала бы раньше,
-    чем водитель до неё доберётся. И ничего не рассказывает о водителе.
+    ⚠️ Ничего не гасит: мессенджеры сами открывают ссылки, чтобы нарисовать
+    превью, — гаси мы выдачу на GET, она сгорала бы раньше, чем водитель до
+    неё доберётся. Только смотрит, жива ли ссылка: владелец 17.09.2026
+    открыл вчерашнюю ссылку, страница показала «Войти», и было непонятно,
+    почему «ссылка всё ещё работает». О водителе страница не говорит ничего.
     """
     if not _LINK_TOKEN_RE.match(token):
         raise HTTPException(status_code=404)
+    state = await driver_access_service.link_state(session, token)
+    agent = (request.headers.get("user-agent") or "").lower()
+    app_url = f"condur://d/{token}"
+    if "android" in agent:
+        # Chrome на Android открывает приложение по intent-адресу, а если
+        # приложения нет — возвращает на эту же страницу без автозапуска.
+        back = quote(f"{_public_base(request)}/d/{token}?manual=1", safe="")
+        app_url = (
+            f"intent://d/{token}#Intent;scheme=condur;package={ANDROID_PACKAGE};"
+            f"S.browser_fallback_url={back};end"
+        )
     response = templates.TemplateResponse(
-        "driver_link.html", {"request": request, "token": token}
+        "driver_link.html",
+        {
+            "request": request,
+            # token — для старого шаблона: пока идёт выкладка, сервер новый,
+            # а шаблон может быть ещё прежним.
+            "token": token,
+            "state": state,
+            "app_url": app_url,
+            "auto_open": state == "active" and request.query_params.get("manual") != "1",
+        },
     )
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    response.headers["Cache-Control"] = "no-store"
     return response
+
+
+# Android App Links: обычная https-ссылка /d/… сразу открывает приложение,
+# без страницы и без кнопки (если приложение стоит). Android сверяет подпись
+# приложения с этим файлом. Отпечаток — ключ подписи бета-сборок
+# (android/app/condur-beta.jks в condur-app); сменится ключ (RuStore) —
+# поменять здесь. ⚠️ Домен в AndroidManifest.xml должен совпадать с сервером:
+# при переезде на российский хостинг поправить оба места.
+ANDROID_PACKAGE = "ru.condur.condur"
+ANDROID_CERT_SHA256 = (
+    "1F:69:21:42:E5:7A:03:A9:01:FD:BD:4C:55:0F:62:49:"
+    "41:DA:65:44:6B:B8:BB:3A:8B:56:CE:FB:BE:E7:7B:89"
+)
+
+
+@app.get("/.well-known/assetlinks.json")
+async def android_asset_links():
+    return JSONResponse(
+        [{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": ANDROID_PACKAGE,
+                "sha256_cert_fingerprints": [ANDROID_CERT_SHA256],
+            },
+        }],
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 # ---------------------------------------------------------------- API телефона
@@ -1724,15 +1786,79 @@ def _set_driver_cookie(response: Response, raw: str) -> None:
     )
 
 
-async def _notify_owner_quietly(request: Request, session: AsyncSession, owner: Owner, text: str):
-    """Уведомление владельцу не должно ронять ответ телефону."""
+async def _notify_owner_quietly(
+    request: Request, session: AsyncSession, owner: Owner, text: str,
+    reply_markup=None, photo: bytes | None = None,
+) -> int | None:
+    """Уведомление владельцу не должно ронять ответ телефону.
+    Возвращает номер сообщения владельцу (для кнопок, которые потом гасятся)."""
     try:
-        from app.bots.notifications import notify_owner
+        from app.bots.notifications import notify_owner, send_photo_to_owner
         bot = getattr(request.app.state, "owner_bot", None)
-        if bot is not None:
-            await notify_owner(bot, session, owner, text)
+        if bot is None:
+            return None
+        if photo is not None:
+            if len(text) > 1000:
+                # Подпись к фото в Telegram — до 1024 знаков.
+                await notify_owner(bot, session, owner, text)
+                text = "📷 Фото к сообщению выше"
+            return await send_photo_to_owner(
+                owner_bot=bot, session=session, owner=owner,
+                photo_bytes=photo, caption=text, reply_markup=reply_markup,
+            )
+        return await notify_owner(bot, session, owner, text, reply_markup=reply_markup)
     except Exception:
         logging.getLogger(__name__).exception("Не ушло уведомление владельцу")
+    return None
+
+
+def _schedule_odometer_check(request: Request, ctx, outcome) -> None:
+    """Фото одометра из приложения: проверить (то же фото, что утром?) и
+    распознать — после ответа телефону, как в боте."""
+    from app.services import odometer_check
+
+    after = outcome.after_commit
+    kind = after.get("kind")
+    photo = after.get("photo")
+    if photo is None or kind not in ("shift_started", "shift_completed"):
+        return
+    closing = kind == "shift_completed"
+    shift = after["closed"].shift if closing else after["opened"].shift
+    typed = shift.odometer_end if closing else shift.odometer_start
+    same = bool(after.get("same_photo"))
+    image = photo.data if typed is None and odometer_check.ocr_enabled() else None
+    if not same and image is None:
+        return
+    vehicle = after.get("vehicle")
+    bot = getattr(request.app.state, "owner_bot", None)
+    if bot is None:
+        return
+    asyncio.create_task(odometer_check.followup(
+        owner_bot=bot, shift_id=shift.id, owner_id=ctx.owner.id,
+        driver_name=ctx.driver.full_name,
+        plate=vehicle.license_plate if vehicle is not None else "—",
+        closing=closing, image_bytes=image, same_photo_as_start=same,
+    ))
+
+
+def _schedule_receipt_check(request: Request, ctx, outcome) -> None:
+    """Чек из приложения: распознать сумму после ответа телефону — как в
+    боте. Распознанное не подменяет введённое, расхождение — владельцу."""
+    from app.services import expense_flow, receipt_ocr
+
+    after = outcome.after_commit
+    photo = after.get("photo")
+    if after.get("kind") != "expense_submitted" or photo is None:
+        return
+    if not receipt_ocr.is_enabled():
+        return
+    bot = getattr(request.app.state, "owner_bot", None)
+    if bot is None:
+        return
+    asyncio.create_task(expense_flow.receipt_followup(
+        owner_bot=bot, owner_id=ctx.owner.id, driver_name=ctx.driver.full_name,
+        typed=after["submitted"].amount, image_bytes=photo.data,
+    ))
 
 
 @app.post("/api/driver/redeem")
@@ -1791,7 +1917,7 @@ async def api_driver_me(
 ):
     """Всё, что нужно главному экрану водителя: кто он, открыта ли смена и на
     каких машинах её можно начать."""
-    from app.services import shift_service
+    from app.services import shift_service, trip_flow, trip_service
     driver, owner = ctx.driver, ctx.owner
     active = await shift_service.get_active_shift(session, driver.id)
     vehicles = (await session.execute(
@@ -1812,23 +1938,112 @@ async def api_driver_me(
             "id": active.id,
             "vehicle_id": active.vehicle_id,
             "plate": vehicle.license_plate if vehicle else None,
+            # Цвет кузова — телефон рисует ту же машинку, что у владельца.
+            "color": _vehicle_color(vehicle.color if vehicle else None),
             "started_at": active.started_at.isoformat() if active.started_at else None,
             "started_label": fmt_dt(active.started_at, owner.timezone, "%H:%M")
             if active.started_at else None,
             "odometer_start": active.odometer_start,
         }
+    trip = None
+    if active is not None:
+        open_trip = await trip_service.get_active_trip(session, active.id)
+        if open_trip is not None:
+            trip = {
+                "id": open_trip.id,
+                "status": open_trip.status,
+                "origin": open_trip.origin,
+                "destination": open_trip.destination,
+                "cargo": open_trip.cargo_name,
+                "has_waybill": bool(open_trip.waybill_photo_url),
+                "created_label": fmt_dt(open_trip.created_at, owner.timezone, "%H:%M")
+                if open_trip.created_at else None,
+            }
+    # Рейсы этой смены: сколько сделано сегодня — водителю приятно видеть.
+    trips_done = 0
+    if active is not None:
+        trips_done = (await session.execute(
+            select(func.count(Trip.id)).where(
+                Trip.shift_id == active.id, Trip.status == "completed",
+            )
+        )).scalar_one()
     return {
         "driver": {"id": driver.id, "full_name": driver.full_name},
         "company": owner.company_name or owner.full_name,
         "device": {"id": ctx.session.id, "label": ctx.session.device_label},
         "shift": shift,
+        "trip": trip,
+        "trips_done": trips_done,
+        # Список маршрутов уходит целиком: телефон держит его у себя и
+        # создаёт рейс без связи.
+        "routes": await trip_flow.route_catalog(session, owner.id),
+        # Шаг «на выгрузке» включается настройкой (как в боте).
+        "trip_steps": bool(settings.feature_trip_status_steps),
+        # Фото одометра обязательно — как в боте (FEATURE_ODOMETER_PHOTO).
+        "odometer_photo": bool(settings.feature_odometer_photo),
+        # Кнопки, которые есть у водителя в боте (17.09.2026): расход в любой
+        # момент и SOS. Список категорий — тот же, что в боте.
+        "expense_categories": expense_flow.categories(),
+        "sos": True,
         "default_vehicle_id": driver.default_vehicle_id,
         "vehicles": [
-            {"id": v.id, "plate": v.license_plate, "busy": v.id in busy}
+            {
+                "id": v.id, "plate": v.license_plate, "busy": v.id in busy,
+                "color": _vehicle_color(v.color),
+            }
             for v in vehicles
         ],
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.post("/api/driver/photos")
+async def api_driver_photo_upload(
+    request: Request,
+    ctx: Annotated[DriverContext, Depends(current_driver)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Фото с телефона: одометр, ТТН, чек. Повтор с тем же номером фото —
+    прежний ответ. Действие со ссылкой на фото приходит отдельно."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > driver_photos.MAX_BYTES + 64_000:
+        return JSONResponse(
+            {"ok": False, "message": "Фото слишком большое."}, status_code=413,
+        )
+    try:
+        form = await request.form(max_files=1, max_fields=10)
+    except Exception:
+        return JSONResponse(
+            {"ok": False, "status": "bad_request", "message": "Ожидалась форма с фото."},
+            status_code=400,
+        )
+    upload = form.get("file")
+    if upload is None or isinstance(upload, str):
+        return JSONResponse(
+            {"ok": False, "status": "bad_request", "message": "Нет файла."}, status_code=400,
+        )
+    taken_at = driver_actions_service.parse_client_time(
+        form.get("taken_at"), datetime.now(timezone.utc),
+    )
+    try:
+        data = await driver_photos.read_limited(upload)
+        saved = await driver_photos.save(
+            session, driver=ctx.driver,
+            client_id=str(form.get("client_id") or ""),
+            kind=str(form.get("kind") or ""),
+            data=data, taken_at=taken_at,
+            source=str(form.get("source") or "") or None,
+        )
+        await session.commit()
+    except driver_photos.PhotoRejected as error:
+        await session.rollback()
+        return JSONResponse({"ok": False, "message": str(error)}, status_code=400)
+    finally:
+        await upload.close()
+    return JSONResponse({
+        "ok": True, "photo": saved.ref, "duplicate": saved.duplicate,
+        "sha256": saved.photo.sha256,
+    })
 
 
 @app.post("/api/driver/logout")
@@ -1879,11 +2094,32 @@ async def api_driver_actions(
     )
     if outcome.duplicate:
         return JSONResponse(outcome.body())
-    notice = driver_actions_service.owner_notice(
+    notice = driver_actions_service.owner_message(
         outcome, driver=ctx.driver, tz_name=tz_name,
     )
-    if notice:
-        await _notify_owner_quietly(request, session, ctx.owner, notice)
+    if notice is not None:
+        if notice.lead:
+            await _notify_owner_quietly(request, session, ctx.owner, notice.lead)
+        owner_msg_id = await _notify_owner_quietly(
+            request, session, ctx.owner, notice.text,
+            reply_markup=notice.markup, photo=notice.photo,
+        )
+        trip = outcome.after_commit.get("trip")
+        if outcome.after_commit.get("kind") == "trip_completed" and trip is not None:
+            # Как в боте: запомнить кнопку «Указать выручку», чтобы она
+            # погасла, когда сумма появится другим путём.
+            try:
+                from app.services import trip_flow
+                await trip_flow.remember_revenue_prompt(
+                    session, driver=ctx.driver, trip=trip,
+                    owner_chat_id=ctx.owner.telegram_id, owner_msg_id=owner_msg_id,
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logging.getLogger(__name__).exception("Не запомнил кнопку выручки")
+        _schedule_odometer_check(request, ctx, outcome)
+        _schedule_receipt_check(request, ctx, outcome)
         closed = outcome.after_commit.get("closed")
         if closed is not None:
             try:
@@ -3523,9 +3759,7 @@ async def routes_rc_import(
     session: Annotated[AsyncSession, Depends(get_session)],
     file: Annotated[UploadFile, File()],
 ):
-    data = await file.read()
-    if len(data) > _MAX_DOC_BYTES:
-        raise HTTPException(status_code=400, detail="Файл слишком большой (макс 6 МБ)")
+    data = await _read_upload(file)
     try:
         items = rc_service.distribution_centers_from_xlsx(data)
     except ValueError as exc:
@@ -5687,17 +5921,28 @@ def _feed_detail(
     return detail or None
 
 
-def _feed_photo(event_type: str, expense, trip) -> str | None:
-    """Telegram file_id снимка, если он к этому событию есть.
+def _feed_photo(event_type: str, expense, trip, shift=None) -> str | None:
+    """Снимок к событию — тот же, что владелец получил в Telegram.
 
     Показывает такое фото `/api/photo/{file_id}` — там же и проверка, что оно
-    принадлежит этому владельцу. ⚠️ Своего хранилища у фото нет: это file_id
-    бота водителя (см. PROBLEMS.md, риск потери).
+    принадлежит этому владельцу. Фото из бота — file_id бота водителя (см.
+    PROBLEMS.md, риск потери), из приложения — `app-<id>` в нашей базе.
+
+    ⚠️ Владелец 17.09.2026: «в приложении должны быть показаны все
+    фотографии, которые присылаются в Telegram». Одометр в начале и в конце
+    смены раньше в журнал не попадал.
     """
     if event_type == "waybill_uploaded" and trip is not None:
         return trip.waybill_photo_url
-    if event_type in ("expense_submitted", "expense_approved", "expense_amount_edited"):
+    if event_type in (
+        "expense_submitted", "expense_approved", "expense_rejected",
+        "expense_amount_edited",
+    ):
         return expense.receipt_photo_url if expense is not None else None
+    if event_type == "shift_started" and shift is not None:
+        return shift.odometer_start_photo_url
+    if event_type == "shift_completed" and shift is not None:
+        return shift.odometer_end_photo_url
     return None
 
 
@@ -5758,9 +6003,13 @@ async def api_events(
     } - {None}
     rc_ids = {_feed_int((e.payload or {}).get("rc_id")) for e in rows} - {None}
 
-    shift_vehicle = dict((await session.execute(
-        select(Shift.id, Shift.vehicle_id).where(Shift.id.in_(shift_ids or {0}))
-    )).all())
+    shifts = {row.id: row for row in (await session.execute(
+        select(
+            Shift.id, Shift.vehicle_id,
+            Shift.odometer_start_photo_url, Shift.odometer_end_photo_url,
+        ).where(Shift.id.in_(shift_ids or {0}), Shift.owner_id == owner.id)
+    )).all()}
+    shift_vehicle = {sid: row.vehicle_id for sid, row in shifts.items()}
     trips = {row.id: row for row in (await session.execute(
         select(
             Trip.id, Trip.vehicle_id, Trip.origin, Trip.destination,
@@ -5790,6 +6039,20 @@ async def api_events(
             DistributionCenter.owner_id == owner.id,
         )
     )).all()}
+
+    photo_of = {
+        event.id: _feed_photo(
+            event.event_type,
+            expenses.get(_feed_int((event.payload or {}).get("expense_id"))),
+            trips.get(event.trip_id),
+            shifts.get(event.shift_id),
+        )
+        for event in rows
+    }
+    # Откуда фото из приложения: камера или галерея (владелец 17.09.2026).
+    origin_of = await driver_photos.origins(
+        session, owner.id, [ref for ref in photo_of.values() if ref],
+    )
 
     tz = owner_tz(owner.timezone)
     today = datetime.now(tz).date()
@@ -5834,7 +6097,8 @@ async def api_events(
             "vehicle_id": vehicle_id,
             "plate": plates.get(vehicle_id),
             "driver": drivers.get(event.driver_id),
-            "photo": _feed_photo(event.event_type, expense, trip),
+            "photo": photo_of[event.id],
+            "photo_source": origin_of.get(photo_of[event.id] or ""),
             # Ждёт решения владельца: расход, по которому он ещё не сказал ни
             # «одобрить», ни «отклонить». Такие строки в приложении помечены.
             "awaiting": bool(
@@ -6255,6 +6519,8 @@ async def api_vehicle_shifts(
 # =========================================================================
 async def _owner_owns_photo(session: AsyncSession, owner_id: int, file_id: str) -> bool:
     """Проверяем что фото принадлежит владельцу (есть в trips/expenses/shifts)."""
+    if driver_photos.is_app_ref(file_id):
+        return await driver_photos.for_owner(session, owner_id, file_id) is not None
     in_trips = await session.execute(
         select(func.count(Trip.id)).where(
             Trip.owner_id == owner_id, Trip.waybill_photo_url == file_id
@@ -6288,6 +6554,17 @@ async def api_photo(
 ):
     if not await _owner_owns_photo(session, owner.id, file_id):
         raise HTTPException(status_code=403, detail="Forbidden")
+    # Фото из приложения лежит у нас в базе.
+    app_photo = await driver_photos.for_owner(session, owner.id, file_id)
+    if app_photo is not None:
+        return Response(
+            content=app_photo.data,
+            media_type=app_photo.content_type,
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
     driver_bot = request.app.state.driver_bot
     try:
         buf = await driver_bot.download(file_id)
@@ -6391,6 +6668,45 @@ async def update_trip_revenue(
 _MAX_DOC_BYTES = 6 * 1024 * 1024  # 6 МБ на документ
 
 
+async def _read_upload(file: UploadFile, limit: int = _MAX_DOC_BYTES) -> bytes:
+    """Прочитать загрузку кусками и остановиться, как только перевалило за
+    предел (аудит 17.09: раньше файл читался целиком и только потом мерился)."""
+    try:
+        return await driver_photos.read_limited(file, limit)
+    except driver_photos.PhotoRejected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Файл слишком большой (макс {limit // (1024 * 1024)} МБ)",
+        )
+
+
+def _sniff_document(data: bytes) -> str:
+    """Тип документа по содержимому, а не по тому, что назвал браузер.
+    Всё, что не картинка и не PDF, — «просто файл»: такое не откроется в
+    браузере как страница (аудит 17.09: загруженный HTML выполнился бы на
+    нашем сайте)."""
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    return driver_photos.sniff_type(data[:16]) or "application/octet-stream"
+
+
+def _document_response(data: bytes, filename: str | None = None) -> Response:
+    content_type = _sniff_document(data)
+    inline = content_type != "application/octet-stream"
+    name = re.sub(r'[^\w.\- ]+', "_", filename or "document") or "document"
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(name)}",
+            "X-Content-Type-Options": "nosniff",
+            # Даже если что-то откроется в браузере — без скриптов.
+            "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+        },
+    )
+
+
 @app.post("/trips/{trip_id}/document")
 async def upload_trip_document(
     trip_id: int,
@@ -6403,15 +6719,13 @@ async def upload_trip_document(
     trip = await session.get(Trip, trip_id)
     if trip is None or trip.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    data = await file.read()
+    data = await _read_upload(file)
     if not data:
         raise HTTPException(status_code=400, detail="Пустой файл")
-    if len(data) > _MAX_DOC_BYTES:
-        raise HTTPException(status_code=400, detail="Файл слишком большой (макс 6 МБ)")
     doc = TripDocument(
         trip_id=trip.id, owner_id=owner.id,
         filename=file.filename,
-        content_type=file.content_type or "application/octet-stream",
+        content_type=_sniff_document(data),
         data=data,
     )
     session.add(doc)
@@ -6428,7 +6742,8 @@ async def get_trip_document(
     doc = await session.get(TripDocument, doc_id)
     if doc is None or doc.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    return Response(content=doc.data, media_type=doc.content_type)
+    # Тип — заново по содержимому: у старых записей он со слов браузера.
+    return _document_response(doc.data, doc.filename)
 
 
 @app.post("/trip-doc/{doc_id}/delete")
@@ -6930,12 +7245,17 @@ async def trip_detail(
         _minutes_between(trip.created_at, trip.completed_at or datetime.now(timezone.utc))
     )
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
+    photo_origins = await driver_photos.origins(
+        session, owner.id,
+        [trip.waybill_photo_url, *(e.receipt_photo_url for e in expenses)],
+    )
     return templates.TemplateResponse(
         "trip_detail.html",
         {
             "request": request, "owner": owner,
             "trip": trip, "shift": shift, "driver": driver, "vehicle": vehicle,
             "expenses": expenses,
+            "photo_origins": photo_origins,
             "waybill_uploaded_at": waybill_uploaded_at,
             "documents": documents,
             "travel": travel, "travel_label": travel_label,
@@ -7238,10 +7558,35 @@ async def shift_detail(
         gps_timeline.sort(key=lambda e: e["_at"])
 
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
+    # Пробег по счётчику трекера за смену — рядом с пробегом по одометру.
+    # Владелец 17.09.2026: водитель прислал одно фото дважды, пробег вышел
+    # нулём, а по GPS на странице ничего не было.
+    from app.services import odometer_check
+    gps_km = await odometer_check.gps_km_for_shift(session, shift)
+    same_odometer = odometer_check.same_reading_warning(shift, gps_km)
+    same_photo = bool(
+        shift.odometer_start_photo_url
+        and shift.odometer_start_photo_url == shift.odometer_end_photo_url
+    )
+    start_photo = await driver_photos.for_owner(session, owner.id, shift.odometer_start_photo_url)
+    end_photo = await driver_photos.for_owner(session, owner.id, shift.odometer_end_photo_url)
+    if start_photo is not None and end_photo is not None and start_photo.sha256 == end_photo.sha256:
+        same_photo = True
+    photo_origins = await driver_photos.origins(
+        session, owner.id,
+        [
+            shift.odometer_start_photo_url, shift.odometer_end_photo_url,
+            *(e.receipt_photo_url for e in expenses),
+        ],
+    )
     return templates.TemplateResponse(
         "shift_detail.html",
         {
             "request": request, "owner": owner,
+            "photo_origins": photo_origins,
+            "gps_km": gps_km,
+            "same_odometer": same_odometer is not None,
+            "same_photo": same_photo,
             "shift": shift, "driver": driver, "vehicle": vehicle,
             "trips": trips, "expenses": expenses,
             "photo_start_at": times.get("shift_started"),
@@ -7631,10 +7976,14 @@ async def expenses_page(
         .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
         .order_by(Vehicle.license_plate)
     )).scalars().all())
+    photo_origins = await driver_photos.origins(
+        session, owner.id, [row[0].receipt_photo_url for row in rows],
+    )
     return templates.TemplateResponse(
         "expenses.html",
         {
             "request": request, "owner": owner, "rows": rows,
+            "photo_origins": photo_origins,
             "filter_category": category or "",
             "filter_status": status or "",
             "filter_driver_id": d_id,
@@ -7662,10 +8011,14 @@ async def expense_edit_page(
     if expense is None or expense.owner_id != owner.id:
         raise HTTPException(status_code=404)
     driver = await session.get(Driver, expense.driver_id)
+    photo_origins = await driver_photos.origins(
+        session, owner.id, [expense.receipt_photo_url],
+    )
     return templates.TemplateResponse(
         "expense_edit.html",
         {
             "request": request, "owner": owner, "expense": expense, "driver": driver,
+            "photo_origins": photo_origins,
             "categories": _EXPENSE_CATEGORIES, "active_page": "trips",
         },
     )
@@ -7719,12 +8072,10 @@ async def expense_edit_save(
             datetime.now(timezone.utc) if status in ("approved", "rejected") else None
         )
     if file is not None and file.filename:
-        data = await file.read()
+        data = await _read_upload(file)
         if data:
-            if len(data) > _MAX_DOC_BYTES:
-                raise HTTPException(status_code=400, detail="Файл слишком большой (макс 6 МБ)")
             expense.receipt_web_data = data
-            expense.receipt_web_type = file.content_type or "image/jpeg"
+            expense.receipt_web_type = _sniff_document(data)
     await session.commit()
     return RedirectResponse("/expenses", status_code=303)
 
@@ -7756,7 +8107,7 @@ async def expense_receipt(
     expense = await session.get(Expense, expense_id)
     if expense is None or expense.owner_id != owner.id or not expense.receipt_web_data:
         raise HTTPException(status_code=404)
-    return Response(content=expense.receipt_web_data, media_type=expense.receipt_web_type or "image/jpeg")
+    return _document_response(expense.receipt_web_data, f"receipt-{expense.id}")
 
 
 # =========================================================================
@@ -7781,9 +8132,15 @@ async def fuel_history(
         .limit(200)
     )
     rows = list(rows_res.all())
+    photo_origins = await driver_photos.origins(
+        session, owner.id, [row[0].receipt_photo_url for row in rows],
+    )
     return templates.TemplateResponse(
         "fuel_history.html",
-        {"request": request, "owner": owner, "rows": rows, "active_page": "trips"},
+        {
+            "request": request, "owner": owner, "rows": rows,
+            "photo_origins": photo_origins, "active_page": "trips",
+        },
     )
 
 
@@ -7820,11 +8177,15 @@ async def documents_page(
             ).group_by(Event.trip_id)
         )
         waybill_times = {tid: dt for tid, dt in wb_res.all()}
+    photo_origins = await driver_photos.origins(
+        session, owner.id, [t.waybill_photo_url for t, _, _ in rows],
+    )
     return templates.TemplateResponse(
         "documents.html",
         {
             "request": request, "owner": owner, "rows": rows,
             "waybill_times": waybill_times,
+            "photo_origins": photo_origins,
             "active_page": "trips",
         },
     )

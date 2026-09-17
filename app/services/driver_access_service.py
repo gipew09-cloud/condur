@@ -50,9 +50,16 @@ def _utc(moment: datetime | None) -> datetime | None:
     return moment
 
 
+# Водитель набирает код на русской раскладке: «А», «В», «С» выглядят как
+# латинские, но это другие буквы, и код не находился. Переводим только
+# точных двойников. ⚠️ Тот же список — в приложении (lib/driver/link.dart).
+_CYRILLIC_TWINS = str.maketrans("АВЕКМНРСТХУ", "ABEKMHPCTXY")
+
+
 def normalize_code(raw: str) -> str:
-    """«abcd-efgh », «ABCD EFGH» → «ABCDEFGH». Похожие знаки не угадываем."""
-    return "".join(ch for ch in (raw or "").upper() if ch.isalnum())
+    """«abcd-efgh », «ABCD EFGH», «авсd-…» → «ABCD…». Похожие цифры не угадываем."""
+    upper = (raw or "").upper().translate(_CYRILLIC_TWINS)
+    return "".join(ch for ch in upper if ch.isascii() and ch.isalnum())
 
 
 def format_code(code: str) -> str:
@@ -126,6 +133,26 @@ async def _find_grant(
     ).scalar_one_or_none()
 
 
+async def link_state(
+    session: AsyncSession, token: str, *, now: datetime | None = None
+) -> str:
+    """Что с ссылкой — только посмотреть, НИЧЕГО не гася (страница ссылки
+    открывается и мессенджерами ради превью).
+
+    active — можно входить; used — по ней уже вошли; expired — прошло 30 минут;
+    invalid — такой ссылки нет или владелец её отозвал.
+    Подсказки подбирателю тут нет: секрет в ссылке угадать нельзя.
+    """
+    grant = await _find_grant(session, token=token, code=None)
+    if grant is None or grant.revoked_at is not None:
+        return "invalid"
+    if grant.used_at is not None:
+        return "used"
+    if _utc(grant.expires_at) < (now or datetime.now(timezone.utc)):
+        return "expired"
+    return "active"
+
+
 async def active_devices(session: AsyncSession, driver_id: int) -> list[DriverSession]:
     return list((
         await session.execute(
@@ -176,9 +203,21 @@ async def redeem(
     if _utc(grant.expires_at) < now:
         raise RedeemError("Срок доступа истёк (30 минут). Попросите владельца выдать новый.")
 
-    driver = await session.get(Driver, grant.driver_id)
+    # ⚠️ Замок на водителя (аудит 17.09): два входа разом — второй ждёт
+    # первого, и лимит телефонов нельзя обойти одновременными запросами.
+    driver = await session.get(Driver, grant.driver_id, with_for_update=True)
     if driver is None or not driver.is_active or driver.owner_id != grant.owner_id:
         raise RedeemError("Доступ отключён. Обратитесь к владельцу.")
+    # Одноразовость — условным обновлением: погасит выдачу только тот запрос,
+    # который застал её живой. Второй одновременный получит отказ.
+    burned = await session.execute(
+        update(DriverAccessGrant)
+        .where(DriverAccessGrant.id == grant.id, DriverAccessGrant.used_at.is_(None))
+        .values(used_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if burned.rowcount != 1:
+        raise RedeemError("Этот доступ уже использован. Попросите владельца выдать новый.")
 
     devices = await active_devices(session, driver.id)
     # Тот же телефон входит повторно (переустановили приложение и т.п.) —
@@ -208,7 +247,6 @@ async def redeem(
         last_seen_at=now,
     )
     session.add(ds)
-    grant.used_at = now
     await session.flush()
     return Redeemed(driver=driver, driver_session=ds, token=raw)
 
