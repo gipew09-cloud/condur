@@ -38,6 +38,14 @@ def _bigint_sqlite(type_, compiler, **kw):
     return "INTEGER"
 
 
+
+@pytest.fixture(autouse=True)
+def _photo_mode_off(monkeypatch):
+    """Эти проверки — про саму смену, а не про фото одометра: фото-режим
+    выключен. Фото проверяются в test_driver_photos.py."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_odometer_photo", False)
+
 _ENGINES = []
 
 

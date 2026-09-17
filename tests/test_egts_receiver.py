@@ -149,6 +149,18 @@ def test_valid_packet_then_garbage_processes_first():
     assert _run_handler(_make_header(fdl=0) + b"\x77" * 20) == 1
 
 
+def test_egts_can_be_switched_off(monkeypatch):
+    """Аудит 17.09: в EGTS нет пароля. EGTS_ACCEPT=0 — пакеты не принимаются
+    вовсе; по умолчанию — принимаются, как раньше."""
+    # Пакет и мусор следом: мусор закрывает соединение, иначе тест ждал бы.
+    packet = _make_header(fdl=0) + b"\x77" * 20
+    assert _run_handler(packet) == 1
+    monkeypatch.setenv("EGTS_ACCEPT", "0")
+    assert _run_handler(packet) == 0
+    monkeypatch.setenv("EGTS_ACCEPT", "1")
+    assert _run_handler(packet) == 1
+
+
 # ------------------------------------------- аналитика приездов на РЦ
 def test_typical_time_of_day_label():
     assert telemetry_service.typical_time_of_day_label([]) is None

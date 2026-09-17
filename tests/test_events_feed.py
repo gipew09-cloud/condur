@@ -681,3 +681,53 @@ def test_у_старой_тишины_часы_превращаются_в_ми�
         assert data["events"][0]["detail"] == "нет вестей 4 ч"
         await session.close()
     _run(scenario)
+
+
+def test_в_журнале_те_же_фото_что_в_telegram():
+    """Владелец 17.09.2026: «в приложении должны быть показаны все
+    фотографии, которые присылаются в Telegram». Одометр в начале и в конце
+    смены раньше в журнал не попадал."""
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=5),
+                      odometer_start_photo_url="AgAC-одометр-утро",
+                      odometer_end_photo_url="app-7")
+        session.add(shift)
+        await session.flush()
+        expense = await _expense(session, owner, driver)
+        expense.receipt_photo_url = "AgAC-чек"
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="shift_started", created_at=NOW - timedelta(hours=5)),
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="shift_completed", created_at=NOW - timedelta(hours=1)),
+            Event(owner_id=owner.id, driver_id=driver.id,
+                  event_type="expense_rejected", created_at=NOW - timedelta(minutes=30),
+                  payload={"expense_id": expense.id}),
+        ])
+        await session.commit()
+
+        rows = {e["type"]: e for e in (await api_events(owner, session))["events"]}
+        assert rows["shift_started"]["photo"] == "AgAC-одометр-утро"
+        assert rows["shift_completed"]["photo"] == "app-7"
+        assert rows["expense_rejected"]["photo"] == "AgAC-чек"
+        await session.close()
+    _run(scenario)
+
+
+def test_смена_без_фото_в_журнале_без_фото():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=5))
+        session.add(shift)
+        await session.flush()
+        session.add(Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                          event_type="shift_started", created_at=NOW - timedelta(hours=5)))
+        await session.commit()
+        row = (await api_events(owner, session))["events"][0]
+        assert row["photo"] is None
+        assert row["plate"] == "Т557ОС178"
+        await session.close()
+    _run(scenario)

@@ -347,9 +347,17 @@ def test_ocr_never_silently_replaces_the_amount_the_driver_typed():
     сообщением, а решает он. То же правило, что и в разборе текста: лучше не
     распознать, чем распознать неправильно.
     """
-    src = open("app/bots/driver_bot.py", encoding="utf-8").read()
-    start = src.index("async def _receipt_amount_followup")
-    body = src[start:src.index("@driver_router.message(NewExpense.waiting_for_receipt, F.photo)")]
+    # 17.09.2026: проверка чека общая для бота и приложения — живёт в
+    # expense_flow; бот только скачивает фото и отдаёт туда.
+    bot_src = open("app/bots/driver_bot.py", encoding="utf-8").read()
+    start = bot_src.index("async def _receipt_amount_followup")
+    bot_body = bot_src[start:bot_src.index("def _odometer_ocr_on")]
+    assert "expense_flow.receipt_followup(" in bot_body
+    assert "state.update_data(amount=" not in bot_body, "OCR снова подменяет сумму водителя"
+
+    src = open("app/services/expense_flow.py", encoding="utf-8").read()
+    start = src.index("async def receipt_followup")
+    body = src[start:src.index("# ------------------------------------------------------------------ SOS")]
     assert "state.update_data(amount=" not in body, "OCR снова подменяет сумму водителя"
     assert "на чеке распознано" in body, "расхождение должно уходить владельцу"
     assert "notify_owner(" in body

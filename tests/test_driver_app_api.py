@@ -44,6 +44,14 @@ def _bigint_sqlite(type_, compiler, **kw):
     return "INTEGER"
 
 
+
+@pytest.fixture(autouse=True)
+def _photo_mode_off(monkeypatch):
+    """Эти проверки — про саму смену, а не про фото одометра: фото-режим
+    выключен. Фото проверяются в test_driver_photos.py."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_odometer_photo", False)
+
 _ENGINES = []
 
 
@@ -162,7 +170,7 @@ def test_путь_водителя_целиком():
         me = await web.api_driver_me(ctx, session)
         assert me["shift"] is None
         assert me["company"] == "ИП Кибиткина"
-        assert me["vehicles"] == [{"id": vehicle.id, "plate": "Т557ОС178", "busy": False}]
+        assert me["vehicles"] == [{"id": vehicle.id, "plate": "Т557ОС178", "busy": False, "color": "black"}]
 
         start_body = {
             "client_op_id": "a1b2c3d4-start", "type": "shift.start",
@@ -333,18 +341,85 @@ def test_страница_ссылки_ничего_не_гасит():
         session, owner, vehicle, driver, owner_cookie = await _db()
         code, link, _ = await _issue_code(app, session, owner, driver, owner_cookie)
         token = link.rsplit("/d/", 1)[1]
-        page = await web.driver_link_page(_request(app, method="GET"), token)
+        page = await web.driver_link_page(_request(app, method="GET"), token, session)
         assert page.status_code == 200
         body = page.body.decode()
         assert f"condur://d/{token}" in body
+        assert "Открываю приложение" in body     # пробует открыть само
         assert "Саломов" not in body            # о водителе ни слова
         assert page.headers["referrer-policy"] == "no-referrer"
         with pytest.raises(HTTPException):
-            await web.driver_link_page(_request(app, method="GET"), "../../etc")
+            await web.driver_link_page(_request(app, method="GET"), "../../etc", session)
         # Ссылка всё ещё гасится.
         response = await _redeem(app, session, token=token)
         assert response.status_code == 200
+        # После входа страница честно говорит, что ссылка использована,
+        # и кнопки входа больше нет.
+        used = (await web.driver_link_page(_request(app, method="GET"), token, session)).body.decode()
+        assert "уже вошли" in used and "condur://" not in used
         await session.close()
+    _run(scenario)
+
+
+def test_страница_старой_и_чужой_ссылки():
+    """Владелец 17.09: «почему вчерашняя ссылка всё ещё работает?» — страница
+    открывалась для любой ссылки. Теперь говорит, что с ней."""
+    from datetime import timedelta
+
+    from app.models import DriverAccessGrant
+
+    async def scenario():
+        app = _App()
+        session, owner, vehicle, driver, owner_cookie = await _db()
+        _, link, _ = await _issue_code(app, session, owner, driver, owner_cookie)
+        token = link.rsplit("/d/", 1)[1]
+        grant = (await session.execute(select(DriverAccessGrant))).scalar_one()
+        grant.expires_at = grant.created_at - timedelta(minutes=1)
+        await session.commit()
+        old = (await web.driver_link_page(_request(app, method="GET"), token, session)).body.decode()
+        assert "Срок ссылки истёк" in old and "condur://" not in old
+
+        unknown = "x" * 43
+        page = (await web.driver_link_page(_request(app, method="GET"), unknown, session)).body.decode()
+        assert "не действует" in page and "condur://" not in page
+
+        # Новая выдача гасит старую ссылку — страница это видит.
+        _, fresh, _ = await _issue_code(app, session, owner, driver, owner_cookie)
+        grant.expires_at = grant.created_at + timedelta(minutes=30)
+        await session.commit()
+        revoked = (await web.driver_link_page(_request(app, method="GET"), token, session)).body.decode()
+        assert "не действует" in revoked
+        await session.close()
+    _run(scenario)
+
+
+def test_ссылка_на_android_открывает_приложение_через_intent():
+    async def scenario():
+        app = _App()
+        session, owner, vehicle, driver, owner_cookie = await _db()
+        _, link, _ = await _issue_code(app, session, owner, driver, owner_cookie)
+        token = link.rsplit("/d/", 1)[1]
+        req = _request(app, method="GET", path=f"/d/{token}")
+        req.scope["headers"] = [(b"user-agent", b"Mozilla/5.0 (Linux; Android 14) Chrome/140")]
+        body = (await web.driver_link_page(req, token, session)).body.decode()
+        assert f"intent://d/{token}#Intent;scheme=condur;package=ru.condur.condur;" in body
+        assert "manual%3D1" in body            # без приложения — назад без автозапуска
+        manual = _request(app, method="GET", path=f"/d/{token}")
+        manual.scope["query_string"] = b"manual=1"
+        page = (await web.driver_link_page(manual, token, session)).body.decode()
+        assert "Открываю приложение" not in page and "condur://" in page
+        await session.close()
+    _run(scenario)
+
+
+def test_android_app_links_файл_подписи():
+    async def scenario():
+        response = await web.android_asset_links()
+        data = json.loads(response.body)
+        target = data[0]["target"]
+        assert target["package_name"] == "ru.condur.condur"
+        fingerprint = target["sha256_cert_fingerprints"][0]
+        assert re.fullmatch(r"([0-9A-F]{2}:){31}[0-9A-F]{2}", fingerprint)
     _run(scenario)
 
 

@@ -114,6 +114,25 @@ def test_вход_по_коду_с_дефисом_и_строчными():
     _run(scenario)
 
 
+def test_код_на_русской_раскладке_понимается():
+    """Водитель набрал код на русской клавиатуре: «А», «В», «С» — другие буквы,
+    хотя выглядят как латинские. Двойников переводим, остальное не угадываем."""
+    assert access.normalize_code("авсе-кмнр") == "ABCEKMHP"
+    assert access.normalize_code("СТХУ 2345") == "CTXY2345"
+    # Буквы без латинского двойника не превращаются в «похожие».
+    assert access.normalize_code("ЖЖЖЖ-ЖЖЖЖ") == ""
+
+    async def scenario():
+        session, owner, _, driver = await _db()
+        issued = await access.issue_grant(session, driver=driver, issued_by_telegram_id=1)
+        latin_to_cyrillic = str.maketrans("ABEKMHPCTXY", "АВЕКМНРСТХУ")
+        typed = access.format_code(issued.code).translate(latin_to_cyrillic).lower()
+        done = await _redeem(session, code=typed)
+        assert done.driver.id == driver.id
+        await session.close()
+    _run(scenario)
+
+
 def test_вход_по_ссылке():
     async def scenario():
         session, owner, _, driver = await _db()

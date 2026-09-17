@@ -30,6 +30,7 @@ from sqlalchemy.ext.compiler import compiles  # noqa: E402
 
 from app.bots import driver_bot as db  # noqa: E402
 from app.models import Base, Driver, Owner, Shift, Vehicle  # noqa: E402
+from app.services import odometer_check  # noqa: E402
 from app.services.receipt_ocr import OdometerReading  # noqa: E402
 
 
@@ -86,6 +87,8 @@ async def _db_with_shift(**shift_kwargs):
 
 def _patch(monkeypatch, maker, *, km, notified):
     monkeypatch.setattr(db, "async_session", maker)
+    monkeypatch.setattr(odometer_check, "async_session", maker)
+    monkeypatch.setattr(db, "_odometer_ocr_on", lambda: True)
 
     async def _recognize(_bytes):
         return OdometerReading(km=km) if km is not None else None
@@ -95,7 +98,7 @@ def _patch(monkeypatch, maker, *, km, notified):
     async def _notify(owner_bot, session, owner, text, **kw):
         notified.append(text)
 
-    monkeypatch.setattr(db, "notify_owner", _notify)
+    monkeypatch.setattr(odometer_check, "notify_owner", _notify)
 
 
 def test_recognised_odometer_is_written_and_owner_told(monkeypatch):
@@ -183,6 +186,8 @@ def test_broken_ocr_does_not_break_the_shift(monkeypatch):
     async def scenario():
         maker, owner_id, shift_id = await _db_with_shift(odometer_start=None)
         monkeypatch.setattr(db, "async_session", maker)
+        monkeypatch.setattr(odometer_check, "async_session", maker)
+        monkeypatch.setattr(db, "_odometer_ocr_on", lambda: True)
 
         async def _boom(_bytes):
             raise RuntimeError("LlamaParse не ответил")
