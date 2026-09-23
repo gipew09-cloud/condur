@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from "_fin_rows.html" import fin_row with context %}
+{% block title %}Расходы — Финансы{% endblock %}
+{% block body_class %}fin-body{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v={{ asset_v }}">{% endblock %}
+
+{% block content %}
+<div class="fin" id="fin" data-page="expenses"{% if open_new %} data-open-new="expense"{% endif %}>
+  {% include "_fin_head.html" %}
+
+  <div data-fin-live="main" class="fin-stack-v">
+    {% if prefill %}
+    <div class="fin-context">
+      <i class="ph ph-link-simple" aria-hidden="true"></i>
+      <span>{{ prefill.title }} — здесь только его траты</span>
+      <a href="{{ fin_url(request, trip=None, shift=None, period_from=None, period_to=None) }}">Все расходы</a>
+    </div>
+    {% endif %}
+
+    <section class="fin-sum">
+      <a class="fin-sum__item{% if not flt.status and not flt.receipt %} is-on{% endif %}"
+         href="{{ fin_url(request, status=None, receipt=None) }}">
+        <span>Потрачено</span>
+        <strong>{{ totals.spent | fin_rub }}</strong>
+        <small>{{ totals.count }} {{ fin_plural(totals.count, 'трата', 'траты', 'трат') }}</small>
+      </a>
+      <a class="fin-sum__item{% if flt.status == 'pending' %} is-on{% endif %}{% if totals.pending_count %} is-warn{% endif %}"
+         href="{{ fin_url(request, status=None if flt.status == 'pending' else 'pending', receipt=None) }}">
+        <span>Ждут решения</span>
+        <strong>{{ totals.pending_count }}</strong>
+        <small>{{ totals.pending_sum | fin_rub }}</small>
+      </a>
+      <a class="fin-sum__item{% if flt.receipt == 'without' %} is-on{% endif %}"
+         href="{{ fin_url(request, receipt=None if flt.receipt == 'without' else 'without', status=None) }}">
+        <span>Без чека</span>
+        <strong>{{ totals.no_receipt_count }}</strong>
+        <small>{{ totals.no_receipt_sum | fin_rub }}</small>
+      </a>
+    </section>
+
+    {% if chips %}
+    <section class="fin-struct">
+      <div class="fin-bar" role="img" aria-label="Из чего состоят расходы">
+        {% for c in chips %}{% if c.share > 0 %}<i style="--c:{{ c.color }};flex-grow:{{ '%.2f' | format(c.share) }}" title="{{ c.label }} — {{ '%.0f' | format(c.share) }} %"></i>{% endif %}{% endfor %}
+      </div>
+      <div class="fin-chips fin-chips--cats">
+        <a class="fin-chip{% if not flt.cat %} is-on{% endif %}" href="{{ fin_url(request, cat=None) }}">Все</a>
+        {% for c in chips %}
+          <a class="fin-chip{% if flt.cat == c.code %} is-on{% endif %}"
+             href="{{ fin_url(request, cat=None if flt.cat == c.code else c.code) }}">
+            <i class="fin-dot" style="--c:{{ c.color }}"></i>{{ c.label }}{% if c.amount %}<span class="fin-chip__num">{{ c.amount | fin_rub }}</span>{% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <details class="fin-filters"{% if extra_filters %} open{% endif %}>
+      <summary><i class="ph ph-sliders-horizontal" aria-hidden="true"></i>Отборы{% if extra_filters %}<span class="fin-seg__badge fin-seg__badge--blue">{{ extra_filters }}</span>{% endif %}</summary>
+      <form method="get" class="fin-filters__form" data-autosubmit>
+        {% for key in ('period_from', 'period_to', 'cat', 'trip', 'shift') %}
+          {% if request.query_params.get(key) %}<input type="hidden" name="{{ key }}" value="{{ request.query_params.get(key) }}">{% endif %}
+        {% endfor %}
+        <label>Машина
+          <select name="vehicle">
+            <option value="">Все</option>
+            {% for v in vehicles %}<option value="{{ v.id }}"{% if flt.vehicle == v.id %} selected{% endif %}>{{ v.license_plate }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Кто внёс
+          <select name="driver">
+            <option value="">Все</option>
+            {% for d in drivers %}<option value="{{ d.id }}"{% if flt.driver == d.id %} selected{% endif %}>{{ d.full_name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Оплата
+          <select name="pay">
+            <option value="">Любая</option>
+            {% for code, label in payment_methods.items() %}<option value="{{ code }}"{% if flt.pay == code %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Чек
+          <select name="receipt">
+            <option value="">Неважно</option>
+            <option value="with"{% if flt.receipt == 'with' %} selected{% endif %}>Есть</option>
+            <option value="without"{% if flt.receipt == 'without' %} selected{% endif %}>Нет</option>
+          </select>
+        </label>
+        <label>Решение
+          <select name="status">
+            <option value="">Любое</option>
+            <option value="approved"{% if flt.status == 'approved' %} selected{% endif %}>Одобрено</option>
+            <option value="pending"{% if flt.status == 'pending' %} selected{% endif %}>Ждёт решения</option>
+            <option value="rejected"{% if flt.status == 'rejected' %} selected{% endif %}>Отклонено</option>
+          </select>
+        </label>
+        <noscript><button type="submit" class="fin-btn fin-btn--primary">Показать</button></noscript>
+        {% if filtered %}<a class="fin-link fin-filters__reset" href="/finances/expenses?period_from={{ period_from }}&period_to={{ period_to }}">Сбросить все отборы</a>{% endif %}
+      </form>
+    </details>
+
+    <div class="fin-days">
+      {% if groups %}
+        {% if filtered %}<p class="fin-muted fin-found">Найдено {{ rows_count }} · одобрено на {{ filtered_total | fin_rub }}</p>{% endif %}
+        {% for g in groups %}
+        <section class="fin-day">
+          <header class="fin-day__head"><h3>{{ g.title }}</h3><span>{{ g.total | fin_rub }}</span></header>
+          <ul class="fin-list">
+            {% for r in g.rows %}{{ fin_row(r, zone, added_ids) }}{% endfor %}
+          </ul>
+        </section>
+        {% endfor %}
+      {% else %}
+        <div class="fin-empty">
+          <i class="ph ph-receipt" aria-hidden="true"></i>
+          {% if filtered %}
+            <b>Под эти отборы трат нет</b>
+            <span>Попробуйте другой период или сбросьте отборы.</span>
+          {% else %}
+            <b>За этот период трат нет</b>
+            <span>Траты водителей появятся сами. Свои — внесите кнопкой «Расход»: можно сразу несколько, с фото чеков и файлами.</span>
+            <button type="button" class="fin-btn fin-btn--primary" data-open-sheet="expense"><i class="ph ph-plus"></i><span>Внести расход</span></button>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% include "_fin_sheet_expense.html" %}
+{% endblock %}
+
+{% block scripts %}<script src="/static/finance.js?v={{ asset_v }}" defer></script>{% endblock %}

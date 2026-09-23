@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.services import rc_service, telemetry_service
 from app.services.event_service import log_event
+from app.services.finance_ledger import expense_moment
 from app.services.timeutil import fmt_dt, now_in_tz, owner_tz
 
 logger = logging.getLogger(__name__)
@@ -111,8 +112,8 @@ async def _send_daily_summary(
         .where(
             Expense.owner_id == owner.id,
             Expense.status == "approved",
-            Expense.created_at >= day_start,
-            Expense.created_at < day_end,
+            expense_moment() >= day_start,
+            expense_moment() < day_end,
         )
     )
     expenses = Decimal(expenses_res.scalar_one() or 0)
@@ -496,8 +497,8 @@ async def _send_weekly_review(
             Expense.owner_id == owner.id,
             Expense.category == "fuel",
             Expense.status == "approved",
-            Expense.created_at >= _utc(week_start),
-            Expense.created_at <= _utc(week_end),
+            expense_moment() >= _utc(week_start),
+            expense_moment() <= _utc(week_end),
         )
         .group_by(Driver.full_name)
         .order_by(func.sum(Expense.amount_rub).desc())
@@ -552,8 +553,8 @@ async def _sum_profit(session, owner_id: int, dt_from, dt_to) -> Decimal:
             select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
                 Expense.owner_id == owner_id,
                 Expense.status == "approved",
-                Expense.created_at >= dt_from,
-                Expense.created_at <= dt_to,
+                expense_moment() >= dt_from,
+                expense_moment() <= dt_to,
             )
         )
     ).scalar_one() or Decimal(0)

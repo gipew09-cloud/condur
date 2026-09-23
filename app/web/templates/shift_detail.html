@@ -115,12 +115,13 @@
   <div style="display:flex; align-items:center; gap:.7rem; padding:.55rem .9rem; flex-wrap:wrap;
               {% if not loop.first %}border-top:1px solid var(--border);{% endif %}
               {% if seg.ongoing %}background:rgba(37,99,235,.06);{% endif %}">
+    {# Время — первым (владелец 21.09.2026): хронологию читают по времени. #}
+    <span style="min-width:7.2rem; color:var(--text-muted); font-variant-numeric:tabular-nums;">{{ seg.frm }}{% if seg.to %} → {{ seg.to }}{% endif %}</span>
     <span style="width:1.4rem; text-align:center;">{{ seg.icon }}</span>
     <b style="min-width:8.5rem;">
       {{ seg.label }}
       {% if seg.ongoing %}<span class="pill pill--info" style="font-size:.68em; vertical-align:middle;">сейчас</span>{% endif %}
     </b>
-    <span style="color:var(--text-muted);">{{ seg.frm }}{% if seg.to %} → {{ seg.to }}{% endif %}</span>
     {% if seg.place %}<span style="font-weight:600;">📍 {{ seg.place }}</span>{% endif %}
     <span style="margin-left:auto; font-weight:700;">{{ seg.dur }}</span>
   </div>
@@ -189,15 +190,22 @@
 </table>
 {% endif %}
 
+{# Трата смены записывается ОДИН раз — в «Финансах»; здесь окно в ту же запись. #}
+<div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-top:1.5rem;">
+  <h3 style="margin:0;">Расходы смены</h3>
+  <span style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+    {% if expenses %}<a href="/finances/expenses?shift={{ shift.id }}" style="font-size:.9rem;">все в «Финансах»</a>{% endif %}
+    <a role="button" href="/finances/expenses?shift={{ shift.id }}&new=1" style="margin:0;padding:.35rem .8rem;font-size:.9rem;width:auto;"><i class="ph ph-plus"></i> Расход</a>
+  </span>
+</div>
 {% if expenses %}
-<h3 style="margin-top:1.5rem;">Расходы смены</h3>
 <table>
   <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
   <tbody>
     {% for e in expenses %}
     <tr>
-      <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
-      <td data-label="Категория">{{ e.category }}</td>
+      <td data-label="Дата">{{ (e.spent_at or e.created_at) | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+      <td data-label="Категория">{{ fin_cat(e.category) }}{% if not e.driver_id %} <small style="color:var(--text-muted);">· внесён вами</small>{% endif %}</td>
       <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
       <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
       <td data-label="Чек">

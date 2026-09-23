@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Expense
+from app.services import trip_service
 
 
 VALID_CATEGORIES = ("fuel", "repair", "parking", "fine", "toll", "other")
@@ -90,6 +91,8 @@ async def create_expense(
         status="pending",
     )
     session.add(expense)
+    # Рейс мог быть уже завершён — его траты считаются заново.
+    await trip_service.refresh_trip_costs(session, trip_id)
     return expense
 
 
@@ -104,4 +107,5 @@ async def decide_expense(
         return expense  # уже решено — идемпотентность
     expense.status = "approved" if approve else "rejected"
     expense.decided_at = datetime.now(timezone.utc)
+    await trip_service.refresh_trip_costs(session, expense.trip_id)
     return expense

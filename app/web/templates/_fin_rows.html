@@ -1,0 +1,97 @@
+{# Строка книги денег. Одна разметка для расхода водителя, расхода владельца,
+   старой ручной записи и дохода — шаблону неважно, откуда строка.
+   Нажатие раскрывает подробности: чеки, файлы, рейс, смену и действия. #}
+{% from "_photo_origin.html" import photo_origin %}
+{% macro fin_row(r, zone, added=(), period_q='') %}
+{% set origin = (photo_origins or {}).get(r.legacy_photo) if r.legacy_photo else none %}
+{% set is_in = r.kind == 'income' %}
+{% set key = r.source ~ '-' ~ r.id %}
+{% set icon = fin_icon('income' if (is_in and r.source == 'manual') else r.category) %}
+<li class="fin-row{% if r.id in added and (r.source == 'expense' or (is_in and r.source == 'manual')) %} is-new{% endif %}{% if r.status == 'rejected' %} is-rejected{% endif %}"
+    id="{{ key }}" data-source="{{ r.source }}" data-id="{{ r.id }}" data-kind="{{ r.kind }}" data-status="{{ r.status }}">
+  <button type="button" class="fin-row__main" aria-expanded="false" aria-controls="{{ key }}-more">
+    <span class="fin-ico" style="--c:{{ r.color }}"><i class="ph ph-{{ icon }}" aria-hidden="true"></i></span>
+    <span class="fin-row__text">
+      <span class="fin-row__title">{{ r.category_label }}{% if r.description %}<span class="fin-row__desc"> · {{ r.description }}</span>{% endif %}</span>
+      <span class="fin-row__meta">
+        {%- set parts = [] -%}
+        {%- set t = fin_time(r, zone) -%}
+        {%- if t %}{% set _ = parts.append(t) %}{% endif -%}
+        {%- if is_in -%}
+          {%- if r.vehicle %}{% set _ = parts.append(r.vehicle) %}{% endif -%}
+          {%- if r.driver %}{% set _ = parts.append(r.driver) %}{% endif -%}
+          {%- if r.source == 'manual' %}{% set _ = parts.append('внесено вами') %}{% endif -%}
+        {%- else -%}
+          {%- set _ = parts.append(r.vehicle or ('Компания' if r.created_by == 'owner' else 'без машины')) -%}
+          {%- set _ = parts.append(r.driver if r.driver else 'вы') -%}
+          {%- if r.payment %}{% set _ = parts.append(r.payment) %}{% endif -%}
+          {%- if r.supplier %}{% set _ = parts.append(r.supplier) %}{% endif -%}
+        {%- endif -%}
+        {{ parts | join(' · ') }}
+      </span>
+    </span>
+    <span class="fin-row__right">
+      <span class="fin-amt{% if is_in %} is-in{% endif %}">{{ '+' if is_in else '−' }}{{ r.amount | fin_rub }}</span>
+      <span class="fin-row__flags">
+        {% if r.status == 'pending' %}<span class="fin-badge fin-badge--pending">ждёт решения</span>
+        {% elif r.status == 'rejected' %}<span class="fin-badge fin-badge--rejected">отклонено</span>{% endif %}
+        {% if origin == 'gallery' %}<span class="fin-clip" title="Фото чека выбрано из галереи — могло быть снято раньше">🖼</span>{% endif %}
+        {% if r.photos or r.files %}<span class="fin-clip" title="Чеков и файлов: {{ r.photos + r.files }}"><i class="ph ph-paperclip"></i>{{ r.photos + r.files }}</span>
+        {% elif r.source == 'expense' and r.status != 'rejected' %}<span class="fin-clip is-missing" title="Без чека"><i class="ph ph-receipt-x"></i></span>{% endif %}
+      </span>
+    </span>
+    <i class="ph ph-caret-down fin-row__chev" aria-hidden="true"></i>
+  </button>
+
+  <div class="fin-row__more" id="{{ key }}-more" inert>
+    <div class="fin-row__inner"><div class="fin-row__pad">
+      <dl class="fin-facts">
+        <div><dt>Когда</dt><dd>{{ fin_when(r.at, zone) }}</dd></div>
+        {% if not is_in %}<div><dt>За что</dt><dd>{{ r.vehicle or ('Компания' if r.created_by == 'owner' else 'Машина не указана') }}</dd></div>{% elif r.vehicle %}<div><dt>Машина</dt><dd>{{ r.vehicle }}</dd></div>{% endif %}
+        <div><dt>Кто внёс</dt><dd>{{ r.driver if (r.driver and r.source == 'expense') else ('Рейс' if r.source == 'trip' else 'Вы') }}</dd></div>
+        {% if r.payment %}<div><dt>Оплата</dt><dd>{{ r.payment }}</dd></div>{% endif %}
+        {% if r.supplier %}<div><dt>Где</dt><dd>{{ r.supplier }}</dd></div>{% endif %}
+        {% if r.trip_id %}<div><dt>Рейс</dt><dd><a href="/trips/{{ r.trip_id }}">открыть рейс</a></dd></div>{% endif %}
+        {% if r.shift_id %}<div><dt>Смена</dt><dd><a href="/shifts/{{ r.shift_id }}">открыть смену</a></dd></div>{% endif %}
+      </dl>
+
+      {% if r.attachments or r.legacy_photo or r.legacy_web %}
+      <div class="fin-att">
+        {% if r.legacy_photo %}<span class="fin-att__cell"><a class="fin-att__photo" href="/api/photo/{{ r.legacy_photo }}" target="_blank" rel="noopener" title="Чек от водителя"><img src="/api/photo/{{ r.legacy_photo }}" alt="Чек" loading="lazy"></a>{{ photo_origin(photo_origins, r.legacy_photo) }}</span>{% endif %}
+        {% if r.legacy_web %}<a class="fin-att__photo" href="/api/expense-receipt/{{ r.id }}" target="_blank" rel="noopener" title="Чек"><img src="/api/expense-receipt/{{ r.id }}" alt="Чек" loading="lazy"></a>{% endif %}
+        {% for a in r.attachments %}
+          {% if a.kind == 'photo' %}
+            <a class="fin-att__photo" href="/finances/attachments/{{ a.id }}" target="_blank" rel="noopener"><img src="/finances/attachments/{{ a.id }}" alt="{{ a.filename or 'Фото' }}" loading="lazy"></a>
+          {% else %}
+            <a class="fin-att__file" href="/finances/attachments/{{ a.id }}" target="_blank" rel="noopener">
+              <i class="ph ph-{{ 'file-pdf' if (a.content_type or '') == 'application/pdf' else 'file' }}"></i>
+              <span>{{ a.filename or 'Файл' }}</span>
+            </a>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="fin-actions">
+        {% if r.source == 'expense' and r.status == 'pending' %}
+          <button type="button" class="fin-btn fin-btn--ok" data-decide="approve"><i class="ph ph-check"></i><span>Одобрить</span></button>
+          <button type="button" class="fin-btn fin-btn--ghost" data-decide="reject"><span>Отклонить</span></button>
+        {% endif %}
+        {% if r.source == 'expense' %}
+          <a class="fin-btn fin-btn--ghost" href="/expenses/{{ r.id }}"><i class="ph ph-pencil-simple"></i><span>Изменить</span></a>
+        {% elif r.source == 'trip' %}
+          <a class="fin-btn fin-btn--ghost" href="/trips/{{ r.trip_id }}"><i class="ph ph-truck"></i><span>К рейсу</span></a>
+        {% endif %}
+        {% if r.source == 'expense' or r.source == 'manual' %}
+          <button type="button" class="fin-hold"
+                  data-delete-url="{{ '/finances/expenses/' ~ r.id ~ '/delete' if r.source == 'expense' else '/finances/delete/' ~ r.id }}"
+                  aria-label="Удалить — удерживайте кнопку">
+            <span class="fin-hold__label"><i class="ph ph-trash"></i>Удерживайте, чтобы удалить</span>
+            <span class="fin-hold__fill" aria-hidden="true"><i class="ph ph-trash"></i>Удерживайте, чтобы удалить</span>
+          </button>
+        {% endif %}
+      </div>
+    </div></div>
+  </div>
+</li>
+{% endmacro %}

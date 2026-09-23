@@ -115,21 +115,41 @@
     margin: 0;
     padding: 20px 20px 22px;
   }
+  /* Время — ПЕРВЫМ столбцом (владелец 21.09.2026). Глаз читает хронологию
+     сверху вниз по времени, а не по заголовкам: когда время пряталось под
+     названием события, порядок приходилось восстанавливать по строчкам. */
   .trip-timeline__item {
     position: relative;
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: 58px 28px minmax(0, 1fr);
     gap: 12px;
     padding-bottom: 20px;
   }
   .trip-timeline__item::before {
     content: "";
     position: absolute;
-    left: 13px;
+    left: 83px;            /* середина кружка: 58 + 12 + 14 */
     top: 28px;
     bottom: 0;
     width: 2px;
     background: #e2e8f0;
+  }
+  .trip-when {
+    text-align: right;
+    padding-top: 3px;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;   /* цифры в колонку, без пляски */
+  }
+  .trip-when b {
+    display: block;
+    color: #0f172a;
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .trip-when small {
+    display: block;
+    color: #94a3b8;
+    font-size: 11.5px;
   }
   .trip-timeline__item:last-child {
     padding-bottom: 0;
@@ -149,6 +169,12 @@
   .trip-timeline__item--success .trip-dot { background: #22c55e; border-color: #dcfce7; }
   .trip-timeline__item--warn .trip-dot { background: #f59e0b; border-color: #fef3c7; }
   .trip-timeline__item--danger .trip-dot { background: #ef4444; border-color: #fee2e2; }
+  @media (max-width: 520px) {
+    .trip-timeline__item { grid-template-columns: 46px 22px minmax(0, 1fr); gap: 9px; }
+    /* середина кружка: 46 + 9 + 11 = 66, линия шириной 2 px → left 65 */
+    .trip-timeline__item::before { left: 65px; }
+    .trip-dot { width: 22px; height: 22px; border-width: 4px; }
+  }
   .trip-event {
     min-width: 0;
     padding: 2px 0;
@@ -346,13 +372,18 @@
       <ol class="trip-timeline">
         {% for item in timeline_items %}
         <li class="trip-timeline__item trip-timeline__item--{{ item.kind }}">
+          <div class="trip-when">
+            {% if item.at %}
+              <b>{{ item.at | localdt(owner.timezone, '%H:%M') }}</b>
+              <small>{{ item.at | localdt(owner.timezone, '%d.%m') }}</small>
+            {% else %}<b>—</b>{% endif %}
+          </div>
           <span class="trip-dot" aria-hidden="true"></span>
           <div class="trip-event">
             <div class="trip-event__top">
               <strong>{{ item.title }}</strong>
               {% if item.amount %}<span class="trip-amount">{{ item.amount }}</span>{% endif %}
             </div>
-            {% if item.at %}<time>{{ item.at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</time>{% endif %}
             {% if item.subtitle %}<p>{{ item.subtitle }}</p>{% endif %}
             {% if item.meta %}<small>{{ item.meta }}</small>{% endif %}
             {% if item.action == 'confirm_revenue' and trip.driver_revenue_pending_rub and trip.revenue_rub is none %}
@@ -553,17 +584,25 @@
     </div>
   </section>
 
-  {% if expenses %}
+  {# Трата рейса записывается ОДИН раз — в «Финансах». Здесь окно в ту же
+     запись: кнопка «+ Расход» открывает лист ввода уже привязанным к рейсу. #}
   <section class="trip-card">
-    <div class="trip-card__head"><h3>Расходы рейса</h3></div>
+    <div class="trip-card__head">
+      <h3>Расходы рейса</h3>
+      <span style="display:flex;gap:.5rem;flex-wrap:wrap;">
+        {% if expenses %}<a href="/finances/expenses?trip={{ trip.id }}" style="font-size:.9rem;">все в «Финансах»</a>{% endif %}
+        <a role="button" href="/finances/expenses?trip={{ trip.id }}&new=1" style="margin:0;padding:.35rem .8rem;font-size:.9rem;width:auto;"><i class="ph ph-plus"></i> Расход</a>
+      </span>
+    </div>
+    {% if expenses %}
     <div class="stats-table-wrap">
       <table>
         <thead><tr><th>Дата</th><th>Категория</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
         <tbody>
           {% for e in expenses %}
           <tr>
-            <td data-label="Дата">{{ e.created_at | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
-            <td data-label="Категория">{{ e.category }}{% if e.description %}<br><small style="color:var(--text-muted);">{{ e.description }}</small>{% endif %}</td>
+            <td data-label="Дата">{{ (e.spent_at or e.created_at) | localdt(owner.timezone, '%d.%m %H:%M') }}</td>
+            <td data-label="Категория">{{ fin_cat(e.category) }}{% if not e.driver_id %} <small style="color:var(--text-muted);">· внесён вами</small>{% endif %}{% if e.description %}<br><small style="color:var(--text-muted);">{{ e.description }}</small>{% endif %}</td>
             <td data-label="Сумма" class="num">{{ "{:,.0f}".format(e.amount_rub or 0).replace(',', ' ') }} ₽</td>
             <td data-label="Статус"><span class="pill {{ e.status | pillclass }}">{% if e.status == 'approved' %}одобрен{% elif e.status == 'rejected' %}отклонён{% else %}на проверке{% endif %}</span></td>
             <td data-label="Чек">
@@ -577,8 +616,10 @@
         </tbody>
       </table>
     </div>
+    {% else %}
+    <p style="margin:0;color:var(--text-muted);font-size:.9rem;">Трат по рейсу нет. Внесите их здесь — они сразу появятся и в «Финансах», и в смене, и у машины.</p>
+    {% endif %}
   </section>
-  {% endif %}
 
   <section class="trip-card trip-danger">
     <div class="trip-card__head">

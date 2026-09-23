@@ -1,0 +1,105 @@
+{# Лист «Новый расход». Одним документом можно внести несколько трат
+   (как в Завгаре: чек АЗС с топливом и омывайкой — две траты). Общее для
+   всех трат — за что, когда, чем оплачено, где; у каждой — вид, сумма,
+   комментарий, фото и файлы. Сохранение — fetch'ем, без перезагрузки. #}
+<dialog class="fin-sheet" id="sheet-expense" aria-labelledby="sheet-expense-title">
+  <form class="fin-sheet__form" id="expense-form" novalidate>
+    <div class="fin-sheet__grab" aria-hidden="true"></div>
+    <header class="fin-sheet__head">
+      <h2 id="sheet-expense-title" tabindex="-1" autofocus>Новый расход</h2>
+      <button type="button" class="fin-x" data-close aria-label="Закрыть"><i class="ph ph-x"></i></button>
+    </header>
+
+    <div class="fin-sheet__body">
+      {% if prefill %}
+      <div class="fin-prefill">
+        <i class="ph ph-link-simple" aria-hidden="true"></i><span>{{ prefill.title }}</span>
+        <input type="hidden" name="{{ prefill.kind }}_id" value="{{ prefill.id }}">
+      </div>
+      {% endif %}
+
+      <div class="fin-field" role="group" aria-labelledby="ef-link">
+        <div class="fin-label" id="ef-link">За что</div>
+        <div class="fin-toggle">
+          <label><input type="radio" name="link" value="company"{% if not (prefill and prefill.vehicle_id) %} checked{% endif %}><span>Компания</span></label>
+          <label><input type="radio" name="link" value="vehicle"{% if prefill and prefill.vehicle_id %} checked{% endif %}{% if not vehicles %} disabled{% endif %}><span>Машина</span></label>
+        </div>
+        <div class="fin-reveal" data-reveal="vehicle"{% if not (prefill and prefill.vehicle_id) %} hidden{% endif %}>
+          <select name="vehicle_id" aria-label="Машина">
+            {% for v in vehicles %}<option value="{{ v.id }}"{% if prefill and prefill.vehicle_id == v.id %} selected{% endif %}>{{ v.license_plate }}</option>{% endfor %}
+          </select>
+        </div>
+        {% if not vehicles %}<small class="fin-hint">Машин в парке нет — расход пойдёт на компанию.</small>{% endif %}
+      </div>
+
+      <div class="fin-field">
+        <label class="fin-label" for="ef-when">Когда</label>
+        <div class="fin-when">
+          <input id="ef-when" type="datetime-local" name="spent_at" value="{{ now_local }}" max="{{ now_local[:10] }}T23:59">
+          <button type="button" class="fin-btn fin-btn--ghost" data-now>Сейчас</button>
+        </div>
+      </div>
+
+      <div class="fin-field" role="group" aria-labelledby="ef-pay">
+        <div class="fin-label" id="ef-pay">Чем оплачено <span class="fin-opt">необязательно</span></div>
+        <div class="fin-cats">
+          {% for code, label in payment_methods.items() %}
+          <label class="fin-cat fin-cat--pay"><input type="radio" name="payment_method" value="{{ code }}"><span>{{ label }}</span></label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="fin-field">
+        <label class="fin-label" for="ef-supplier">Где <span class="fin-opt">необязательно</span></label>
+        <input id="ef-supplier" type="text" name="supplier" maxlength="255" placeholder="АЗС, сервис, магазин" autocomplete="off">
+      </div>
+
+      <div class="fin-items" id="fin-items" data-count="0" aria-live="polite"></div>
+      <button type="button" class="fin-more" data-add-item><i class="ph ph-plus-circle"></i>Ещё трата в этом чеке</button>
+    </div>
+
+    <p class="fin-sheet__err" role="alert" data-error></p>
+    <footer class="fin-sheet__foot">
+      <div class="fin-sheet__total">
+        <span data-total-label>Итого</span>
+        <strong data-total>0&nbsp;₽</strong>
+      </div>
+      <button type="submit" class="fin-btn fin-btn--primary fin-btn--lg" data-submit>
+        <span class="fin-btn__text">Сохранить</span>
+      </button>
+    </footer>
+  </form>
+
+  <template id="fin-item-tpl">
+    <section class="fin-item">
+      <header class="fin-item__head">
+        <h3>Трата <span data-n>1</span></h3>
+        <button type="button" class="fin-item__remove" data-remove-item aria-label="Убрать эту трату"><i class="ph ph-minus-circle"></i></button>
+      </header>
+      <div class="fin-cats" role="radiogroup" aria-label="Вид расхода">
+        {% for c in categories %}
+        <label class="fin-cat"><input type="radio" value="{{ c.code }}"><span><i class="ph ph-{{ fin_icon(c.code) }}" style="--c:{{ category_colors.get(c.code, '#636366') }}" aria-hidden="true"></i>{{ c.label }}</span></label>
+        {% endfor %}
+        <button type="button" class="fin-cat fin-cat--add" data-new-cat><i class="ph ph-plus"></i>Свой вид</button>
+      </div>
+      <div class="fin-newcat" hidden>
+        <input type="text" maxlength="60" placeholder="Например, Тахограф" aria-label="Название своего вида расхода">
+        <button type="button" class="fin-btn fin-btn--primary" data-save-cat>Добавить</button>
+      </div>
+      <label class="fin-amount">
+        <span class="fin-sr">Сумма</span>
+        <input type="text" inputmode="decimal" placeholder="0" autocomplete="off" data-amount>
+        <span aria-hidden="true">₽</span>
+      </label>
+      <input type="text" class="fin-comment" maxlength="500" placeholder="Комментарий" data-comment aria-label="Комментарий">
+      <div class="fin-attach">
+        <label class="fin-attach__btn"><input type="file" accept="image/*" capture="environment" data-att="photo" hidden><i class="ph ph-camera"></i>Камера</label>
+        <label class="fin-attach__btn"><input type="file" accept="image/*" multiple data-att="photo" hidden><i class="ph ph-image"></i>Галерея</label>
+        <label class="fin-attach__btn"><input type="file" multiple data-att="file" hidden
+          accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.webp,.heic,application/pdf,image/*"><i class="ph ph-paperclip"></i>Файл</label>
+      </div>
+      <ul class="fin-thumbs"></ul>
+      <p class="fin-item__err" role="alert"></p>
+    </section>
+  </template>
+</dialog>

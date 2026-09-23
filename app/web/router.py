@@ -62,8 +62,8 @@ from app.models import (
 from app.config import settings
 from app.services import (
     act_service, auth_service, billing, driver_access_service, driver_actions_service,
-    driver_photos, expense_flow, expense_service, geocode_service, rc_service,
-    telemetry_service,
+    driver_photos, expense_flow, expense_service, finance_ledger, geocode_service,
+    rc_service, telemetry_service, trip_service,
 )
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
@@ -96,6 +96,17 @@ _TRIP_STATUS_LABELS = {
     "completed": "завершён",
     "cancelled": "отменён",
 }
+
+
+def _ignition_of(state) -> bool | None:
+    """Работает ли двигатель: сырой бит прибора, иначе — по напряжению.
+
+    Возвращает None, только когда неизвестно и правда: бита нет и напряжение
+    не о чём не говорит (обесточен борт или трекер его не шлёт).
+    """
+    if state.ignition is not None:
+        return state.ignition
+    return telemetry_service.engine_running_from_voltage(state.voltage)
 
 
 def _fuel_litres_or_none(raw, calibration) -> float | None:
@@ -467,7 +478,7 @@ async def _period_totals(
             select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
                 Expense.owner_id == owner_id,
                 Expense.status == "approved",
-                Expense.created_at >= dt_from,
+                finance_ledger.expense_moment() >= dt_from,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -601,10 +612,6 @@ _RU_MONTHS_NOM = [
     "январь", "февраль", "март", "апрель", "май", "июнь",
     "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
 ]
-_EXPENSE_CAT_LABELS = {
-    "fuel": "Топливо", "repair": "Ремонт", "parking": "Парковка",
-    "fine": "Штрафы", "toll": "Дороги", "other": "Прочее",
-}
 
 
 async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
@@ -740,12 +747,12 @@ async def _dashboard_overview(session: AsyncSession, owner: Owner) -> dict:
         .where(
             Expense.owner_id == owner.id,
             Expense.status == "approved",
-            Expense.created_at >= month_start,
+            finance_ledger.expense_moment() >= month_start,
         )
         .group_by(Expense.category)
     )
     breakdown = [
-        {"label": _EXPENSE_CAT_LABELS.get(cat, cat), "amount": float(amt)}
+        {"label": finance_ledger.category_label(cat), "amount": float(amt)}
         for cat, amt in br_res.all() if amt
     ]
     breakdown.sort(key=lambda x: x["amount"], reverse=True)
@@ -938,7 +945,7 @@ async def _dashboard_chart(
     )
     accumulate(inc_rows.all(), revenue)
 
-    expense_day = _owner_day(Expense.created_at, tz_name)
+    expense_day = _owner_day(finance_ledger.expense_moment(), tz_name)
     exp_rows = await session.execute(
         select(expense_day, func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
@@ -1013,7 +1020,7 @@ async def _cashflow_chart(
         .group_by(ManualEntry.entry_date)
     )
     accumulate(inc_rows.all(), revenue)
-    expense_day = _owner_day(Expense.created_at, tz_name)
+    expense_day = _owner_day(finance_ledger.expense_moment(), tz_name)
     exp_rows = await session.execute(
         select(expense_day, func.coalesce(func.sum(Expense.amount_rub), 0))
         .where(
@@ -2161,16 +2168,21 @@ async def _vehicle_row_dict(session: AsyncSession, vehicle: Vehicle, month_start
         )
     )
     trips_count, revenue, fuel = trips_agg.one()
-    # одобренные расходы водителей по сменам этой машины за период
+    # Одобренные расходы машины за период: водителя (через смену или рейс)
+    # и внесённые владельцем прямо на машину. Та же привязка, что в книге
+    # «Финансы → Расходы», — иначе у машины и в книге разошлись бы суммы.
     approved = (
         await session.execute(
             select(func.coalesce(func.sum(Expense.amount_rub), 0))
             .select_from(Expense)
-            .join(Shift, Shift.id == Expense.shift_id)
+            .outerjoin(Shift, Shift.id == Expense.shift_id)
+            .outerjoin(Trip, Trip.id == Expense.trip_id)
             .where(
-                Shift.vehicle_id == vehicle.id,
+                Expense.owner_id == vehicle.owner_id,
+                func.coalesce(Expense.vehicle_id, Shift.vehicle_id, Trip.vehicle_id)
+                == vehicle.id,
                 Expense.status == "approved",
-                Expense.created_at >= month_start,
+                finance_ledger.expense_moment() >= month_start,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -2468,7 +2480,7 @@ async def vehicle_update(
             )
         ).scalar_one_or_none()
         if gps_existing is not None:
-            raise HTTPException(status_code=400, detail="Stavtrack ID уже занят")
+            raise HTTPException(status_code=400, detail="Номер трекера уже занят")
     vehicle.stavtrack_object_id = stavtrack_id
     if fuel_norm_per_100km.strip():
         try:
@@ -2521,123 +2533,8 @@ async def vehicle_delete(
 # =========================================================================
 # /finances
 # =========================================================================
-@app.get("/finances", response_class=HTMLResponse)
-async def finances_page(
-    request: Request,
-    owner: Annotated[Owner, Depends(current_owner)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    period_from: Annotated[str | None, Query()] = None,
-    period_to: Annotated[str | None, Query()] = None,
-):
-    df, dt = _parse_period(period_from, period_to)
-    summary = await _finance_summary(session, owner.id, df, dt, owner.timezone)
-
-    # Денежный поток за выбранный период: шаг (день/неделя/месяц) сам
-    # подстраивается под длину диапазона «с… по…».
-    cashflow = await _cashflow_chart(session, owner.id, df, dt, owner.timezone)
-
-    # Прибыльность направлений: прибыль завершённых рейсов по маршруту за период.
-    dir_res = await session.execute(
-        select(
-            Trip.origin,
-            Trip.destination,
-            func.count(Trip.id),
-            func.coalesce(func.sum(Trip.revenue_rub), 0),
-            func.coalesce(func.sum(Trip.profit_rub), 0),
-        )
-        .where(
-            Trip.owner_id == owner.id,
-            Trip.status == "completed",
-            _owner_day(Trip.completed_at, owner.timezone) >= df,
-            _owner_day(Trip.completed_at, owner.timezone) <= dt,
-        )
-        .group_by(Trip.origin, Trip.destination)
-        .order_by(func.coalesce(func.sum(Trip.profit_rub), 0).desc())
-        .limit(8)
-    )
-    dir_rows = dir_res.all()
-    max_abs = max((abs(Decimal(r[4] or 0)) for r in dir_rows), default=Decimal(0)) or Decimal(1)
-    directions = [
-        {
-            "route": f"{o or '—'} → {d or '—'}",
-            "trips": cnt,
-            "revenue": Decimal(rev or 0),
-            "profit": Decimal(pr or 0),
-            "bar": int(abs(Decimal(pr or 0)) / max_abs * 100),
-        }
-        for o, d, cnt, rev, pr in dir_rows
-    ]
-    inc = summary["total_income"]
-    margin = float(summary["profit"] / inc * 100) if inc > 0 else 0.0
-
-    entries_res = await session.execute(
-        select(ManualEntry)
-        .where(
-            ManualEntry.owner_id == owner.id,
-            ManualEntry.entry_date >= df,
-            ManualEntry.entry_date <= dt,
-        )
-        .order_by(desc(ManualEntry.entry_date), desc(ManualEntry.id))
-    )
-    entries = list(entries_res.scalars().all())
-
-    return templates.TemplateResponse(
-        "finances.html",
-        {
-            "request": request,
-            "owner": owner,
-            "entries": entries,
-            "summary": summary,
-            "cashflow": cashflow,
-            "directions": directions,
-            "margin": margin,
-            "period_from": df.isoformat(),
-            "period_to": dt.isoformat(),
-            "today": date.today().isoformat(),
-            "active_page": "finances",
-        },
-    )
-
-
-@app.post("/finances/add", response_class=HTMLResponse)
-async def finances_add(
-    request: Request,
-    owner: Annotated[Owner, Depends(current_owner)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-    type: Annotated[str, Form()],
-    amount_rub: Annotated[str, Form()],
-    entry_date: Annotated[str, Form()],
-    category: Annotated[str, Form()] = "",
-    description: Annotated[str, Form()] = "",
-):
-    if type not in ("income", "expense"):
-        raise HTTPException(status_code=400, detail="Bad type")
-    try:
-        amount = Decimal(amount_rub.replace(",", "."))
-        if amount <= 0:
-            raise InvalidOperation
-        edate = date.fromisoformat(entry_date)
-    except (InvalidOperation, ValueError):
-        raise HTTPException(status_code=400, detail="Bad input")
-
-    entry = ManualEntry(
-        owner_id=owner.id,
-        type=type,
-        category=category.strip() or None,
-        amount_rub=amount,
-        description=description.strip() or None,
-        entry_date=edate,
-    )
-    session.add(entry)
-    try:
-        await session.commit()
-    except IntegrityError:
-        await session.rollback()
-        raise HTTPException(status_code=400, detail="DB error")
-
-    return templates.TemplateResponse(
-        "_manual_entry_row.html", {"request": request, "entry": entry}
-    )
+# Страницы «Финансы» (Обзор · Расходы · Доходы) живут в app/web/finance_routes.py
+# с 23.09.2026. Здесь остались удаление старой ручной записи и выгрузка в Excel.
 
 
 @app.post("/finances/delete/{entry_id}")
@@ -2665,6 +2562,7 @@ async def finances_export(
     summary = await _finance_summary(session, owner.id, df, dt, owner.timezone)
 
     wb = _build_finance_workbook(summary, df, dt)
+    await _fill_expenses_sheet(wb, session, owner.id, df, dt, owner.timezone)
     await _fill_entries_sheet(wb, session, owner.id, df, dt)
     await _fill_trips_sheet(wb, session, owner.id, df, dt, owner.timezone)
 
@@ -3252,7 +3150,7 @@ def _build_finance_workbook(summary: dict, df: date, dt: date) -> Workbook:
         ("Выручка по рейсам", float(summary["trip_revenue"])),
         ("Ручной доход", float(summary["manual_income"])),
         ("Топливо по рейсам", float(summary["fuel"])),
-        ("Одобренные расходы водителей", float(summary["driver_expenses"])),
+        ("Одобренные траты (водителей и ваши)", float(summary["driver_expenses"])),
         ("Ручной расход", float(summary["manual_expense"])),
         ("Итого выручка", float(summary["total_income"])),
         ("Итого расход", float(summary["total_expense"])),
@@ -3271,6 +3169,37 @@ def _build_finance_workbook(summary: dict, df: date, dt: date) -> Workbook:
     ws.cell(row=ws.max_row, column=2).font = Font(bold=True)
     _autosize(ws)
     return wb
+
+
+async def _fill_expenses_sheet(
+    wb: Workbook, session, owner_id: int, df: date, dt: date, tz_name: str | None
+) -> None:
+    """Все траты за период одним листом — та же книга, что «Финансы → Расходы»."""
+    ws = wb.create_sheet("Расходы")
+    ws.append(["Когда", "Вид", "Сумма", "Решение", "Машина", "Кто внёс",
+               "Оплата", "Где", "Комментарий", "Чек"])
+    zone = owner_tz(tz_name)
+    statuses = {"approved": "одобрено", "pending": "ждёт решения", "rejected": "отклонено"}
+    rows = await finance_ledger.expense_rows(
+        session, owner_id, tz_name, finance_ledger.ExpenseFilter(df, dt),
+    )
+    for r in reversed(rows):
+        at = r.at
+        if isinstance(at, datetime):
+            at = (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(zone)
+            at = at.replace(tzinfo=None)
+        ws.append([
+            at, r.category_label, float(r.amount), statuses.get(r.status, r.status),
+            r.vehicle or "", r.driver or "вы", r.payment or "", r.supplier or "",
+            r.description or "", "есть" if r.has_receipt else "нет",
+        ])
+    _style_header(ws, 10)
+    for row_idx in range(2, ws.max_row + 1):
+        ws.cell(row=row_idx, column=1).number_format = "dd.mm.yyyy hh:mm"
+        amount_cell = ws.cell(row=row_idx, column=3)
+        amount_cell.number_format = _MONEY_FMT
+        amount_cell.alignment = Alignment(horizontal="right")
+    _autosize(ws)
 
 
 async def _fill_entries_sheet(wb: Workbook, session, owner_id: int, df: date, dt: date) -> None:
@@ -3387,8 +3316,8 @@ async def _finance_summary(
             select(func.coalesce(func.sum(Expense.amount_rub), 0)).where(
                 Expense.owner_id == owner_id,
                 Expense.status == "approved",
-                _owner_day(Expense.created_at, tz_name) >= df,
-                _owner_day(Expense.created_at, tz_name) <= dt,
+                _owner_day(finance_ledger.expense_moment(), tz_name) >= df,
+                _owner_day(finance_ledger.expense_moment(), tz_name) <= dt,
             )
         )
     ).scalar_one() or Decimal(0)
@@ -4570,7 +4499,7 @@ async def stats_page(
                     "📡",
                     "По машине ещё нет GPS-точек",
                     vehicle.stavtrack_object_id,
-                    f"{vehicle.license_plate} · Stavtrack ID привязан, но поток ещё не пришёл",
+                    f"{vehicle.license_plate} · номер трекера привязан, но координаты ещё не приходили",
                     "/map",
                 )
             continue
@@ -4886,8 +4815,13 @@ async def api_drivers_locations(
             "lat": float(st.latitude),
             "lon": float(st.longitude),
             "speed_kmh": float(st.speed_kmh or 0),
-            "ignition": st.ignition,
-            "ignition_known": st.ignition is not None,
+            # ⚠️ «Зажигание не передано» владельца сбивало с толку (21.09.2026):
+            # прибор не прислал бит, но НАПРЯЖЕНИЕ бортсети у нас есть, и по
+            # нему видно, работает генератор или нет. Это тот же способ, каким
+            # судит сводка (`engine_running_from_voltage`, PROBLEMS №34).
+            # Сначала сырой бит, и только если его нет — напряжение.
+            "ignition": _ignition_of(st),
+            "ignition_known": _ignition_of(st) is not None,
             "motion_status": st.motion_status,
             "motion_status_text": telemetry_service.motion_status_text(st.motion_status, st.speed_kmh),
             "motion_since_at": st.motion_since_at.isoformat() if st.motion_since_at else None,
@@ -5836,8 +5770,17 @@ def _feed_route(trip) -> str | None:
     return origin or destination or None
 
 
+def _feed_km(value) -> str | None:
+    """«8244» → «8 244 км». Пусто и ноль — нет строки."""
+    number = _feed_int(value)
+    if not number:
+        return None
+    return f"{number:,}".replace(",", "\u202f") + " км"
+
+
 def _feed_detail(
-    event_type: str, payload: dict, expense, trip, zone, plates: dict | None = None
+    event_type: str, payload: dict, expense, trip, zone, plates: dict | None = None,
+    shift=None,
 ) -> str | None:
     """Вторая строка события: короткая подробность.
 
@@ -5855,7 +5798,7 @@ def _feed_detail(
         amount = p.get("amount")
         if amount is None and expense is not None:
             amount = expense.amount_rub
-        parts = [_EXPENSE_CAT_LABELS.get(category), _feed_money(amount)]
+        parts = [finance_ledger.category_label(category) if category else None, _feed_money(amount)]
     elif event_type in ("cash_submitted", "cash_confirmed"):
         parts = [_feed_money(p.get("amount"))]
     elif event_type in (
@@ -5899,6 +5842,28 @@ def _feed_detail(
     elif event_type == "driver_app_login":
         device = (p.get("device") or "").strip()
         parts = [f"с {device}" if device else None]
+    elif event_type == "shift_started":
+        parts = [
+            f"одометр {_feed_km(shift.odometer_start)}"
+            if shift is not None and shift.odometer_start else None
+        ]
+    elif event_type == "shift_completed":
+        # Что владелец раньше видел только в Telegram: сколько было на
+        # одометре в начале и в конце, сколько вышло по одометру и сколько
+        # насчитал GPS. Чего нет — не пишем (PROBLEMS: выдуманное число в
+        # журнале хуже пустого места).
+        odo_start = _feed_km(shift.odometer_start) if shift is not None else None
+        odo_end = _feed_km(shift.odometer_end) if shift is not None else None
+        distance = _feed_km(
+            shift.distance_km if shift is not None else p.get("distance_km")
+        )
+        gps = _feed_km(p.get("gps_km"))
+        parts = [
+            f"одометр {odo_start} → {odo_end}" if odo_start and odo_end else
+            (f"одометр {odo_start}" if odo_start else None),
+            f"пробег {distance}" if distance else None,
+            f"по GPS {gps}" if gps else None,
+        ]
     elif event_type == "downtime":
         parts = [p.get("label")]
     elif event_type == "sos":
@@ -6007,6 +5972,11 @@ async def api_events(
         select(
             Shift.id, Shift.vehicle_id,
             Shift.odometer_start_photo_url, Shift.odometer_end_photo_url,
+            # Владелец 18.09.2026: «когда смена закрывается, не показывает,
+            # как он раньше считал одометр в начале и в конце и сколько
+            # пробег» — числа берём из самой смены, чтобы строка появилась и
+            # у старых событий, и после того, как владелец впишет одометр.
+            Shift.odometer_start, Shift.odometer_end, Shift.distance_km,
         ).where(Shift.id.in_(shift_ids or {0}), Shift.owner_id == owner.id)
     )).all()}
     shift_vehicle = {sid: row.vehicle_id for sid, row in shifts.items()}
@@ -6092,7 +6062,8 @@ async def api_events(
             "kind": kind,
             "label": label,
             "detail": _feed_detail(
-                event.event_type, payload, expense, trip, zone, plates
+                event.event_type, payload, expense, trip, zone, plates,
+                shifts.get(event.shift_id),
             ),
             "vehicle_id": vehicle_id,
             "plate": plates.get(vehicle_id),
@@ -7208,7 +7179,8 @@ async def trip_detail(
     vehicle = await session.get(Vehicle, trip.vehicle_id)
     shift = await session.get(Shift, trip.shift_id)
     expenses_res = await session.execute(
-        select(Expense).where(Expense.trip_id == trip.id).order_by(Expense.created_at)
+        select(Expense).where(Expense.trip_id == trip.id)
+        .order_by(finance_ledger.expense_moment())
     )
     expenses = list(expenses_res.scalars().all())
     # время когда водитель загрузил ТТН (берём последнее событие)
@@ -7421,7 +7393,8 @@ async def shift_detail(
     )
     trips = list(trips_res.scalars().all())
     expenses_res = await session.execute(
-        select(Expense).where(Expense.shift_id == shift.id).order_by(Expense.created_at)
+        select(Expense).where(Expense.shift_id == shift.id)
+        .order_by(finance_ledger.expense_moment())
     )
     expenses = list(expenses_res.scalars().all())
     # время фото одометров: shift_started → начало, shift_completed → конец
@@ -7898,16 +7871,11 @@ async def trip_edit_route(
 
 
 # =========================================================================
-# /expenses — все расходы любых категорий с фото чеков и фильтром
+# /expenses — старые адреса расходов; сам список — «Финансы → Расходы»
 # =========================================================================
-_EXPENSE_CATEGORIES = ("fuel", "repair", "parking", "fine", "toll", "other")
-
-
-@app.get("/expenses", response_class=HTMLResponse)
+@app.get("/expenses")
 async def expenses_page(
-    request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
-    session: Annotated[AsyncSession, Depends(get_session)],
     category: Annotated[str | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
     driver_id: Annotated[str | None, Query()] = None,
@@ -7915,88 +7883,20 @@ async def expenses_page(
     date_from: Annotated[str | None, Query()] = None,
     date_to: Annotated[str | None, Query()] = None,
 ):
-    # id приходят строками: пустое «— все —» не должно ронять запрос в 422.
-    d_id = int(driver_id) if (driver_id or "").strip().isdigit() else None
-    v_id = int(vehicle_id) if (vehicle_id or "").strip().isdigit() else None
-    conditions = [Expense.owner_id == owner.id]
-    if category and category in _EXPENSE_CATEGORIES:
-        conditions.append(Expense.category == category)
-    if status and status in ("pending", "approved", "rejected"):
-        conditions.append(Expense.status == status)
-    if d_id:
-        conditions.append(Expense.driver_id == d_id)
-    if v_id:
-        # машина у расхода определяется через смену; расходы без смены
-        # при фильтре по машине не показываем
-        conditions.append(Shift.vehicle_id == v_id)
-    if date_from:
-        try:
-            conditions.append(Expense.created_at >= datetime.fromisoformat(date_from))
-        except ValueError:
-            pass
-    if date_to:
-        try:
-            conditions.append(
-                Expense.created_at < datetime.fromisoformat(date_to) + timedelta(days=1)
-            )
-        except ValueError:
-            pass
-    rows_res = await session.execute(
-        select(Expense, Driver.full_name, Vehicle.license_plate)
-        .join(Driver, Driver.id == Expense.driver_id)
-        .outerjoin(Shift, Shift.id == Expense.shift_id)
-        .outerjoin(Vehicle, Vehicle.id == Shift.vehicle_id)
-        .where(and_(*conditions))
-        .order_by(desc(Expense.created_at))
-        .limit(300)
-    )
-    rows = list(rows_res.all())
-    totals = {
-        "count": len(rows),
-        "sum": sum((e.amount_rub or Decimal(0) for e, _, _ in rows), Decimal(0)),
-        "pending": sum(1 for e, _, _ in rows if e.status == "pending"),
-        "approved": sum(1 for e, _, _ in rows if e.status == "approved"),
-    }
-    # Разбивка по категориям для доната (из уже загруженных строк).
-    _cat_ru = {"fuel": "Топливо", "repair": "Ремонт", "parking": "Парковка",
-               "fine": "Штрафы", "toll": "Платные дороги", "other": "Прочее"}
-    cat_sums: dict[str, Decimal] = {}
-    for e, _, _ in rows:
-        cat_sums[e.category] = cat_sums.get(e.category, Decimal(0)) + (e.amount_rub or Decimal(0))
-    breakdown = [
-        {"label": _cat_ru.get(c, c), "amount": float(v)}
-        for c, v in sorted(cat_sums.items(), key=lambda kv: kv[1], reverse=True)
-    ]
-    # списки для фильтров «Водитель» и «Машина»
-    drivers = list((await session.execute(
-        select(Driver).where(Driver.owner_id == owner.id).order_by(Driver.full_name)
-    )).scalars().all())
-    vehicles = list((await session.execute(
-        select(Vehicle)
-        .where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
-        .order_by(Vehicle.license_plate)
-    )).scalars().all())
-    photo_origins = await driver_photos.origins(
-        session, owner.id, [row[0].receipt_photo_url for row in rows],
-    )
-    return templates.TemplateResponse(
-        "expenses.html",
-        {
-            "request": request, "owner": owner, "rows": rows,
-            "photo_origins": photo_origins,
-            "filter_category": category or "",
-            "filter_status": status or "",
-            "filter_driver_id": d_id,
-            "filter_vehicle_id": v_id,
-            "filter_date_from": date_from or "",
-            "filter_date_to": date_to or "",
-            "drivers": drivers,
-            "vehicles": vehicles,
-            "categories": _EXPENSE_CATEGORIES,
-            "active_page": "trips", "totals": totals,
-            "breakdown": breakdown,
-        },
-    )
+    """Старый список расходов. С 23.09.2026 расходы живут в одной книге —
+    «Финансы → Расходы». Старые ссылки (закладки, бот, письма) ведут туда же
+    с теми же отборами, чтобы у владельца не было двух списков одних трат."""
+    params: dict[str, str] = {}
+    for key, value in (("cat", category), ("status", status), ("driver", driver_id),
+                       ("vehicle", vehicle_id), ("period_from", date_from),
+                       ("period_to", date_to)):
+        if (value or "").strip():
+            params[key] = value.strip()
+    if "period_from" in params and "period_to" not in params:
+        params["period_to"] = date.today().isoformat()
+    query = "&".join(f"{k}={quote(v)}" for k, v in params.items())
+    return RedirectResponse("/finances/expenses" + (f"?{query}" if query else ""),
+                            status_code=303)
 
 
 @app.get("/expenses/{expense_id}", response_class=HTMLResponse)
@@ -8010,7 +7910,8 @@ async def expense_edit_page(
     expense = await session.get(Expense, expense_id)
     if expense is None or expense.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    driver = await session.get(Driver, expense.driver_id)
+    # ⚠️ У расхода, внесённого владельцем, водителя нет (driver_id пуст).
+    driver = await session.get(Driver, expense.driver_id) if expense.driver_id else None
     photo_origins = await driver_photos.origins(
         session, owner.id, [expense.receipt_photo_url],
     )
@@ -8019,7 +7920,8 @@ async def expense_edit_page(
         {
             "request": request, "owner": owner, "expense": expense, "driver": driver,
             "photo_origins": photo_origins,
-            "categories": _EXPENSE_CATEGORIES, "active_page": "trips",
+            "categories": await finance_ledger.all_categories(session, owner.id),
+            "active_page": "finances",
         },
     )
 
@@ -8031,12 +7933,11 @@ async def expense_delete(
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     """Полностью удалить расход (штраф/топливо/прочее) с сайта."""
-    expense = await session.get(Expense, expense_id)
-    if expense is None or expense.owner_id != owner.id:
+    # Вместе с вложениями — через ту же службу, что и книга «Финансы».
+    if not await finance_ledger.delete_expense(session, owner.id, expense_id):
         raise HTTPException(status_code=404)
-    await session.delete(expense)
     await session.commit()
-    return RedirectResponse("/expenses", status_code=303)
+    return RedirectResponse("/finances/expenses", status_code=303)
 
 
 @app.post("/expenses/{expense_id}")
@@ -8053,7 +7954,8 @@ async def expense_edit_save(
     expense = await session.get(Expense, expense_id)
     if expense is None or expense.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    if category not in _EXPENSE_CATEGORIES:
+    known = {c["code"] for c in await finance_ledger.all_categories(session, owner.id)}
+    if category not in known:
         raise HTTPException(status_code=400, detail="Bad category")
     if status not in ("pending", "approved", "rejected"):
         raise HTTPException(status_code=400, detail="Bad status")
@@ -8076,8 +7978,10 @@ async def expense_edit_save(
         if data:
             expense.receipt_web_data = data
             expense.receipt_web_type = _sniff_document(data)
+    # Сумма, вид или решение поменялись — прибыль рейса считается заново.
+    await trip_service.refresh_trip_costs(session, expense.trip_id)
     await session.commit()
-    return RedirectResponse("/expenses", status_code=303)
+    return RedirectResponse("/finances/expenses", status_code=303)
 
 
 @app.post("/expenses/{expense_id}/receipt/delete")
@@ -8113,35 +8017,11 @@ async def expense_receipt(
 # =========================================================================
 # /fuel-history — все заправки с фото чеков
 # =========================================================================
-@app.get("/fuel-history", response_class=HTMLResponse)
-async def fuel_history(
-    request: Request,
-    owner: Annotated[Owner, Depends(current_owner)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-):
-    rows_res = await session.execute(
-        select(Expense, Driver.full_name, Vehicle.license_plate)
-        .join(Driver, Driver.id == Expense.driver_id)
-        .outerjoin(Shift, Shift.id == Expense.shift_id)
-        .outerjoin(Vehicle, Vehicle.id == Shift.vehicle_id)
-        .where(
-            Expense.owner_id == owner.id,
-            Expense.category == "fuel",
-        )
-        .order_by(desc(Expense.created_at))
-        .limit(200)
-    )
-    rows = list(rows_res.all())
-    photo_origins = await driver_photos.origins(
-        session, owner.id, [row[0].receipt_photo_url for row in rows],
-    )
-    return templates.TemplateResponse(
-        "fuel_history.html",
-        {
-            "request": request, "owner": owner, "rows": rows,
-            "photo_origins": photo_origins, "active_page": "trips",
-        },
-    )
+@app.get("/fuel-history")
+async def fuel_history(owner: Annotated[Owner, Depends(current_owner)]):
+    """Заправки — это расходы вида «Топливо». С 23.09.2026 отдельного списка
+    нет: та же книга с отбором, чтобы чек и сумма жили в одном месте."""
+    return RedirectResponse("/finances/expenses?cat=fuel", status_code=303)
 
 
 # =========================================================================
@@ -8197,3 +8077,8 @@ async def documents_page(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# Раздел «Финансы» (Обзор · Расходы · Доходы) — отдельным модулем. Импорт в
+# самом конце: модулю нужны app, templates и зависимости, объявленные выше.
+from app.web import finance_routes  # noqa: E402,F401

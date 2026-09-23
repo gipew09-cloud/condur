@@ -1,0 +1,50 @@
+{# Шапка раздела «Финансы»: заголовок, главная кнопка, переключатель
+   Обзор · Расходы · Доходы и период. Одна на три страницы — чтобы они
+   ощущались одним местом, а не тремя разными экранами. #}
+{% set keep_period = '' if period_active == 'all' else '?period_from=' ~ period_from ~ '&period_to=' ~ period_to %}
+<header class="fin-head">
+  <div class="fin-head__row">
+    <h1 class="fin-title">Финансы</h1>
+    <div class="fin-head__actions">
+      {% if fin_tab == 'overview' %}
+        <a class="fin-btn fin-btn--ghost" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}"
+           title="Скачать доходы, расходы и рейсы за период"><i class="ph ph-download-simple"></i><span>Excel</span></a>
+        <a class="fin-btn fin-btn--primary" href="/finances/expenses?new=1"><i class="ph ph-plus"></i><span>Расход</span></a>
+      {% elif fin_tab == 'expenses' %}
+        <button class="fin-btn fin-btn--primary" type="button" data-open-sheet="expense"><i class="ph ph-plus"></i><span>Расход</span></button>
+      {% else %}
+        <button class="fin-btn fin-btn--primary" type="button" data-open-sheet="income"><i class="ph ph-plus"></i><span>Поступление</span></button>
+      {% endif %}
+    </div>
+  </div>
+
+  <nav class="fin-seg" aria-label="Разделы финансов" data-fin-live="seg">
+    <a href="/finances{{ keep_period }}" {% if fin_tab == 'overview' %}aria-current="page"{% endif %}>Обзор</a>
+    <a href="/finances/expenses{{ keep_period }}" {% if fin_tab == 'expenses' %}aria-current="page"{% endif %}>
+      Расходы{% if counts.pending %}<span class="fin-seg__badge" title="Ждут вашего решения">{{ counts.pending }}</span>{% endif %}
+    </a>
+    <a href="/finances/income{{ keep_period }}" {% if fin_tab == 'income' %}aria-current="page"{% endif %}>Доходы</a>
+  </nav>
+
+  <div class="fin-period">
+    <div class="fin-chips" aria-label="Период">
+      {% for p in period_presets %}
+        <a class="fin-chip{% if period_active == p.key %} is-on{% endif %}"
+           href="{{ fin_url(request, period_from=p.from, period_to=p.to) }}">{{ p.label }}</a>
+      {% endfor %}
+    </div>
+    <details class="fin-custom">
+      <summary class="fin-chip{% if period_active in ('custom', 'all') %} is-on{% endif %}">
+        <i class="ph ph-calendar-blank"></i><span>{{ period_label }}</span><i class="ph ph-caret-down fin-custom__chev"></i>
+      </summary>
+      <form method="get" class="fin-custom__pop">
+        {% for key, value in request.query_params.items() %}
+          {% if key not in ('period_from', 'period_to', 'added', 'new') %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endif %}
+        {% endfor %}
+        <label>С<input type="date" name="period_from" value="{{ period_from if period_active != 'all' else '' }}" required></label>
+        <label>По<input type="date" name="period_to" value="{{ period_to }}" required></label>
+        <button type="submit" class="fin-btn fin-btn--primary">Показать</button>
+      </form>
+    </details>
+  </div>
+</header>

@@ -23,6 +23,8 @@ from app.models import (
     Driver,
     Event,
     Expense,
+    ExpenseAttachment,
+    ExpenseCategory,
     ManualEntry,
     Owner,
     RouteTemplate,
@@ -61,7 +63,15 @@ async def wipe_owner_data(session: AsyncSession, owner_id: int) -> dict[str, int
 
     counts: dict[str, int] = {}
     counts["события"] = await _del(delete(Event).where(Event.owner_id == owner_id))
+    # Вложения и свои виды расходов («Финансы», 23.09.2026) — явно, до самих
+    # расходов: на базе без каскадов они остались бы сиротами.
+    counts["чеки и файлы расходов"] = await _del(
+        delete(ExpenseAttachment).where(ExpenseAttachment.owner_id == owner_id)
+    )
     counts["расходы"] = await _del(delete(Expense).where(Expense.owner_id == owner_id))
+    counts["свои виды расходов"] = await _del(
+        delete(ExpenseCategory).where(ExpenseCategory.owner_id == owner_id)
+    )
     counts["документы рейсов"] = await _del(
         delete(TripDocument).where(TripDocument.owner_id == owner_id)
     )

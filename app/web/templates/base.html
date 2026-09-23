@@ -78,7 +78,12 @@
       <li><a href="/routes" {% if active_page == 'routes' %}aria-current="page"{% endif %}><i class="ph ph-arrows-left-right"></i> Направления</a></li>
       <li><a href="/map" {% if active_page == 'map' %}aria-current="page"{% endif %}><i class="ph ph-map-pin"></i> Мониторинг</a></li>
       <li><a href="/stats" {% if active_page == 'stats' %}aria-current="page"{% endif %}><i class="ph ph-chart-bar"></i> Статистика</a></li>
-      <li><a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet"></i> Финансы</a></li>
+      {# Владелец 23.09.2026: «стрелочка, которая открывается, а там расходы,
+         доходы». Сам пункт ведёт в обзор, стрелка раскрывает разделы. #}
+      <li class="nav-split">
+        <a href="/finances" {% if active_page == 'finances' %}aria-current="page"{% endif %}><i class="ph ph-wallet"></i> Финансы</a>
+        <button type="button" class="nav-chev" popovertarget="navFinance" aria-label="Разделы финансов" aria-haspopup="menu"><i class="ph ph-caret-down"></i></button>
+      </li>
       <li><a href="/requisites" {% if active_page == 'requisites' %}aria-current="page"{% endif %}><i class="ph ph-identification-card"></i> Реквизиты</a></li>
     </ul>
     <ul class="topbar-actions" aria-label="Быстрые действия">
@@ -101,6 +106,31 @@
     </ul>
   </nav>
 </header>
+<div id="navFinance" class="nav-pop" popover role="menu" aria-label="Финансы">
+  <a href="/finances" role="menuitem"><i class="ph ph-chart-pie-slice"></i><span><b>Обзор</b><small>графики и итоги</small></span></a>
+  <a href="/finances/expenses" role="menuitem"><i class="ph ph-arrow-circle-up-right"></i><span><b>Расходы</b><small>все траты, чеки, решения</small></span></a>
+  <a href="/finances/income" role="menuitem"><i class="ph ph-arrow-circle-down-left"></i><span><b>Доходы</b><small>рейсы и поступления</small></span></a>
+</div>
+<script>
+(function () {
+  // Меню верхней строки прокручивается вбок, поэтому раскрывашка живёт в
+  // верхнем слое (popover) и встаёт под стрелкой сама.
+  var pop = document.getElementById('navFinance');
+  var btn = document.querySelector('[popovertarget="navFinance"]');
+  if (!pop || !btn || typeof pop.showPopover !== 'function') { if (btn) btn.hidden = true; return; }
+  // Прокрутили страницу — раскрывашка закрывается, а не висит отдельно от меню.
+  window.addEventListener('scroll', function () {
+    if (pop.matches(':popover-open')) pop.hidePopover();
+  }, { passive: true });
+  pop.addEventListener('beforetoggle', function (e) {
+    if (e.newState !== 'open') return;
+    var r = btn.getBoundingClientRect();
+    var left = Math.min(Math.max(8, r.right - 260), window.innerWidth - 268);
+    pop.style.top = (r.bottom + 8) + 'px';
+    pop.style.left = left + 'px';
+  });
+})();
+</script>
 <main class="container">
   {% block content %}{% endblock %}
 </main>

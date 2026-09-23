@@ -164,6 +164,9 @@ async def close_shift(
         event_type="shift_completed",
         payload={
             "distance_km": shift.distance_km,
+            # Пробег по GPS — чтобы владелец видел в журнале обе цифры рядом
+            # и сам решал, чему верить (владелец 18.09.2026).
+            "gps_km": None if gps_km is None else int(gps_km),
             "trips": len(trips),
             "salary": str(salary),
             "engine_on": None if ignition is None else ignition["on"],

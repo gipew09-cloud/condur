@@ -90,6 +90,31 @@ async def complete_trip(
     одобрения, а P&L уже хочется видеть). Выручку владелец укажет позже
     отдельным callback'ом.
     """
+    await _apply_costs(session, trip)
+    trip.status = "completed"
+    trip.completed_at = datetime.now(timezone.utc)
+    return trip
+
+
+async def refresh_trip_costs(session: AsyncSession, trip_id: int | None) -> None:
+    """Пересчитать топливо и прочие траты рейса по книге расходов.
+
+    ⚠️ Раньше они считались ОДИН раз — при завершении рейса. Трата, внесённая
+    после (владельцем в «Финансах» кнопкой «+ Расход» в рейсе, или водителем
+    с опозданием), отклонённая или поправленная сумма в прибыль рейса уже не
+    попадали — а владелец видит рейс, смену и «Финансы» как одно целое
+    (23.09.2026). Вызывать после ЛЮБОГО изменения траты, привязанной к рейсу.
+    """
+    if not trip_id:
+        return
+    trip = await session.get(Trip, trip_id)
+    if trip is None:
+        return
+    await session.flush()                 # увидеть несохранённые правки трат
+    await _apply_costs(session, trip)
+
+
+async def _apply_costs(session: AsyncSession, trip: Trip) -> None:
     # ⚠️ Отклонённое владельцем топливо — не расход рейса. Прочие расходы
     # отклонённые уже не считали, а топливо считало (найдено 17.09.2026).
     fuel_total = await session.execute(
@@ -113,10 +138,6 @@ async def complete_trip(
     )
     other_sum = sum((row[0] or Decimal(0)) for row in other_total.all()) or Decimal(0)
     trip.other_costs_rub = Decimal(other_sum).quantize(Decimal("0.01"))
-
-    trip.status = "completed"
-    trip.completed_at = datetime.now(timezone.utc)
-    return trip
 
 
 async def set_trip_revenue(

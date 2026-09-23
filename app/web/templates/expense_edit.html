@@ -3,21 +3,20 @@
 {% block title %}Расход #{{ expense.id }}{% endblock %}
 
 {% block content %}
-<p><a href="/expenses">← ко всем расходам</a></p>
+<p><a href="/finances/expenses">← ко всем расходам</a></p>
 <div class="page-head">
   <h1>Правка расхода</h1>
-  <p class="sub">{{ driver.full_name if driver else '—' }} · {{ expense.created_at | localdt(owner.timezone) }}</p>
+  <p class="sub">{{ driver.full_name if driver else 'Внесён вами' }} · {{ (expense.spent_at or expense.created_at) | localdt(owner.timezone) }}</p>
 </div>
 
 <div class="card" style="max-width: 560px;">
   <form action="/expenses/{{ expense.id }}" method="post" enctype="multipart/form-data">
     <label>Сумма, ₽
-      <input type="text" name="amount_rub" value="{{ (expense.amount_rub or 0) | int }}" inputmode="decimal" required>
+      <input type="text" name="amount_rub" value="{{ (expense.amount_rub or 0) | string | replace('.00', '') }}" inputmode="decimal" required>
     </label>
-    {% set cat_labels = {'fuel':'Топливо','repair':'Ремонт','parking':'Парковка','fine':'Штраф','toll':'Платная дорога','other':'Прочее'} %}
     <label>Категория
       <select name="category">
-        {% for c in categories %}<option value="{{ c }}" {% if expense.category == c %}selected{% endif %}>{{ cat_labels.get(c, c) }}</option>{% endfor %}
+        {% for c in categories %}<option value="{{ c.code }}" {% if expense.category == c.code %}selected{% endif %}>{{ c.label }}</option>{% endfor %}
       </select>
     </label>
     <label>Статус

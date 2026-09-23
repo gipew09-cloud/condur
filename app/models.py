@@ -411,11 +411,21 @@ class TripDocument(Base):
 
 # ========== РАСХОДЫ ==========
 class Expense(Base):
+    """Одна трата. ЕДИНСТВЕННОЕ место, где лежат расходы (с 23.09.2026).
+
+    ⚠️ Раньше расходы жили в двух таблицах: водительские здесь, а ручные
+    владельца — в `manual_entries`. Отсюда путаница владельца: «расходы в
+    финансах, в рейсах, в сменах — всё запутано». Теперь правило одно:
+    **деньги записываются один раз, здесь; рейс, смена и машина показывают
+    ту же запись**, а не свою копию. Старые ручные расходы из manual_entries
+    читаются как есть (книга расходов собирает оба источника).
+
+    Категория — код встроенного вида (`fuel`, `repair`, …) ИЛИ название
+    своего вида, который владелец завёл кнопкой «+» (`expense_categories`).
+    Поэтому проверки «category IN (…)» больше нет.
+    """
     __tablename__ = "expenses"
     __table_args__ = (
-        CheckConstraint(
-            "category IN ('fuel','repair','parking','fine','toll','other')", name="ck_expense_category"
-        ),
         CheckConstraint("status IN ('pending','approved','rejected')", name="ck_expense_status"),
     )
 
@@ -423,8 +433,23 @@ class Expense(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id"), index=True)
     trip_id: Mapped[int | None] = mapped_column(ForeignKey("trips.id"))
     shift_id: Mapped[int | None] = mapped_column(ForeignKey("shifts.id"))
-    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id"))
-    category: Mapped[str] = mapped_column(String(20))
+    # Пусто — расход внёс владелец или сотрудник в кабинете, не водитель.
+    driver_id: Mapped[int | None] = mapped_column(ForeignKey("drivers.id"))
+    # «За что»: машина, если трата её. Пусто и нет водителя — за компанию.
+    # Если пусто, машина берётся из смены или рейса (см. finance_ledger).
+    vehicle_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vehicles.id", ondelete="SET NULL"), index=True
+    )
+    category: Mapped[str] = mapped_column(String(60))
+    # Чем платили: cash · card · fuel_card · transfer · advance (подотчёт).
+    payment_method: Mapped[str | None] = mapped_column(String(20))
+    supplier: Mapped[str | None] = mapped_column(String(255))
+    # Когда деньги потрачены. Пусто — считаем моментом внесения (created_at).
+    spent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Кто внёс: driver (из бота/приложения) или owner (в кабинете).
+    created_by: Mapped[str | None] = mapped_column(String(20))
+    # Несколько трат одним документом (как «Расход #1, #2» у Завгара).
+    batch_id: Mapped[str | None] = mapped_column(String(36), index=True)
     amount_rub: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     receipt_photo_url: Mapped[str | None] = mapped_column(Text)  # Telegram file_id (от водителя)
     # Фото чека, загруженное ВЛАДЕЛЬЦЕМ на сайте (Правка 5) — байты в Postgres, без S3.
@@ -493,6 +518,39 @@ class DistributionCenter(Base):
     # Индивидуальный радиус геозоны, м (большие склады). NULL = глобальный (400).
     geofence_radius_m: Mapped[int | None] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExpenseAttachment(Base):
+    """Вложение к расходу: фотография или файл. Их может быть несколько.
+
+    ⚠️ Фото и файлы — раздельно (как у Завгара): фото показываются плиткой,
+    файлы (накладная PDF, акт) — строкой с именем. Байты в Postgres, как у
+    остальных фото проекта (рост базы — PROBLEMS №47).
+    """
+    __tablename__ = "expense_attachments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    expense_id: Mapped[int] = mapped_column(ForeignKey("expenses.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # photo · file
+    filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExpenseCategory(Base):
+    """Свой вид расхода, заведённый владельцем кнопкой «+» у списка видов."""
+    __tablename__ = "expense_categories"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_expense_categories_owner_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(60))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

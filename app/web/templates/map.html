@@ -193,6 +193,15 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 
 /* ---------- легенда и честные приписки ---------- */
 .mon-foot { border-top: 1px solid var(--mon-divider); }
+.mon-foot__sum {
+  cursor: pointer; list-style: none;
+  padding: 9px 14px; font-size: 11px; font-weight: 700;
+  color: var(--mon-text-4); text-transform: uppercase; letter-spacing: .05em;
+}
+.mon-foot__sum::-webkit-details-marker { display: none; }
+.mon-foot__sum::after { content: " ▾"; }
+.mon-foot[open] .mon-foot__sum::after { content: " ▴"; }
+.mon-foot__sum:hover { color: var(--mon-text-3); }
 /* Легенда ужата дважды: 30.08 и 05.09 — владелец оба раза просил больше
    места под список и смены. Теперь она в ДВА СТОЛБЦА и мельче: пять строк
    занимали высоту трёх машин в списке. */
@@ -1263,12 +1272,16 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           title="Где заправлялись и где уровень в баке упал слишком резко"><i class="ph ph-gas-pump"></i>Заправки и сливы</button>
       </div>
     </div>
-    <div class="mon-foot" data-pane="objects">
+    <!-- ⚠️ Подвал свёрнут (владелец 21.09.2026: «легенду уменьшить»).
+         Легенда и две подсказки занимали треть панели, а читают их один
+         раз. Теперь это одна строка, которая раскрывается по нажатию. -->
+    <details class="mon-foot" data-pane="objects">
+      <summary class="mon-foot__sum">Легенда и подсказки</summary>
       <div class="mon-legend">
-        <div class="mon-legend__ttl">Легенда: рамка = состояние</div>
+        <div class="mon-legend__ttl">Рамка = состояние</div>
         <div class="mon-legend__row" data-state="moving"><i></i><span>Едет по маршруту</span></div>
         <div class="mon-legend__row" data-state="idle"><i></i><span>Стоит, двигатель работает</span></div>
-        <div class="mon-legend__row" data-state="unknown"><i></i><span>Стоит, зажигание не передано</span></div>
+        <div class="mon-legend__row" data-state="unknown"><i></i><span>Стоит, о двигателе данных нет</span></div>
         <div class="mon-legend__row" data-state="stale"><i></i><span>GPS давно не обновлялся</span></div>
         <div class="mon-legend__row" data-state="invalid"><i></i><span>GPS недостоверный</span></div>
       </div>
@@ -1276,10 +1289,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         <b>GPS может ошибаться.</b> Если сигнал глушится или давно не обновлялся, метку используем как подсказку, а не как окончательное доказательство.
       </div>
       <div class="mon-lag">
-        Ставтрэк отдаёт точки пачками с задержкой около 40 секунд — это его ретрансляция,
-        не наш кабинет. Метка не может быть свежее этого.
+        Координаты приходят пачками с задержкой около 40 секунд — так устроена
+        передача от трекера, а не наш кабинет. Метка не может быть свежее этого.
       </div>
-    </div>
+    </details>
   </aside>
 
   <aside class="mon-panel mon-panel--card" id="mon-card" aria-label="Карточка машины" hidden>
@@ -1440,7 +1453,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     moving:  { label: 'едет по маршруту',             short: 'едет',      color: '#16a34a', rank: 3 },
     idle:    { label: 'стоит, двигатель работает',    short: 'мотор',     color: '#e0a32e', rank: 2 },
     off:     { label: 'стоит',                        short: 'стоит',     color: '#94a3b8', rank: 4 },
-    unknown: { label: 'стоит, зажигание не передано', short: 'стоит',     color: '#94a3b8', rank: 4 },
+    unknown: { label: 'стоит, о двигателе данных нет', short: 'стоит',     color: '#94a3b8', rank: 4 },
     stale:   { label: 'GPS давно не обновлялся',      short: 'нет связи', color: '#c5362b', rank: 1 },
     invalid: { label: 'GPS недостоверный',            short: 'GPS сбой',  color: '#e0a32e', rank: 0 }
   };
@@ -1816,6 +1829,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var rcsAdded = false;
     var selected = null;             // vehicle_id выбранной машины
     var follow = null;               // за какой машиной едет камера
+    // ⚠️ Пока идёт просмотр трека, живая метка этой машины НЕ рисуется и
+    // камеру не двигает. Иначе их две: одна едет по прошлому, вторая стоит
+    // там, где машина сейчас, — и камера дёргается между ними (владелец
+    // 21.09.2026: «телепортируется куда-то и через секунду обратно»).
+    var playingId = null;            // vehicle_id машины, чей трек проигрываем
     var sortMode = 'state';
     var query = '';
     var didFit = false;
@@ -1932,7 +1950,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (!rows.length) {
         listEl.innerHTML = '<div class="mon-empty">' +
           (vehicles.length ? 'Ничего не найдено по запросу.'
-                           : '<b>Нет точек.</b><br>Проверьте ретрансляцию Stavtrack — ни одна машина не прислала координаты.') +
+                           : '<b>Нет точек.</b><br>Ни одна машина не прислала координаты — проверьте трекеры.') +
           '</div>';
         return;
       }
@@ -2107,8 +2125,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         html += '<div class="mon-fuel-calc">было ' + Math.round(sum.start_l) +
           ' л → стало ' + Math.round(sum.end_l) + ' л' +
           (sum.refuelled_l > 0 ? ', залито ' + Math.round(sum.refuelled_l) + ' л' : '') +
-          '<br><span>С 00:00 — так же, как в сводке приложения ' +
-          'и в «Сегодня» у Ставтрэка.</span></div>';
+          '<br><span>Считается с 00:00 — так же, как в сводке ' +
+          'приложения.</span></div>';
       }
       if (sum.drains && sum.drains.length) {
         // Резкое падение уровня за считанные минуты — это не расход.
@@ -2433,6 +2451,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         var key = stateKey(v);
         el.dataset.state = key;
         el.classList.toggle('is-sel', v.vehicle_id === selected);
+        // Своя живая метка поверх метки трека читается как вторая машина.
+        el.style.display = (playingId !== null && v.vehicle_id === playingId) ? 'none' : '';
         var tile = el.querySelector('.mon-pin__tile');
         applyRing(tile, key, stateColor(key), 2.5, '0 8px 20px -9px rgba(11,31,77,.6)');
         var pic = el.querySelector('.mon-pin__img');
@@ -2481,7 +2501,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       if (jump) {
         entry.lat = lat; entry.lon = lon;
         entry.marker.update({ coordinates: LL(lat, lon) });
-        if (follow === vid) ymap.setLocation({ center: LL(lat, lon) });
+        if (follow === vid && playingId === null) ymap.setLocation({ center: LL(lat, lon) });
         return;
       }
       var t0 = performance.now(), dur = 1200;
@@ -2491,7 +2511,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         entry.lat = fromLat + (lat - fromLat) * e;
         entry.lon = fromLon + (lon - fromLon) * e;
         entry.marker.update({ coordinates: LL(entry.lat, entry.lon) });
-        if (follow === vid) ymap.setLocation({ center: LL(entry.lat, entry.lon) });
+        if (follow === vid && playingId === null) ymap.setLocation({ center: LL(entry.lat, entry.lon) });
         entry.anim = (k < 1) ? requestAnimationFrame(step) : null;
       })(t0);
     }
@@ -3048,6 +3068,10 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // сейчас». Карточка живой машины на этой вкладке только загораживает
       // карту — прячем её, пока смотрим прошлое.
       cardEl.classList.toggle('mon-sheet-hide', tab === 'tracks');
+      // Владелец 21.09.2026: «когда выбираешь вкладку треков, машина должна
+      // открепиться». Слежение за живой машиной и просмотр прошлого — это две
+      // разные камеры, и вместе они дерутся за карту.
+      if (tab === 'tracks') setFollow(null);
       // И наоборот: показания точки — только на вкладке «Треки», иначе они
       // перекрыли бы карточку живой машины.
       if (trackCardEl) trackCardEl.classList.toggle('mon-sheet-hide', tab !== 'tracks');
@@ -3679,6 +3703,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       hideTrack();
       clearTail();
       play.shift = row;
+      playingId = selected;
+      setFollow(null);      // камера теперь у плеера, живой слой её не трогает
+      paintPins();
       var span = clipToPeriod(row);
       playTitle.textContent = row.whole
         ? 'Период ' + human(span.from) + ' — ' + human(span.to)
@@ -3748,6 +3775,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       setRunning(false);
       clearPlayObjects();
       play.shift = null;
+      playingId = null;
+      paintPins();          // живая метка машины возвращается на карту
       play.frames = [];
       play.road = [];
       play.at = 0;

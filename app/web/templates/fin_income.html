@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% from "_fin_rows.html" import fin_row with context %}
+{% block title %}Доходы — Финансы{% endblock %}
+{% block body_class %}fin-body{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/finance.css?v={{ asset_v }}">{% endblock %}
+
+{% block content %}
+<div class="fin" id="fin" data-page="income">
+  {% include "_fin_head.html" %}
+
+  <div data-fin-live="main" class="fin-stack-v">
+    <section class="fin-sum">
+      <div class="fin-sum__item is-static">
+        <span>Доход за период</span>
+        <strong class="is-in">{{ total | fin_rub }}</strong>
+        <small>всего</small>
+      </div>
+      <div class="fin-sum__item is-static">
+        <span>Рейсы</span>
+        <strong>{{ trips_total | fin_rub }}</strong>
+        <small>{{ trips_count }} {{ fin_plural(trips_count, 'рейс', 'рейса', 'рейсов') }}</small>
+      </div>
+      <div class="fin-sum__item is-static">
+        <span>Поступления</span>
+        <strong>{{ manual_total | fin_rub }}</strong>
+        <small>внесены вами</small>
+      </div>
+    </section>
+
+    {% if groups %}
+    <section class="fin-card">
+      <header class="fin-card__head">
+        <h2>Поступления по времени</h2>
+        {% if vehicles %}
+        <form method="get" class="fin-inline-filter" data-autosubmit>
+          <input type="hidden" name="period_from" value="{{ period_from }}">
+          <input type="hidden" name="period_to" value="{{ period_to }}">
+          <select name="vehicle" aria-label="Машина">
+            <option value="">Все машины</option>
+            {% for v in vehicles %}<option value="{{ v.id }}"{% if flt.vehicle == v.id %} selected{% endif %}>{{ v.license_plate }}</option>{% endfor %}
+          </select>
+          <noscript><button type="submit" class="fin-btn fin-btn--ghost">Показать</button></noscript>
+        </form>
+        {% endif %}
+      </header>
+      <div class="fin-chart" data-chart="cashflow" data-mode="income" role="img" aria-label="Доход по времени"></div>
+    </section>
+
+    <div class="fin-days">
+      {% for g in groups %}
+      <section class="fin-day">
+        <header class="fin-day__head"><h3>{{ g.title }}</h3><span>{{ g.total | fin_rub }}</span></header>
+        <ul class="fin-list">
+          {% for r in g.rows %}{{ fin_row(r, zone, (added_id,) if added_id else ()) }}{% endfor %}
+        </ul>
+      </section>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="fin-empty">
+      <i class="ph ph-hand-coins" aria-hidden="true"></i>
+      <b>За этот период доходов нет</b>
+      <span>Выручка рейса попадает сюда, когда рейс завершён и у него указана сумма. Предоплату или оплату по акту внесите кнопкой «Поступление».</span>
+      <button type="button" class="fin-btn fin-btn--primary" data-open-sheet="income"><i class="ph ph-plus"></i><span>Внести поступление</span></button>
+    </div>
+    {% endif %}
+
+    <script id="fin-data" type="application/json">{{ charts_json | safe }}</script>
+  </div>
+</div>
+
+<dialog class="fin-sheet" id="sheet-income" aria-labelledby="sheet-income-title">
+  <form class="fin-sheet__form" id="income-form" novalidate>
+    <div class="fin-sheet__grab" aria-hidden="true"></div>
+    <header class="fin-sheet__head">
+      <h2 id="sheet-income-title" tabindex="-1" autofocus>Новое поступление</h2>
+      <button type="button" class="fin-x" data-close aria-label="Закрыть"><i class="ph ph-x"></i></button>
+    </header>
+    <div class="fin-sheet__body">
+      <label class="fin-amount">
+        <span class="fin-sr">Сумма</span>
+        <input type="text" name="amount" inputmode="decimal" placeholder="0" autocomplete="off" data-amount>
+        <span aria-hidden="true">₽</span>
+      </label>
+      <div class="fin-field">
+        <label class="fin-label" for="if-date">Когда</label>
+        <input id="if-date" type="date" name="entry_date" value="{{ today }}" max="{{ today }}">
+      </div>
+      <div class="fin-field" role="group" aria-labelledby="if-src">
+        <div class="fin-label" id="if-src">Откуда</div>
+        <div class="fin-cats">
+          {% for label in ('Предоплата', 'Оплата по акту', 'Возврат', 'Прочее') %}
+          <label class="fin-cat fin-cat--pay"><input type="radio" name="category" value="{{ label }}"><span>{{ label }}</span></label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="fin-field">
+        <label class="fin-label" for="if-desc">Комментарий <span class="fin-opt">необязательно</span></label>
+        <input id="if-desc" type="text" name="description" maxlength="500" placeholder="Например, за рейсы 1–15 сентября" autocomplete="off">
+      </div>
+      <p class="fin-hint">Выручка рейсов сюда вносится сама — отдельно её записывать не нужно, иначе она посчитается дважды.</p>
+    </div>
+    <p class="fin-sheet__err" role="alert" data-error></p>
+    <footer class="fin-sheet__foot">
+      <div class="fin-sheet__total"><span>Поступление</span><strong data-total>0&nbsp;₽</strong></div>
+      <button type="submit" class="fin-btn fin-btn--primary fin-btn--lg" data-submit><span class="fin-btn__text">Сохранить</span></button>
+    </footer>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block scripts %}<script src="/static/finance.js?v={{ asset_v }}" defer></script>{% endblock %}

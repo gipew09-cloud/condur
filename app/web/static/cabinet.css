@@ -205,6 +205,46 @@ nav.topbar a[aria-current="page"] {
   border-left: 1px solid #edf0f4;
 }
 .topbar-actions li { flex: 0 0 auto; }
+/* «Финансы ▾»: пункт + стрелка, раскрывающая Обзор · Расходы · Доходы. */
+.nav-split { display: inline-flex; align-items: center; }
+nav.topbar .nav-split > a { padding-right: .3rem; }
+nav.topbar .nav-chev {
+  display: inline-grid; place-items: center;
+  width: 26px; height: 30px; margin: 0; padding: 0;
+  border: 0; border-radius: 7px; background: transparent; box-shadow: none;
+  color: var(--text-muted); cursor: pointer;
+  transition: background .14s var(--ease-out), color .14s var(--ease-out), transform .16s var(--ease-out);
+}
+nav.topbar .nav-chev:hover { background: var(--accent-soft); color: var(--accent); }
+nav.topbar .nav-chev:active { transform: scale(.92); }
+nav.topbar .nav-chev i { transition: transform .2s var(--ease-out); }
+body:has(#navFinance:popover-open) nav.topbar .nav-chev i { transform: rotate(180deg); }
+.nav-pop {
+  position: fixed; inset: auto; margin: 0; width: 260px; padding: 6px;
+  border: 0; border-radius: 16px; background: #fff; color: var(--text);
+  box-shadow: 0 1px 2px rgba(11, 31, 77, .06), 0 18px 48px -12px rgba(11, 31, 77, .28);
+  transform-origin: top right;
+  opacity: 1; transform: none;
+  transition: opacity .16s ease, transform .2s var(--ease-out),
+              display .2s allow-discrete, overlay .2s allow-discrete;
+}
+.nav-pop:not(:popover-open) { opacity: 0; transform: scale(.96) translateY(-4px); }
+@starting-style { .nav-pop:popover-open { opacity: 0; transform: scale(.96) translateY(-4px); } }
+.nav-pop a {
+  display: flex; align-items: center; gap: .7rem; padding: .6rem .7rem;
+  border-radius: 11px; color: var(--text); text-decoration: none;
+  transition: background .12s ease;
+}
+.nav-pop a:hover, .nav-pop a:focus-visible { background: #f2f4f8; }
+.nav-pop a:active { transform: scale(.98); }
+.nav-pop i { font-size: 1.35rem; color: var(--accent); }
+.nav-pop span { display: flex; flex-direction: column; line-height: 1.25; }
+.nav-pop b { font-size: .95rem; font-weight: 650; }
+.nav-pop small { color: var(--text-muted); font-size: .78rem; }
+@media (prefers-reduced-motion: reduce) {
+  .nav-pop, .nav-pop:not(:popover-open) { transition: none; transform: none; }
+}
+
 nav.topbar .nav-icon-button {
   width: 38px;
   height: 38px;

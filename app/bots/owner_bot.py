@@ -761,7 +761,7 @@ async def cb_vehicle_view(call: CallbackQuery, session: AsyncSession) -> None:
     if vehicle.fuel_norm_per_100km:
         lines.append(f"Норма расхода: {vehicle.fuel_norm_per_100km} л/100км")
     lines.append(
-        f"GPS-трекер: Stavtrack ID {vehicle.stavtrack_object_id}"
+        f"GPS-трекер: номер {vehicle.stavtrack_object_id}"
         if vehicle.stavtrack_object_id
         else "GPS-трекер: не привязан (указать можно на сайте, в карточке машины)"
     )
@@ -1773,6 +1773,8 @@ async def edit_expense_amount(call_message: Message, state: FSMContext, session:
         event_type="expense_amount_edited",
         payload={"expense_id": expense.id, "old": str(old_amount), "new": str(expense.amount_rub)},
     )
+    # Сумма траты рейса поменялась — прибыль рейса считается заново.
+    await trip_service.refresh_trip_costs(session, expense.trip_id)
     await session.commit()
     await state.clear()
 

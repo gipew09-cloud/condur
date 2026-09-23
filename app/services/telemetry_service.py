@@ -1444,7 +1444,7 @@ async def rc_presence_started_at(
 def format_mileage_comparison(odometer_km: int, gps_km: Decimal) -> str:
     """Строка для бота: одометр против GPS + пометка при большом расхождении."""
     diff = Decimal(odometer_km) - gps_km
-    base = f"📡 По GPS (Stavtrack): {gps_km:.0f} км. Расхождение: {diff:+.0f} км."
+    base = f"📡 По GPS: {gps_km:.0f} км. Расхождение: {diff:+.0f} км."
     reference = max(gps_km, Decimal(1))
     if abs(diff) / reference > MILEAGE_MISMATCH_ALERT_RATIO:
         base += " ⚠️ Больше 10% — стоит проверить."
