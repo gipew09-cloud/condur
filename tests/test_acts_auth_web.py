@@ -301,22 +301,6 @@ def test_session_cookie_is_secure_and_persistent():
     assert 'samesite="lax"' in source
 
 
-def test_render_finances():
-    html = _render(
-        "finances.html", owner=OWNER, active_page="finances",
-        summary={"total_income": Decimal("258000"), "total_expense": Decimal("267555"),
-                 "profit": Decimal("-9555"), "fuel": Decimal("0")},
-        margin=-4.0,
-        cashflow={"labels": ["май", "июн"], "revenue": [0, 258000],
-                  "expenses": [0, 267555], "profit": [0, -9555], "period": "6m"},
-        directions=[{"route": "А → Б", "trips": 5, "revenue": Decimal("106000"),
-                     "profit": Decimal("106000"), "bar": 100}],
-        entries=[], period_from="2026-06-01", period_to="2026-06-25",
-        today="2026-06-25")
-    assert "Денежный поток" in html and "Прибыльность направлений" in html
-    assert ".sp-kpi" in html  # стили встроены в страницу
-
-
 def test_render_vehicles_card_layout():
     v = NS(id=1, license_plate="ACHICHJ23627", brand="тимьмиь", type="refrigerator",
            osago_expires=date(2026, 9, 1), inspection_expires=None, tacho_expires=None,
@@ -412,25 +396,6 @@ def test_session_token_hash_and_device_label():
             == "Приложение Condur · Android")
     assert (AU.device_label_from_user_agent("Condur App (iOS)")
             == "Приложение Condur · iPhone")
-
-
-def test_render_expenses_donut():
-    exp = NS(id=1, created_at=None, category="fuel", amount_rub=Decimal("5000"),
-             status="approved", receipt_web_data=None, receipt_photo_url=None)
-    html = _render("expenses.html", owner=OWNER, active_page="trips",
-                   rows=[(exp, "Саломов", "Т557")],
-                   totals={"count": 1, "sum": Decimal("5000"), "pending": 0, "approved": 1},
-                   filter_category="", filter_status="", categories=("fuel",),
-                   drivers=[NS(id=1, full_name="Саломов")],
-                   vehicles=[NS(id=2, license_plate="Т557ОС178")],
-                   filter_driver_id=1, filter_vehicle_id=None,
-                   filter_date_from="2026-07-01", filter_date_to="2026-07-04",
-                   breakdown=[{"label": "Топливо", "amount": 5000.0}])
-    assert "Структура расходов по категориям" in html
-    # фильтры: водитель выбран, машина в списке, даты подставлены, кнопки на месте
-    assert 'name="driver_id"' in html and "selected>Саломов" in html
-    assert 'name="vehicle_id"' in html and "Т557ОС178" in html
-    assert 'value="2026-07-01"' in html and "Применить" in html and "Сбросить" in html
 
 
 def test_render_routes_with_distribution_centers():
@@ -861,22 +826,6 @@ def test_cashflow_buckets_days_weeks_months():
     # границы переключения шага
     assert cashflow_buckets(date(2026, 1, 1), date(2026, 2, 14))[2](date(2026, 1, 5)) == date(2026, 1, 5)   # 45 дн — дни
     assert cashflow_buckets(date(2026, 1, 1), date(2026, 2, 15))[2](date(2026, 1, 7)) == date(2026, 1, 5)   # 46 дн — недели
-
-
-def test_render_finances_period_presets():
-    html = _render(
-        "finances.html", owner=OWNER, active_page="finances",
-        summary={"total_income": Decimal("93000"), "total_expense": Decimal("0"),
-                 "profit": Decimal("93000"), "fuel": Decimal("0")},
-        margin=100.0,
-        cashflow={"labels": ["01.07"], "revenue": [93000], "expenses": [0],
-                  "profit": [93000], "period": "custom"},
-        directions=[], entries=[], period_from="2026-07-01", period_to="2026-07-05",
-        today="2026-07-04")
-    assert "Денежный поток" in html and "2026-07-01 — 2026-07-05" in html
-    for days in ("7", "30", "91", "182", "365"):
-        assert f'data-days="{days}"' in html
-    assert "fin-preset" in html and "fin-period-form" in html
 
 
 # ------------------------------------------------------------------ скрытая команда /wipe

@@ -1548,7 +1548,7 @@ def test_fuel_card_shows_where_the_number_came_from():
     src = open("app/web/templates/map.html", encoding="utf-8").read()
     assert "mon-fuel-calc" in src
     assert "html += '<div class=\"mon-fuel-calc\">было ' + Math.round(sum.start_l)" in src
-    assert "С 00:00" in src
+    assert "Считается с 00:00" in src
 
 
 def test_legend_takes_two_columns():
@@ -1574,3 +1574,108 @@ def test_event_card_answers_where_and_how_long():
     assert "function eventAddress(lat, lon, done)" in src
     assert "/api/geocode/reverse?lat=" in src
     assert "var eventAddrCache = {};" in src
+
+
+def test_живая_метка_не_воюет_с_плеером_за_камеру():
+    """Владелец 21.09.2026: «плеер телепортируется куда-то и через секунду обратно».
+
+    Причина: живой опрос раз в 15 секунд двигал камеру к ТЕКУЩЕМУ месту машины,
+    а плеер тут же возвращал её к месту на треке. Две камеры на одной карте.
+    Пока идёт просмотр, живой слой камеру не трогает вовсе.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "var playingId = null;" in src
+    # Обе ветки moveTo — и прыжок, и плавный ход — спрашивают про просмотр.
+    assert src.count("follow === vid && playingId === null") == 2
+    assert "follow === vid) ymap.setLocation" not in src
+
+
+def test_своя_метка_машины_прячется_на_время_просмотра():
+    """Владелец 21.09.2026: «накладываются машина в объектах и плеер».
+
+    Живая метка стоит там, где машина сейчас, метка трека едет по прошлому —
+    рядом это читается как две разные машины.
+    """
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "el.style.display = (playingId !== null && v.vehicle_id === playingId) ? 'none' : '';" in src
+    assert "playingId = selected;" in src        # начало просмотра
+    assert "playingId = null;\n      paintPins();" in src   # конец — метка вернулась
+
+
+def test_вкладка_треков_открепляет_машину():
+    """Владелец 21.09.2026: «когда выбираешь треки, машина должна открепиться»."""
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    хвост = src.split("cardEl.classList.toggle('mon-sheet-hide', tab === 'tracks');")[1][:400]
+    assert "if (tab === 'tracks') setFollow(null);" in хвост
+    # И сам плеер отбирает камеру у живого слоя.
+    assert "setFollow(null);      // камера теперь у плеера" in src
+
+
+def test_время_в_хронологии_рейса_стоит_слева():
+    """Владелец 21.09.2026: «время в хронологии нужно сделать слева».
+
+    ⚠️ Геометрия померена в браузере: кружок 28 px в колонке после 58 px
+    времени и зазора 12 px — его середина на 84 px, линия шириной 2 px должна
+    начинаться с 83. Медиазапрос телефона ОБЯЗАН стоять ПОСЛЕ `.trip-dot`:
+    одинаковая весомость, побеждает последнее правило, и кружок остался бы
+    28 px, а линия ушла бы мимо (эту ошибку я и сделал сначала).
+    """
+    src = open("app/web/templates/trip_detail.html", encoding="utf-8").read()
+    assert "grid-template-columns: 58px 28px minmax(0, 1fr);" in src
+    assert "left: 83px;" in src
+    assert 'class="trip-when"' in src
+    # Время — до кружка и до текста события.
+    пункт = src.split('<li class="trip-timeline__item trip-timeline__item--{{ item.kind }}">')[1]
+    assert пункт.index('trip-when') < пункт.index('trip-dot') < пункт.index('trip-event')
+    # Порядок правил: .trip-dot раньше медиазапроса.
+    assert src.index(".trip-dot {") < src.index("@media (max-width: 520px)")
+
+
+def test_в_интерфейсе_нет_названия_чужого_сервиса():
+    """Владелец 21.09.2026: пользователь не должен видеть название фирмы,
+    у которой мы берём ретрансляцию. В коде, памяти и планах — можно.
+
+    Поэтому из ШАБЛОНОВ вырезаем комментарии (html, js, jinja) и ищем название
+    в том, что остаётся, — то есть ровно в том, что видно на экране.
+    """
+    import pathlib
+    import re
+
+    def без_комментариев(текст: str) -> str:
+        текст = re.sub(r"<!--.*?-->", "", текст, flags=re.S)
+        текст = re.sub(r"\{#.*?#\}", "", текст, flags=re.S)
+        текст = re.sub(r"/\*.*?\*/", "", текст, flags=re.S)
+        # Построчные // — но не внутри адресов вроде https://
+        return re.sub(r"(?<!:)//[^\n]*", "", текст)
+
+    видимые = []
+    for путь in sorted(pathlib.Path("app/web/templates").rglob("*.html")):
+        чистый = без_комментариев(путь.read_text(encoding="utf-8"))
+        if "Ставтрэк" in чистый or "Stavtrack" in чистый:
+            видимые.append(str(путь))
+    assert not видимые, f"название фирмы видно пользователю: {видимые}"
+
+
+def test_зажигание_определяется_и_по_напряжению():
+    """Владелец 21.09.2026: «зажигание не передано» — а на деле выключено.
+
+    Прибор не всегда шлёт бит зажигания, но напряжение бортсети у нас есть:
+    работает генератор — около 28 В, заглушен — около 25 В. Тем же способом
+    судит сводка (PROBLEMS №34). Пишем «данных нет» только когда их правда нет.
+    """
+    src = open("app/web/router.py", encoding="utf-8").read()
+    assert "def _ignition_of(state)" in src
+    assert "telemetry_service.engine_running_from_voltage(state.voltage)" in src
+    assert '"ignition": _ignition_of(st),' in src
+    assert '"ignition_known": _ignition_of(st) is not None,' in src
+    карта = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert "зажигание не передано" not in карта
+    assert "о двигателе данных нет" in карта
+
+
+def test_легенда_свёрнута_в_одну_строку():
+    """Владелец 21.09.2026: «легенду уменьшить» — она занимала треть панели."""
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    assert '<details class="mon-foot" data-pane="objects">' in src
+    assert '<summary class="mon-foot__sum">Легенда и подсказки</summary>' in src
+    assert "</details>\n  </aside>" in src

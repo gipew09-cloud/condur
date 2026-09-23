@@ -127,8 +127,27 @@ def _cookie(response, name):
     return None
 
 
+def _teach_timezone(engine):
+    """Кабинет считает дни в поясе владельца функцией Postgres timezone().
+    SQLite её не знает — учим, как в tests/test_finance_ledger.py."""
+    from sqlalchemy import event
+    from zoneinfo import ZoneInfo
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _teach(conn, _):
+        def tz(zone, moment):
+            if moment is None:
+                return None
+            when = datetime.fromisoformat(str(moment))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return when.astimezone(ZoneInfo(str(zone))).strftime("%Y-%m-%d %H:%M:%S")
+        conn.create_function("timezone", 2, tz)
+
+
 async def _db():
     engine = create_async_engine("sqlite+aiosqlite://")
+    _teach_timezone(engine)
     _ENGINES.append(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -463,8 +482,10 @@ def test_владелец_видит_откуда_фото_камера_или_�
             _request(app, method="GET"), shift.id, owner, session,
         )).body.decode()
         assert "📷 камера" in page and "🖼 галерея" in page
-        expenses = (await web.expenses_page(
-            _request(app, method="GET"), owner, session,
+        # Список трат с 23.09.2026 — «Финансы → Расходы»: отметка там же.
+        from app.web import finance_routes
+        expenses = (await finance_routes.finance_expenses(
+            _request(app, method="GET", path="/finances/expenses"), owner, session,
         )).body.decode()
         assert "🖼 галерея" in expenses
         await session.close()
@@ -634,7 +655,7 @@ def test_итог_смены_с_одинаковым_одометром_и_gps()
     shift.odometer_end, shift.distance_km = 959230, 89
     text = shift_flow.shift_completed_owner_text(closed, driver=driver, tz_name=None)
     assert "одинаковый" not in text
-    assert "По GPS (Stavtrack): 87 км" in text
+    assert "По GPS: 87 км" in text
 
 
 def test_страница_смены_показывает_пробег_по_gps():

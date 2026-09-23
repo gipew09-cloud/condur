@@ -132,6 +132,57 @@ def test_машина_берётся_из_смены_а_не_угадывает�
     _run(scenario)
 
 
+def test_в_закрытой_смене_видно_одометр_пробег_и_gps():
+    """Владелец 18.09.2026: «когда смена закрывается, не показывает, как он
+    раньше считал одометр в начале и в конце и сколько пробег… и не пишет по
+    GPS сколько». Раньше у смен второй строки не было вовсе."""
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(
+            owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+            started_at=NOW - timedelta(hours=9), ended_at=NOW - timedelta(hours=1),
+            # distance_km база считает сама из показаний одометра.
+            status="completed", odometer_start=8244, odometer_end=8500,
+        )
+        session.add(shift)
+        await session.flush()
+        session.add_all([
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="shift_started", created_at=NOW - timedelta(hours=9)),
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="shift_completed", created_at=NOW - timedelta(hours=1),
+                  payload={"distance_km": 256, "gps_km": 248, "trips": 2}),
+        ])
+        await session.commit()
+
+        by_type = {e["type"]: e for e in (await api_events(owner, session))["events"]}
+        started = by_type["shift_started"]["detail"]
+        closed = by_type["shift_completed"]["detail"]
+        assert "8" in started and "244" in started
+        assert "244" in closed and "500" in closed      # было → стало
+        assert "256" in closed                           # пробег по одометру
+        assert "248" in closed                           # и сколько насчитал GPS
+        await session.close()
+    _run(scenario)
+
+
+def test_у_смены_без_одометра_строка_не_выдумывается():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=3), status="started")
+        session.add(shift)
+        await session.flush()
+        session.add(Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                          event_type="shift_started", created_at=NOW - timedelta(hours=3)))
+        await session.commit()
+
+        data = await api_events(owner, session)
+        assert data["events"][0]["detail"] is None
+        await session.close()
+    _run(scenario)
+
+
 def test_свежие_события_сверху_и_старьё_не_тянем():
     async def scenario():
         session, owner, vehicle, driver = await _db()
