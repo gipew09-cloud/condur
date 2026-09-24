@@ -2,7 +2,7 @@
 {% from "_fin_rows.html" import fin_row with context %}
 {% block title %}Финансы{% endblock %}
 {% block body_class %}fin-body{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v={{ asset_v }}">{% endblock %}
+{% block head %}{% include "_fin_assets.html" %}{% endblock %}
 
 {% block content %}
 {% set pq = '?period_from=' ~ period_from ~ '&period_to=' ~ period_to %}
@@ -150,16 +150,8 @@
         {% else %}<p class="fin-muted">Завершённых рейсов за период нет.</p>{% endif %}
       </section>
     </div>
-
-    <section class="fin-card fin-card--list fin-rise" style="--i:8">
-      <header class="fin-card__head">
-        <h2>Последние операции</h2>
-        <a class="fin-link" href="/finances/expenses{{ pq }}">Все расходы <i class="ph ph-caret-right"></i></a>
-      </header>
-      <ul class="fin-list fin-list--flat">
-        {% for r in recent %}{{ fin_row(r, zone) }}{% endfor %}
-      </ul>
-    </section>
+    {#- «Последние операции» убраны 24.09.2026: владелец — «операции пока не
+        произвели», а рейсы там путали (есть смены без рейсов). -#}
     {% endif %}
 
     <script id="fin-data" type="application/json">{{ charts_json | safe }}</script>

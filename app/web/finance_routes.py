@@ -32,7 +32,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Driver, Expense, ExpenseAttachment, ManualEntry, Owner, Shift, Trip, Vehicle
+from app.models import (
+    Driver, Expense, ExpenseAttachment, IncomeAttachment, Owner, Shift, Trip, Vehicle,
+)
 from app.services import driver_photos
 from app.services import finance_ledger as fl
 from app.web.router import (
@@ -296,7 +298,6 @@ async def finance_overview(
                       if r.status == "approved" and r.category == "fuel"), Decimal(0))
     fuel_share = float(fuel_total / expense_total * 100) if expense_total > 0 else None
 
-    recent = sorted(incomes[:12] + expenses[:12], key=fl._sort_key, reverse=True)[:8]
     zone = _zone(owner)
     charts = {
         "cashflow": fl.cashflow(incomes, expenses, df, dt, tz),
@@ -310,7 +311,7 @@ async def finance_overview(
         "fuel_total": fuel_total, "fuel_share": fuel_share,
         "other_total": expense_total - fuel_total,
         "pending": fl.expense_totals(expenses),
-        "recent": recent, "zone": zone,
+        "zone": zone,
         "charts_json": _script_json(charts),
         "vehicles": vehicles, "directions": directions,
         "cashflow_step": charts["cashflow"]["step"],
@@ -473,19 +474,7 @@ async def finance_expenses_create(
             amount = fl.parse_amount(raw.get("amount"))
             if amount is None:
                 raise fl.LedgerError(f"Трата №{index + 1}: укажите сумму больше нуля.")
-            attachments: list[fl.NewAttachment] = []
-            for field in ("photos", "files"):
-                for upload in form.getlist(f"{field}_{index}"):
-                    if isinstance(upload, str) or not getattr(upload, "filename", None):
-                        continue
-                    data = await upload.read(fl.MAX_ATTACHMENT_BYTES + 1)
-                    await upload.close()
-                    if not data:
-                        continue
-                    kind = "photo" if field == "photos" else \
-                        fl.kind_of_upload(upload.content_type, upload.filename)
-                    attachments.append(fl.NewAttachment(kind, upload.filename,
-                                                        upload.content_type, data))
+            attachments = await _read_uploads(form, f"_{index}")
             items.append(fl.NewExpense(
                 category=str(raw.get("category") or ""), amount=amount,
                 description=str(raw.get("description") or "")[:500] or None,
@@ -519,6 +508,28 @@ async def finance_expense_delete(
     return JSONResponse({"ok": True})
 
 
+# В браузере открываем только обычные фото и PDF. ⚠️ SVG — тоже «картинка»,
+# но в нём может быть скрипт: открытый прямо в кабинете, он выполнился бы от
+# имени владельца. Всё прочее — только скачиванием, и в любом случае без
+# права что-либо запускать (CSP sandbox).
+_INLINE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic",
+                 "application/pdf"}
+
+
+def _attachment_response(att) -> Response:
+    from urllib.parse import quote
+
+    ctype = (att.content_type or "application/octet-stream").lower()
+    inline = ctype in _INLINE_TYPES
+    name = quote(att.filename or f"file-{att.id}")
+    return Response(att.data, media_type=ctype if inline else "application/octet-stream", headers={
+        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{name}",
+        "Cache-Control": "private, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+    })
+
+
 @app.get("/finances/attachments/{attachment_id}")
 async def finance_attachment(
     attachment_id: int,
@@ -528,16 +539,35 @@ async def finance_attachment(
     att = await session.get(ExpenseAttachment, attachment_id)
     if att is None or att.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    ctype = att.content_type or "application/octet-stream"
-    # Фото показываем в браузере, остальное — скачиванием с исходным именем.
-    inline = ctype.startswith("image/") or ctype == "application/pdf"
-    from urllib.parse import quote
-    name = quote(att.filename or f"file-{att.id}")
-    return Response(att.data, media_type=ctype, headers={
-        "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{name}",
-        "Cache-Control": "private, max-age=3600",
-        "X-Content-Type-Options": "nosniff",
-    })
+    return _attachment_response(att)
+
+
+@app.get("/finances/income-attachments/{attachment_id}")
+async def finance_income_attachment(
+    attachment_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    att = await session.get(IncomeAttachment, attachment_id)
+    if att is None or att.owner_id != owner.id:
+        raise HTTPException(status_code=404)
+    return _attachment_response(att)
+
+
+async def _read_uploads(form, suffix: str = "") -> list[fl.NewAttachment]:
+    """Фото (`photos{suffix}`) и файлы (`files{suffix}`) из формы."""
+    out: list[fl.NewAttachment] = []
+    for field in ("photos", "files"):
+        for upload in form.getlist(f"{field}{suffix}"):
+            if isinstance(upload, str) or not getattr(upload, "filename", None):
+                continue
+            data = await upload.read(fl.MAX_ATTACHMENT_BYTES + 1)
+            await upload.close()
+            if not data:
+                continue
+            kind = "photo" if field == "photos" else fl.kind_of_upload(upload.content_type, upload.filename)
+            out.append(fl.NewAttachment(kind, upload.filename, upload.content_type, data))
+    return out
 
 
 @app.post("/finances/categories")
@@ -590,25 +620,31 @@ async def finance_income(
 
 @app.post("/finances/income")
 async def finance_income_create(
+    request: Request,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    amount: Annotated[str, Form()] = "",
-    entry_date: Annotated[str, Form()] = "",
-    category: Annotated[str, Form()] = "",
-    description: Annotated[str, Form()] = "",
 ):
-    value = fl.parse_amount(amount)
-    if value is None or value > fl.MAX_AMOUNT * 10:
-        return JSONResponse({"ok": False, "message": "Укажите сумму больше нуля."}, status_code=400)
+    """Ручное поступление — с платёжкой, актом, фото (владелец 24.09.2026)."""
     try:
-        day = date.fromisoformat(entry_date) if entry_date else date.today()
+        form = await request.form(max_files=fl.MAX_ATTACHMENTS + 1, max_fields=50)
+    except Exception:                                    # noqa: BLE001
+        return JSONResponse({"ok": False, "message": "Форма не дошла. Попробуйте ещё раз."},
+                            status_code=400)
+    raw_day = str(form.get("entry_date") or "")
+    try:
+        day = date.fromisoformat(raw_day) if raw_day else datetime.now(_zone(owner)).date()
     except ValueError:
         return JSONResponse({"ok": False, "message": "Не понял дату."}, status_code=400)
-    entry = ManualEntry(
-        owner_id=owner.id, type="income", amount_rub=value, entry_date=day,
-        category=(category or "").strip()[:100] or None,
-        description=(description or "").strip()[:500] or None,
-    )
-    session.add(entry)
+    try:
+        entry = await fl.create_income(
+            session, owner_id=owner.id,
+            amount=fl.parse_amount(form.get("amount")), day=day,
+            category=str(form.get("category") or ""),
+            description=str(form.get("description") or ""),
+            attachments=await _read_uploads(form),
+        )
+    except fl.LedgerError as error:
+        await session.rollback()
+        return JSONResponse({"ok": False, "message": str(error)}, status_code=400)
     await session.commit()
     return JSONResponse({"ok": True, "id": entry.id})

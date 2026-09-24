@@ -13,19 +13,8 @@
 (function () {
   'use strict';
 
-  // Плавный переход между страницами «Финансов» (@view-transition в CSS).
-  // Ушли на страницу без перехода или нажали дальше, не дождавшись, —
-  // браузер отменяет переход и пишет в консоль «Transition was skipped».
-  // Это не ошибка: гасим её, чтобы не путала при проверках.
-  ['pageswap', 'pagereveal'].forEach(function (type) {
-    window.addEventListener(type, function (e) {
-      var vt = e.viewTransition;
-      if (!vt) return;
-      ['ready', 'finished', 'updateCallbackDone'].forEach(function (k) {
-        if (vt[k] && vt[k].catch) vt[k].catch(function () {});
-      });
-    });
-  });
+  // Страховка для плавного перехода между страницами — в _fin_assets.html
+  // (в <head>: отсюда она не успевает к событию pagereveal).
 
   var root = document.getElementById('fin');
   if (!root) return;
@@ -107,14 +96,42 @@
       })
       .then(function (html) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
+        var before = readTotals();
         document.querySelectorAll('[data-fin-live]').forEach(function (node) {
           var fresh = doc.querySelector('[data-fin-live="' + node.getAttribute('data-fin-live') + '"]');
           if (fresh) node.replaceWith(document.importNode(fresh, true));
         });
+        markChangedTotals(before);
         // «Обзор» при следующем обновлении не должен заново въезжать целиком.
         document.querySelectorAll('.fin-rise').forEach(function (n) { n.classList.remove('fin-rise'); });
         renderCharts(false);
       });
+  }
+
+  // Изменившиеся суммы коротко проявляются (plans/004, Text morph): после
+  // внесения или удаления глаз сразу находит, что поменялось. Ключ — место
+  // числа на странице; у итога дня — сам день, потому что дни могут
+  // появляться и исчезать.
+  var TOTALS = '.fin-sum__item strong, .fin-kpi__value, .fin-split__value, .fin-day__head span';
+  function totalKey(node, index) {
+    var day = node.closest('.fin-day__head');
+    return day ? 'day:' + day.querySelector('h3').textContent.trim() : 'n:' + index;
+  }
+  function readTotals() {
+    var map = {};
+    document.querySelectorAll(TOTALS).forEach(function (node, i) {
+      map[totalKey(node, i)] = node.textContent.trim();
+    });
+    return map;
+  }
+  function markChangedTotals(before) {
+    document.querySelectorAll(TOTALS).forEach(function (node, i) {
+      var key = totalKey(node, i);
+      if (key in before && before[key] !== node.textContent.trim()) {
+        node.classList.add('fin-changed');
+        node.addEventListener('animationend', function () { node.classList.remove('fin-changed'); }, { once: true });
+      }
+    });
   }
 
   // ── строки книги ─────────────────────────────────────────────────────────
@@ -254,10 +271,18 @@
     var opener = t.closest('[data-open-sheet]');
     if (opener) { openSheet(opener.getAttribute('data-open-sheet')); return; }
     var seg = t.closest('.fin-seg a');
-    if (seg && !e.metaKey && !e.ctrlKey) {
-      // Отклик сразу: вкладка становится выбранной до того, как придёт страница.
-      seg.parentNode.querySelectorAll('a').forEach(function (a) { a.removeAttribute('aria-current'); });
-      seg.setAttribute('aria-current', 'page');
+    if (seg && !e.metaKey && !e.ctrlKey && !seg.hasAttribute('aria-current')) {
+      // Отклик сразу — подсветкой нажатой вкладки. Выбранной она станет на
+      // новой странице: тогда белая плашка переедет к ней (plans/005).
+      seg.classList.add('is-pressed');
+    }
+  });
+
+  // Вернулись кнопкой «Назад» (страница из кэша браузера) — снять подсветку
+  // нажатой вкладки, иначе она так и останется «нажатой».
+  window.addEventListener('pageshow', function (e) {
+    if (e.persisted) {
+      document.querySelectorAll('.fin-seg a.is-pressed').forEach(function (a) { a.classList.remove('is-pressed'); });
     }
   });
 
@@ -280,13 +305,54 @@
   });
 
   // ── лист ввода ───────────────────────────────────────────────────────────
+
+  // Повторное нажатие на выбранный вариант снимает выбор — у вида расхода,
+  // способа оплаты, «откуда» у поступления (владелец 24.09.2026: «нажал на
+  // топливо — нажимаю ещё раз, чтобы убралось»). Радиокнопка сама так не умеет.
+  document.addEventListener('pointerdown', function (e) {
+    var label = e.target.closest && e.target.closest('.fin-sheet .fin-cat');
+    var input = label && label.querySelector('input[type=radio]');
+    if (input) input.dataset.was = input.checked ? '1' : '';
+  }, true);
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t.matches || !t.matches('.fin-sheet .fin-cat input[type=radio]')) return;
+    var was = t.dataset.was === '1';
+    t.dataset.was = '';
+    if (was) {
+      t.checked = false;
+      t.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }, true);
+
+  // В сумму — только цифры, пробел и одна запятая с двумя знаками после неё.
+  // Буквы просто не появляются, как на цифровой клавиатуре телефона.
+  document.addEventListener('input', function (e) {
+    var input = e.target;
+    if (!input.matches || !input.matches('.fin-sheet [data-amount]')) return;
+    var before = input.value;
+    var digits = before.replace(/[^\d\s,.\u00a0\u202f]/g, '');
+    var sep = digits.search(/[,.]/);
+    if (sep >= 0) {
+      digits = digits.slice(0, sep + 1) +
+               digits.slice(sep + 1).replace(/[^\d]/g, '').slice(0, 2);
+    }
+    if (digits !== before) {
+      var caret = (input.selectionStart || digits.length) - (before.length - digits.length);
+      input.value = digits;
+      try { input.setSelectionRange(Math.max(0, caret), Math.max(0, caret)); } catch (err) { /* нет курсора */ }
+    }
+  }, true);
   function isBottomSheet() { return window.matchMedia('(max-width: 700px)').matches; }
 
   function openSheet(name) {
     var dlg = document.getElementById('sheet-' + name);
     if (!dlg || dlg.open || typeof dlg.showModal !== 'function') return;
+    // Следы прошлого закрытия (метка и сдвиг после смахивания) снимаем
+    // только здесь, у закрытого листа, — см. closeSheet.
     dlg.classList.remove('is-closing');
     dlg.style.transform = '';
+    dlg.style.transition = '';
     dlg.showModal();
     if (name === 'expense') expense.onOpen();
     if (name === 'income') income.onOpen();
@@ -299,10 +365,11 @@
     function end() {
       if (done) return;
       done = true;
+      // ⚠️ Метку «закрывается» НЕ снимаем: снять её сразу после close() —
+      // лист на мгновение ехал обратно на экран и снова убегал (владелец
+      // 24.09.2026: «закрывается, ещё раз открывается и быстро пропадает»).
+      // Снимает её openSheet перед следующим открытием.
       dlg.close();
-      dlg.classList.remove('is-closing');
-      dlg.style.transform = '';
-      dlg.style.transition = '';
     }
     dlg.addEventListener('transitionend', function handler(e) {
       if (e.target === dlg && (e.propertyName === 'transform' || e.propertyName === 'opacity')) {
@@ -314,7 +381,14 @@
   }
 
   document.querySelectorAll('dialog.fin-sheet').forEach(function (dlg) {
-    dlg.addEventListener('cancel', function (e) { e.preventDefault(); closeSheet(dlg); });
+    dlg.addEventListener('cancel', function (e) {
+      // ⚠️ Только «отмена» самого листа (Esc). Окно выбора файла при «Отмене»
+      // тоже шлёт cancel, и оно всплывает сюда — лист закрывался вместе с ним
+      // (владелец 24.09.2026: «нажимаешь отменить — вылетает»).
+      if (e.target !== dlg) return;
+      e.preventDefault();
+      closeSheet(dlg);
+    });
     dlg.addEventListener('click', function (e) {
       if (e.target === dlg) closeSheet(dlg);                 // щелчок по затемнению
       if (e.target.closest('[data-close]')) closeSheet(dlg);
@@ -323,19 +397,20 @@
   });
 
   // Смахнуть лист вниз (телефон). Лист идёт за пальцем 1:1, вверх — с
-  // сопротивлением; отпустили быстро или дальше трети — закрываем.
+  // сопротивлением. Закрываем, если протянули дальше трети ИЛИ быстро махнули:
+  // средняя скорость жеста больше 0,11 px/мс (plans/002, правило Эмиля —
+  // быстрый короткий мах должен закрывать, как в iOS).
   function enableDrag(dlg) {
     var handle = dlg.querySelector('.fin-sheet__head');
     var grab = dlg.querySelector('.fin-sheet__grab');
-    var startY = 0, lastY = 0, lastT = 0, speed = 0, dragging = false;
+    var startY = 0, lastY = 0, startT = 0, dragging = false;
     function rubber(x) { var d = 120; return (x * d * 0.55) / (d + 0.55 * x); }
     function down(e) {
       if (!isBottomSheet() || e.target.closest('button')) return;
       dragging = true;
       startY = lastY = e.clientY;
-      lastT = e.timeStamp;
-      speed = 0;
-      e.currentTarget.setPointerCapture(e.pointerId);
+      startT = e.timeStamp;
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* палец уже отпущен */ }
       dlg.style.transition = 'none';
     }
     function move(e) {
@@ -343,18 +418,16 @@
       var dy = e.clientY - startY;
       var y = dy >= 0 ? dy : -rubber(-dy);
       dlg.style.transform = 'translateY(' + y + 'px)';
-      var dt = e.timeStamp - lastT;
-      if (dt > 0) speed = (e.clientY - lastY) / dt;
       lastY = e.clientY;
-      lastT = e.timeStamp;
     }
-    function up() {
+    function up(e) {
       if (!dragging) return;
       dragging = false;
       var dy = lastY - startY;
       var h = dlg.getBoundingClientRect().height || 1;
+      var elapsed = Math.max(1, e.timeStamp - startT);
       dlg.style.transition = '';
-      if (dy > h * 0.3 || speed > 0.5) {
+      if (dy > h * 0.3 || (dy > 12 && dy / elapsed > 0.11)) {
         dlg.style.transform = 'translateY(100%)';
         closeSheet(dlg);
       } else {
@@ -373,6 +446,91 @@
   function formError(form, text) {
     var box = form.querySelector('[data-error]');
     if (box) box.textContent = text || '';
+  }
+
+  // ── фото и файлы: общее для расхода и поступления ────────────────────────
+  // `node` — блок с `.fin-thumbs` и `.fin-item__err` (трата в листе расхода
+  // или блок «Документы» у поступления); выбранные файлы живут в node._files.
+  function itemError(node, text) {
+    node.querySelector('.fin-item__err').textContent = text || '';
+    node.classList.toggle('is-invalid', !!text);
+  }
+
+  function shake(node) {
+    if (reduce.matches) return;
+    node.classList.remove('fin-shake');
+    void node.offsetWidth;
+    node.classList.add('fin-shake');
+  }
+
+  // Фото с телефона — 5–10 МБ. Уменьшаем до 2000 px по длинной стороне:
+  // чек читается, а база не пухнет. Не вышло (HEIC, старый браузер) —
+  // отправляем как есть.
+  function shrink(file) {
+    if (!/^image\/(jpeg|png|webp)$/i.test(file.type) || !window.createImageBitmap) return Promise.resolve(null);
+    return createImageBitmap(file).then(function (bmp) {
+      var side = Math.max(bmp.width, bmp.height);
+      var k = Math.min(1, 2000 / side);
+      if (k === 1 && file.size < 1.5 * 1024 * 1024) { bmp.close && bmp.close(); return null; }
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(bmp.width * k);
+      canvas.height = Math.round(bmp.height * k);
+      canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      bmp.close && bmp.close();
+      return new Promise(function (resolve) {
+        canvas.toBlob(function (blob) { resolve(blob && blob.size < file.size ? blob : null); }, 'image/jpeg', 0.85);
+      });
+    }).catch(function () { return null; });
+  }
+
+  function addFile(node, kind, file) {
+    if (node._files.length >= MAX_ATTACH) { itemError(node, 'Не больше ' + MAX_ATTACH + ' вложений.'); return; }
+    var entry = { kind: kind, blob: file, name: file.name || (kind === 'photo' ? 'photo.jpg' : 'file'), url: null, ready: Promise.resolve() };
+    var li = document.createElement('li');
+    li.className = 'fin-thumb' + (kind === 'photo' ? '' : ' fin-thumb--file');
+    if (kind === 'photo') {
+      entry.url = URL.createObjectURL(file);
+      li.innerHTML = '<img alt="">';
+      li.firstChild.src = entry.url;
+      li.firstChild.alt = entry.name;
+    } else {
+      li.innerHTML = '<i class="ph ph-' + (/\.pdf$/i.test(entry.name) ? 'file-pdf' : 'file') + '"></i><span></span>';
+      li.querySelector('span').textContent = entry.name;
+    }
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'fin-thumb__x';
+    x.setAttribute('aria-label', 'Убрать ' + entry.name);
+    x.innerHTML = '<i class="ph ph-x"></i>';
+    li.appendChild(x);
+    li._entry = entry;
+    node._files.push(entry);
+    node.querySelector('.fin-thumbs').appendChild(li);
+    itemError(node, '');
+
+    if (kind === 'photo') {
+      li.classList.add('is-busy');
+      entry.ready = shrink(file).then(function (small) {
+        if (small) {
+          entry.blob = small;
+          entry.name = entry.name.replace(/\.[^.]+$/, '') + '.jpg';
+        }
+      }).finally(function () { li.classList.remove('is-busy'); });
+    }
+    entry.ready = entry.ready.then(function () {
+      if (entry.blob.size > MAX_FILE) {
+        removeFile(node, li);
+        itemError(node, '«' + entry.name + '» больше 15 МБ — такой файл не примем.');
+      }
+    });
+  }
+
+  function removeFile(node, li) {
+    var entry = li._entry;
+    node._files = node._files.filter(function (f) { return f !== entry; });
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    li.classList.add('is-leaving');
+    setTimeout(function () { li.remove(); }, reduce.matches ? 0 : 200);
   }
 
   // ── лист «Новый расход» ──────────────────────────────────────────────────
@@ -430,88 +588,6 @@
       form.querySelector('[data-total-label]').textContent = list.length > 1
         ? 'Итого · ' + list.length + ' ' + plural(list.length, 'трата', 'траты', 'трат')
         : 'Итого';
-    }
-
-    function itemError(node, text) {
-      node.querySelector('.fin-item__err').textContent = text || '';
-      node.classList.toggle('is-invalid', !!text);
-    }
-
-    function shake(node) {
-      if (reduce.matches) return;
-      node.classList.remove('fin-shake');
-      void node.offsetWidth;
-      node.classList.add('fin-shake');
-    }
-
-    // Фото с телефона — 5–10 МБ. Уменьшаем до 2000 px по длинной стороне:
-    // чек читается, а база не пухнет. Не вышло (HEIC, старый браузер) —
-    // отправляем как есть.
-    function shrink(file) {
-      if (!/^image\/(jpeg|png|webp)$/i.test(file.type) || !window.createImageBitmap) return Promise.resolve(null);
-      return createImageBitmap(file).then(function (bmp) {
-        var side = Math.max(bmp.width, bmp.height);
-        var k = Math.min(1, 2000 / side);
-        if (k === 1 && file.size < 1.5 * 1024 * 1024) { bmp.close && bmp.close(); return null; }
-        var canvas = document.createElement('canvas');
-        canvas.width = Math.round(bmp.width * k);
-        canvas.height = Math.round(bmp.height * k);
-        canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-        bmp.close && bmp.close();
-        return new Promise(function (resolve) {
-          canvas.toBlob(function (blob) { resolve(blob && blob.size < file.size ? blob : null); }, 'image/jpeg', 0.85);
-        });
-      }).catch(function () { return null; });
-    }
-
-    function addFile(node, kind, file) {
-      if (node._files.length >= MAX_ATTACH) { itemError(node, 'Не больше ' + MAX_ATTACH + ' вложений на одну трату.'); return; }
-      var entry = { kind: kind, blob: file, name: file.name || (kind === 'photo' ? 'photo.jpg' : 'file'), url: null, ready: Promise.resolve() };
-      var li = document.createElement('li');
-      li.className = 'fin-thumb' + (kind === 'photo' ? '' : ' fin-thumb--file');
-      if (kind === 'photo') {
-        entry.url = URL.createObjectURL(file);
-        li.innerHTML = '<img alt="">';
-        li.firstChild.src = entry.url;
-        li.firstChild.alt = entry.name;
-      } else {
-        li.innerHTML = '<i class="ph ph-' + (/\.pdf$/i.test(entry.name) ? 'file-pdf' : 'file') + '"></i><span></span>';
-        li.querySelector('span').textContent = entry.name;
-      }
-      var x = document.createElement('button');
-      x.type = 'button';
-      x.className = 'fin-thumb__x';
-      x.setAttribute('aria-label', 'Убрать ' + entry.name);
-      x.innerHTML = '<i class="ph ph-x"></i>';
-      li.appendChild(x);
-      li._entry = entry;
-      node._files.push(entry);
-      node.querySelector('.fin-thumbs').appendChild(li);
-      itemError(node, '');
-
-      if (kind === 'photo') {
-        li.classList.add('is-busy');
-        entry.ready = shrink(file).then(function (small) {
-          if (small) {
-            entry.blob = small;
-            entry.name = entry.name.replace(/\.[^.]+$/, '') + '.jpg';
-          }
-        }).finally(function () { li.classList.remove('is-busy'); });
-      }
-      entry.ready = entry.ready.then(function () {
-        if (entry.blob.size > MAX_FILE) {
-          removeFile(node, li);
-          itemError(node, '«' + entry.name + '» больше 15 МБ — такой файл не примем.');
-        }
-      });
-    }
-
-    function removeFile(node, li) {
-      var entry = li._entry;
-      node._files = node._files.filter(function (f) { return f !== entry; });
-      if (entry.url) URL.revokeObjectURL(entry.url);
-      li.classList.add('is-leaving');
-      setTimeout(function () { li.remove(); }, reduce.matches ? 0 : 200);
     }
 
     function addCategoryChip(code, label) {
@@ -572,14 +648,8 @@
       addItem(false);
     }
 
-    // Клик по уже выбранному способу оплаты снимает выбор: поле необязательное.
-    form.addEventListener('pointerdown', function (e) {
-      var label = e.target.closest('.fin-cat--pay');
-      if (label) label.querySelector('input').dataset.was = label.querySelector('input').checked ? '1' : '';
-    });
     form.addEventListener('click', function (e) {
       var t = e.target;
-      if (t.matches('.fin-cat--pay input') && t.dataset.was === '1') { t.checked = false; t.dataset.was = ''; }
       if (t.closest('[data-add-item]')) { addItem(true); return; }
       var rm = t.closest('[data-remove-item]');
       if (rm) { removeItem(rm.closest('.fin-item')); return; }
@@ -720,14 +790,19 @@
     var dlg = form.closest('dialog');
     var submit = form.querySelector('[data-submit]');
     var amount = form.querySelector('[data-amount]');
+    var docs = form.querySelector('[data-attach-box]');
+    docs._files = [];
 
-    form.addEventListener('pointerdown', function (e) {
-      var label = e.target.closest('.fin-cat--pay');
-      if (label) label.querySelector('input').dataset.was = label.querySelector('input').checked ? '1' : '';
+    form.addEventListener('change', function (e) {
+      var t = e.target;
+      if (t.matches('[data-att]')) {
+        Array.prototype.forEach.call(t.files || [], function (file) { addFile(docs, t.getAttribute('data-att'), file); });
+        t.value = '';
+      }
     });
     form.addEventListener('click', function (e) {
-      var t = e.target;
-      if (t.matches('.fin-cat--pay input') && t.dataset.was === '1') { t.checked = false; t.dataset.was = ''; }
+      var x = e.target.closest('.fin-thumb__x');
+      if (x) removeFile(docs, x.closest('.fin-thumb'));
     });
     form.addEventListener('input', function () {
       form.querySelector('[data-total]').textContent = money(parseAmount(amount.value) || 0);
@@ -745,9 +820,14 @@
         return;
       }
       setBusy(submit, true);
-      var body = new FormData(form);
-      body.set('amount', String(value));
-      fetch('/finances/income', { method: 'POST', body: body, credentials: 'same-origin' })
+      Promise.all(docs._files.map(function (f) { return f.ready; })).then(function () {
+        var body = new FormData(form);
+        body.set('amount', String(value));
+        docs._files.forEach(function (f) {
+          body.append(f.kind === 'photo' ? 'photos' : 'files', f.blob, f.name);
+        });
+        return fetch('/finances/income', { method: 'POST', body: body, credentials: 'same-origin' });
+      })
         .then(function (res) { return res.json().catch(function () { return { ok: false }; }); })
         .then(function (data) {
           setBusy(submit, false);
@@ -758,6 +838,9 @@
             form.querySelector('[name="description"]').value = '';
             form.querySelectorAll('[name="category"]').forEach(function (i) { i.checked = false; });
             form.querySelector('[data-total]').textContent = money(0);
+            docs._files.forEach(function (f) { if (f.url) URL.revokeObjectURL(f.url); });
+            docs._files = [];
+            docs.querySelector('.fin-thumbs').innerHTML = '';
           }, 360);
           return refreshLive({ added: data.id }).then(function () { toast('Поступление ' + money(value) + ' внесено'); });
         })
@@ -815,7 +898,7 @@
       var h = Math.max(0, y(v0) - y(v1));
       if (h <= 0) return '';
       var r = Math.min(3, bw / 2, h / 2);
-      return '<rect class="fin-bar-r" style="--i:' + i + '" x="' + x.toFixed(1) + '" y="' + y(v1).toFixed(1) +
+      return '<rect class="fin-bar-r" style="--i:' + Math.min(i, 15) + '" x="' + x.toFixed(1) + '" y="' + y(v1).toFixed(1) +
              '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="' + r.toFixed(1) + '" fill="' + color + '"/>';
     }
     for (var i = 0; i < n; i++) {
@@ -839,7 +922,7 @@
     box.innerHTML = out.join('');
     if (animate && !reduce.matches) {
       box.classList.add('is-drawing');
-      setTimeout(function () { box.classList.remove('is-drawing'); }, 560 + n * 12 + 50);
+      setTimeout(function () { box.classList.remove('is-drawing'); }, 400 + 120 + 50);
     }
 
     var tip = box.querySelector('.fin-tip');
@@ -912,7 +995,7 @@
       '<ul class="fin-donut__legend">' + legend + '</ul>';
     if (animate && !reduce.matches) {
       box.classList.add('is-drawing');
-      setTimeout(function () { box.classList.remove('is-drawing'); }, 820);
+      setTimeout(function () { box.classList.remove('is-drawing'); }, 560);
     }
     var center = box.querySelector('.fin-donut__center');
     function focus(i) {
@@ -982,7 +1065,8 @@
     resizeTimer = setTimeout(function () { renderCharts(false); }, 120);
   });
 
-  renderCharts(true);
+  // Графики вырастают только при первом показе за сеанс (plans/001).
+  renderCharts(document.documentElement.classList.contains('fin-first'));
 
   var auto = root.getAttribute('data-open-new');
   if (auto) openSheet(auto);

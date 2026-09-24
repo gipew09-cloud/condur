@@ -35,6 +35,7 @@ from app.models import (
     Expense,
     ExpenseAttachment,
     ExpenseCategory,
+    IncomeAttachment,
     ManualEntry,
     Shift,
     Trip,
@@ -410,15 +411,41 @@ async def income_rows(
                 ManualEntry.entry_date <= date_to,
             ).order_by(ManualEntry.entry_date.desc(), ManualEntry.id.desc())
         )
-        for entry in manual.scalars().all():
+        entries = manual.scalars().all()
+        atts = await _income_attachments(session, [e.id for e in entries])
+        for entry in entries:
+            own = atts.get(entry.id, [])
+            photos = sum(1 for a in own if a["kind"] == "photo")
             rows.append(LedgerRow(
                 source="manual", id=entry.id, at=entry.entry_date,
                 amount=Decimal(entry.amount_rub or 0), kind="income",
                 category=entry.category, category_label=entry.category or "Поступление",
                 color="#30d158", description=entry.description, created_by="owner",
+                attachments=own, photos=photos, files=len(own) - photos,
+                has_receipt=bool(own),
             ))
     rows.sort(key=_sort_key, reverse=True)
     return rows
+
+
+async def _income_attachments(session: AsyncSession, entry_ids: list[int]) -> dict[int, list[dict]]:
+    """Вложения поступлений — одним запросом, без самих байтов."""
+    if not entry_ids:
+        return {}
+    res = await session.execute(
+        select(
+            IncomeAttachment.id, IncomeAttachment.manual_entry_id, IncomeAttachment.kind,
+            IncomeAttachment.filename, IncomeAttachment.content_type, IncomeAttachment.size_bytes,
+        )
+        .where(IncomeAttachment.manual_entry_id.in_(entry_ids))
+        .order_by(IncomeAttachment.id)
+    )
+    out: dict[int, list[dict]] = {}
+    for att_id, entry_id, kind, name, ctype, size in res.all():
+        out.setdefault(entry_id, []).append({
+            "id": att_id, "kind": kind, "filename": name, "content_type": ctype, "size": size,
+        })
+    return out
 
 
 def cashflow(incomes: list[LedgerRow], expenses: list[LedgerRow],
@@ -660,6 +687,57 @@ async def delete_expense(session: AsyncSession, owner_id: int, expense_id: int) 
     await session.flush()
     from app.services import trip_service
     await trip_service.refresh_trip_costs(session, trip_id)
+    return True
+
+
+MAX_INCOME = MAX_AMOUNT * 10     # поступление за раз: до 10 млн ₽ (оплата по акту за месяц)
+
+
+async def create_income(
+    session: AsyncSession, *, owner_id: int, amount: Decimal | None, day: date,
+    category: str | None, description: str | None, attachments: list[NewAttachment],
+) -> ManualEntry:
+    """Ручное поступление с вложениями (платёжка, акт, выписка). Коммит — на
+    вызывающем. Выручка рейсов сюда НЕ пишется — она приходит из рейса сама."""
+    if amount is None or amount <= 0:
+        raise LedgerError("Укажите сумму больше нуля.")
+    if amount > MAX_INCOME:
+        raise LedgerError("Не больше 10 000 000 ₽ за раз.")
+    if len(attachments) > MAX_ATTACHMENTS:
+        raise LedgerError(f"Не больше {MAX_ATTACHMENTS} вложений.")
+    for att in attachments:
+        if len(att.data) > MAX_ATTACHMENT_BYTES:
+            raise LedgerError(f"Файл «{att.filename}» больше 15 МБ.")
+    entry = ManualEntry(
+        owner_id=owner_id, type="income", amount_rub=amount, entry_date=day,
+        category=(category or "").strip()[:100] or None,
+        description=(description or "").strip()[:500] or None,
+    )
+    session.add(entry)
+    await session.flush()
+    for att in attachments:
+        session.add(IncomeAttachment(
+            owner_id=owner_id, manual_entry_id=entry.id,
+            kind="photo" if att.kind == "photo" else "file",
+            filename=(att.filename or "")[:255] or None,
+            content_type=(att.content_type or "")[:100] or None,
+            size_bytes=len(att.data), data=att.data,
+        ))
+    await session.flush()
+    return entry
+
+
+async def delete_manual_entry(session: AsyncSession, owner_id: int, entry_id: int) -> bool:
+    """Удалить ручную запись вместе с вложениями. Чужая или нет — False."""
+    entry = await session.get(ManualEntry, entry_id)
+    if entry is None or entry.owner_id != owner_id:
+        return False
+    # ⚠️ Явно, как у расходов: на базе без каскадов вложения остались бы сиротами.
+    await session.execute(
+        delete(IncomeAttachment).where(IncomeAttachment.manual_entry_id == entry.id)
+    )
+    await session.delete(entry)
+    await session.flush()
     return True
 
 

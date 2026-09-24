@@ -2543,10 +2543,9 @@ async def finances_delete(
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    entry = await session.get(ManualEntry, entry_id)
-    if entry is None or entry.owner_id != owner.id:
+    # Вместе с документами поступления — через книгу денег.
+    if not await finance_ledger.delete_manual_entry(session, owner.id, entry_id):
         raise HTTPException(status_code=404)
-    await session.delete(entry)
     await session.commit()
     return Response(status_code=200)
 

@@ -1,0 +1,26 @@
+{# Стили «Финансов» и страховка для плавного перехода между их страницами.
+   ⚠️ Скрипт — прямо здесь, в <head>, а не в finance.js: событие pagereveal
+   приходит ДО того, как отложенный скрипт успевает загрузиться. Быстро нажали
+   дальше — браузер отменяет переход и пишет «Transition was skipped»; это не
+   ошибка, гасим её, чтобы не путала при проверках. #}
+<link rel="stylesheet" href="/static/finance.css?v={{ asset_v }}">
+<script>
+  // Появление обзора — один раз за сеанс (plans/001). Период и вкладки
+  // перезагружают страницу десятки раз: повторное «вырастание» графиков
+  // делало панель медленной. Нет хранилища — считаем, что уже видели.
+  try {
+    if (!sessionStorage.getItem('fin-seen')) {
+      document.documentElement.classList.add('fin-first');
+      sessionStorage.setItem('fin-seen', '1');
+    }
+  } catch (e) { /* приватный режим — без появления */ }
+  ['pageswap', 'pagereveal'].forEach(function (type) {
+    window.addEventListener(type, function (e) {
+      var vt = e.viewTransition;
+      if (!vt) return;
+      ['ready', 'finished', 'updateCallbackDone'].forEach(function (k) {
+        if (vt[k] && vt[k].catch) vt[k].catch(function () {});
+      });
+    });
+  });
+</script>

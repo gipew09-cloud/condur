@@ -171,11 +171,12 @@ async def _process_packet(
         prior_state = (
             await session.get(VehicleState, vehicle.id) if vehicle is not None else None
         )
-        # Последнее достоверное место — от него считаем, мог ли трекер там
-        # оказаться (скачок GPS).
-        prev_at = prior_state.last_seen_at if prior_state is not None and prior_state.is_valid else None
-        prev_lat = prior_state.latitude if prior_state is not None and prior_state.is_valid else None
-        prev_lon = prior_state.longitude if prior_state is not None and prior_state.is_valid else None
+        # Последнее достоверное место и ВРЕМЯ этой точки — от них считаем,
+        # мог ли трекер там оказаться (скачок GPS). См. jump_anchor: время
+        # «последнего пакета» сюда не годится (найдено 23.09.2026).
+        prev_at, prev_lat, prev_lon = await telemetry_service.jump_anchor(
+            session, prior_state
+        )
         if parsed is not None and vehicle is not None:
             for rec in parsed.records:
                 # Напряжения приходят отдельной подзаписью на всю запись —
@@ -419,9 +420,7 @@ async def _store_wialon_points(
         # Откуда машина «пришла»: последнее достоверное место. Нужно, чтобы
         # поймать скачок GPS — точку, до которой машина не могла доехать.
         prior = await session.get(VehicleState, vehicle.id)
-        prev_at = prior.last_seen_at if prior is not None and prior.is_valid else None
-        prev_lat = prior.latitude if prior is not None and prior.is_valid else None
-        prev_lon = prior.longitude if prior is not None and prior.is_valid else None
+        prev_at, prev_lat, prev_lon = await telemetry_service.jump_anchor(session, prior)
 
         last_good: VehicleTelemetryPoint | None = None
         last_any: VehicleTelemetryPoint | None = None
@@ -583,6 +582,12 @@ async def _store_wialon_points(
                     "motion_since_at", "is_valid", "anomaly_reason",
                     "fuel_level_raw", "fuel_temp_c",
                 )
+                if parked:
+                    # Трекер сам сказал «стою» — скорость ноль. Иначе у стоящей
+                    # машины висела скорость последней точки в движении
+                    # («стоит · 27 км/ч», снимок владельца 23.09.2026).
+                    values["speed_kmh"] = Decimal(0)
+                    update_cols = update_cols + ("speed_kmh",)
             stmt = pg_insert(VehicleState).values(**values)
             stmt = stmt.on_conflict_do_update(
                 index_elements=[VehicleState.vehicle_id],

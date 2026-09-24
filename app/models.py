@@ -541,6 +541,28 @@ class ExpenseAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class IncomeAttachment(Base):
+    """Вложение к поступлению: платёжка, акт, выписка, фото.
+
+    Владелец 24.09.2026: «почему в доходах нельзя прикрепить документ или
+    фото». Устроено как `ExpenseAttachment`, но принадлежит ручному
+    поступлению (`manual_entries`) и уходит вместе с ним.
+    """
+    __tablename__ = "income_attachments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    manual_entry_id: Mapped[int] = mapped_column(
+        ForeignKey("manual_entries.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(10))  # photo · file
+    filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ExpenseCategory(Base):
     """Свой вид расхода, заведённый владельцем кнопкой «+» у списка видов."""
     __tablename__ = "expense_categories"

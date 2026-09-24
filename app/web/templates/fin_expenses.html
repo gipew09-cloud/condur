@@ -2,7 +2,7 @@
 {% from "_fin_rows.html" import fin_row with context %}
 {% block title %}Расходы — Финансы{% endblock %}
 {% block body_class %}fin-body{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v={{ asset_v }}">{% endblock %}
+{% block head %}{% include "_fin_assets.html" %}{% endblock %}
 
 {% block content %}
 <div class="fin" id="fin" data-page="expenses"{% if open_new %} data-open-new="expense"{% endif %}>

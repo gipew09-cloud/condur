@@ -59,11 +59,12 @@
       <div class="fin-att">
         {% if r.legacy_photo %}<span class="fin-att__cell"><a class="fin-att__photo" href="/api/photo/{{ r.legacy_photo }}" target="_blank" rel="noopener" title="Чек от водителя"><img src="/api/photo/{{ r.legacy_photo }}" alt="Чек" loading="lazy"></a>{{ photo_origin(photo_origins, r.legacy_photo) }}</span>{% endif %}
         {% if r.legacy_web %}<a class="fin-att__photo" href="/api/expense-receipt/{{ r.id }}" target="_blank" rel="noopener" title="Чек"><img src="/api/expense-receipt/{{ r.id }}" alt="Чек" loading="lazy"></a>{% endif %}
+        {% set att_base = '/finances/income-attachments/' if (is_in and r.source == 'manual') else '/finances/attachments/' %}
         {% for a in r.attachments %}
           {% if a.kind == 'photo' %}
-            <a class="fin-att__photo" href="/finances/attachments/{{ a.id }}" target="_blank" rel="noopener"><img src="/finances/attachments/{{ a.id }}" alt="{{ a.filename or 'Фото' }}" loading="lazy"></a>
+            <a class="fin-att__photo" href="{{ att_base }}{{ a.id }}" target="_blank" rel="noopener"><img src="{{ att_base }}{{ a.id }}" alt="{{ a.filename or 'Фото' }}" loading="lazy"></a>
           {% else %}
-            <a class="fin-att__file" href="/finances/attachments/{{ a.id }}" target="_blank" rel="noopener">
+            <a class="fin-att__file" href="{{ att_base }}{{ a.id }}" target="_blank" rel="noopener">
               <i class="ph ph-{{ 'file-pdf' if (a.content_type or '') == 'application/pdf' else 'file' }}"></i>
               <span>{{ a.filename or 'Файл' }}</span>
             </a>

@@ -25,6 +25,7 @@ from app.models import (
     Expense,
     ExpenseAttachment,
     ExpenseCategory,
+    IncomeAttachment,
     ManualEntry,
     Owner,
     RouteTemplate,
@@ -69,6 +70,9 @@ async def wipe_owner_data(session: AsyncSession, owner_id: int) -> dict[str, int
         delete(ExpenseAttachment).where(ExpenseAttachment.owner_id == owner_id)
     )
     counts["расходы"] = await _del(delete(Expense).where(Expense.owner_id == owner_id))
+    counts["документы поступлений"] = await _del(
+        delete(IncomeAttachment).where(IncomeAttachment.owner_id == owner_id)
+    )
     counts["свои виды расходов"] = await _del(
         delete(ExpenseCategory).where(ExpenseCategory.owner_id == owner_id)
     )

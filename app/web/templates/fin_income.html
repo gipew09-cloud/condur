@@ -2,7 +2,7 @@
 {% from "_fin_rows.html" import fin_row with context %}
 {% block title %}Доходы — Финансы{% endblock %}
 {% block body_class %}fin-body{% endblock %}
-{% block head %}<link rel="stylesheet" href="/static/finance.css?v={{ asset_v }}">{% endblock %}
+{% block head %}{% include "_fin_assets.html" %}{% endblock %}
 
 {% block content %}
 <div class="fin" id="fin" data-page="income">
@@ -97,6 +97,19 @@
       <div class="fin-field">
         <label class="fin-label" for="if-desc">Комментарий <span class="fin-opt">необязательно</span></label>
         <input id="if-desc" type="text" name="description" maxlength="500" placeholder="Например, за рейсы 1–15 сентября" autocomplete="off">
+      </div>
+      {#- Владелец 24.09.2026: «почему в доходах нельзя прикрепить документ или
+          фото» — платёжка, акт, выписка хранятся рядом с суммой. -#}
+      <div class="fin-field" data-attach-box>
+        <div class="fin-label">Документы <span class="fin-opt">платёжка, акт, выписка — необязательно</span></div>
+        <div class="fin-attach">
+          <label class="fin-attach__btn"><input type="file" accept="image/*" capture="environment" data-att="photo" hidden><i class="ph ph-camera"></i>Камера</label>
+          <label class="fin-attach__btn"><input type="file" accept="image/*" multiple data-att="photo" hidden><i class="ph ph-image"></i>Галерея</label>
+          <label class="fin-attach__btn"><input type="file" multiple data-att="file" hidden
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.jpg,.jpeg,.png,.webp,.heic,application/pdf,image/*"><i class="ph ph-paperclip"></i>Файл</label>
+        </div>
+        <ul class="fin-thumbs"></ul>
+        <p class="fin-item__err" role="alert"></p>
       </div>
       <p class="fin-hint">Выручка рейсов сюда вносится сама — отдельно её записывать не нужно, иначе она посчитается дважды.</p>
     </div>

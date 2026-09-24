@@ -47,7 +47,7 @@ html:has(dialog.fin-sheet[open]) { overflow: hidden; }
   --fin-radius: 18px;
   --fin-shadow: 0 1px 1px rgba(0, 0, 0, .02), 0 6px 24px -10px rgba(0, 0, 0, .1);
   --fin-shadow-up: 0 1px 1px rgba(0, 0, 0, .02), 0 14px 34px -12px rgba(0, 0, 0, .18);
-  --fin-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --fin-ease: var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));   /* та же кривая, что в cabinet.css */
   --fin-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 
   /* Поля Pico — как в iOS: заливка вместо рамки, синее кольцо в фокусе. */
@@ -151,6 +151,15 @@ main.container .fin-sheet h2, main.container .fin-sheet h3 {
   background: #fff; font-weight: 600;
   box-shadow: 0 3px 8px rgba(0, 0, 0, .12), 0 3px 1px rgba(0, 0, 0, .04);
 }
+.fin-seg a.is-pressed { background: rgba(255, 255, 255, .55); }
+/* Плашка выбранной вкладки переезжает при переходе между страницами
+   раздела (plans/005, Shared element transition): перемещение по экрану —
+   ease-in-out. Где переходов нет, вкладка просто становится выбранной. */
+.fin-seg a[aria-current="page"] { view-transition-name: fin-seg-pill; }
+::view-transition-group(fin-seg-pill) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.77, 0, 0.175, 1);
+}
 .fin-seg__badge {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
   display: inline-grid; place-items: center;
@@ -193,7 +202,7 @@ main.container .fin-sheet h2, main.container .fin-sheet h3 {
   display: flex; flex-direction: column; gap: 10px; width: 250px; margin: 0; padding: 14px;
   background: #fff; border-radius: 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, .16);
   transform-origin: top left;
-  transition: opacity 160ms ease, transform 200ms var(--fin-ease);
+  transition: opacity 160ms var(--fin-ease), transform 200ms var(--fin-ease);
 }
 @starting-style { .fin-custom[open] .fin-custom__pop { opacity: 0; transform: scale(.96) translateY(-4px); } }
 .fin-custom__pop label { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12px; color: var(--fin-ink-3); font-weight: 500; }
@@ -205,7 +214,6 @@ main.container .fin-sheet h2, main.container .fin-sheet h3 {
   padding: 20px 22px; border-radius: var(--fin-radius);
   background: var(--fin-card); box-shadow: var(--fin-shadow);
 }
-.fin-card--list { padding-bottom: 8px; }
 .fin-card__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
 .fin .fin-card h2 { margin: 0; color: var(--fin-ink); font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
 .fin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -262,8 +270,8 @@ a.fin-kpi:active { transform: scale(.985); }
 .fin-col.is-hover .fin-band { fill: rgba(0, 0, 0, .035); }
 .fin-bar-r { transform-box: fill-box; transform-origin: 50% 100%; }
 .fin-chart.is-drawing .fin-bar-r {
-  animation: fin-grow 560ms var(--fin-ease) both;
-  animation-delay: calc(var(--i, 0) * 12ms);
+  animation: fin-grow 400ms var(--fin-ease) both;
+  animation-delay: calc(var(--i, 0) * 8ms);          /* не больше 120 мс — см. finance.js */
 }
 @keyframes fin-grow { from { transform: scaleY(.001); } }
 .fin-tip {
@@ -288,7 +296,7 @@ a.fin-kpi:active { transform: scale(.985); }
   fill: none; cursor: pointer;
   transition: opacity 200ms ease, stroke-width 200ms var(--fin-ease);
 }
-.fin-donut.is-drawing .fin-donut__seg { animation: fin-draw 760ms var(--fin-ease) both; }
+.fin-donut.is-drawing .fin-donut__seg { animation: fin-draw 500ms var(--fin-ease) both; }
 @keyframes fin-draw { from { stroke-dasharray: 0 1000; } }
 .fin-donut.has-focus .fin-donut__seg:not(.is-on) { opacity: .28; }
 .fin-donut__seg.is-on { stroke-width: 26; }
@@ -321,8 +329,8 @@ a.fin-kpi:active { transform: scale(.985); }
 .fin-splitbar i {
   display: block; width: var(--w); height: 100%; background: var(--fin-blue);
   box-shadow: 2px 0 0 #fff; transform-origin: left;
-  animation: fin-grow-x 640ms var(--fin-ease) both 120ms;
 }
+html.fin-first .fin-splitbar i { animation: fin-grow-x 400ms var(--fin-ease) both 60ms; }
 @keyframes fin-grow-x { from { transform: scaleX(.001); } }
 .fin-spark { height: 64px; }
 .fin-spark__cap { margin-top: -8px; font-size: 12px; }
@@ -341,12 +349,17 @@ a.fin-kpi:active { transform: scale(.985); }
 .fin-hbar__track { display: block; height: 6px; overflow: hidden; border-radius: 3px; background: var(--fin-fill); }
 .fin-hbar__track i {
   display: block; width: var(--w); height: 100%; border-radius: 3px; background: var(--c);
-  transform-origin: left; animation: fin-grow-x 640ms var(--fin-ease) both 80ms;
+  transform-origin: left;
 }
+html.fin-first .fin-hbar__track i { animation: fin-grow-x 400ms var(--fin-ease) both 60ms; }
 .fin-hbar__sub { grid-column: 1 / -1; color: var(--fin-ink-3); font-size: 12px; }
 
-/* Появление карточек обзора — один раз при открытии страницы. */
-.fin-rise { animation: fin-rise 380ms var(--fin-ease) both; animation-delay: calc(var(--i, 0) * 35ms); }
+/* Изменившаяся сумма проявляется (plans/004). Цифры табличные — ширина не прыгает. */
+.fin-changed { animation: fin-morph 260ms var(--fin-ease) both; }
+@keyframes fin-morph { from { opacity: .35; filter: blur(2px); transform: translateY(3px); } }
+
+/* Появление карточек обзора — только при первом показе за сеанс (plans/001). */
+html.fin-first .fin-rise { animation: fin-rise 320ms var(--fin-ease) both; animation-delay: calc(var(--i, 0) * 30ms); }
 @keyframes fin-rise { from { opacity: 0; transform: translateY(8px); } }
 
 /* ── расходы: итоги, структура, отборы ──────────────────────────────────── */
@@ -393,7 +406,7 @@ a.fin-sum__item.is-on { box-shadow: var(--fin-shadow), inset 0 0 0 2px var(--fin
 .fin-filters__form {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 12px;
   margin: 8px 0 0; padding: 14px; border-radius: 16px; background: #fff; box-shadow: var(--fin-shadow);
-  transition: opacity 180ms ease, transform 220ms var(--fin-ease);
+  transition: opacity 180ms var(--fin-ease), transform 220ms var(--fin-ease);
 }
 @starting-style { .fin-filters[open] .fin-filters__form { opacity: 0; transform: translateY(-4px); } }
 .fin-filters__form label { display: flex; flex-direction: column; gap: 4px; margin: 0; color: var(--fin-ink-3); font-size: 12px; font-weight: 500; }
@@ -410,7 +423,6 @@ a.fin-sum__item.is-on { box-shadow: var(--fin-shadow), inset 0 0 0 2px var(--fin
 .fin .fin-day__head h3 { margin: 0; color: var(--fin-ink); font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .fin-day__head span { color: var(--fin-ink-3); font-size: 13px; font-variant-numeric: tabular-nums; }
 .fin-list { overflow: hidden; border-radius: var(--fin-radius); background: #fff; box-shadow: var(--fin-shadow); }
-.fin-list--flat { border-radius: 0; box-shadow: none; margin: 0 -22px; }
 
 .fin-row { position: relative; }
 .fin-row + .fin-row::before {
@@ -423,8 +435,6 @@ a.fin-sum__item.is-on { box-shadow: var(--fin-shadow), inset 0 0 0 2px var(--fin
   font: inherit; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: background-color 150ms ease;
 }
-.fin-list--flat .fin-row__main { padding-left: 22px; padding-right: 22px; }
-.fin-list--flat .fin-row + .fin-row::before { left: 74px; }
 .fin .fin-row__main:active { background: rgba(0, 0, 0, .045); }
 @media (hover: hover) and (pointer: fine) { .fin .fin-row__main:hover { background: rgba(0, 0, 0, .02); } }
 .fin .fin-row__main:focus-visible { outline: 2px solid var(--fin-blue); outline-offset: -2px; }
@@ -451,19 +461,18 @@ a.fin-sum__item.is-on { box-shadow: var(--fin-shadow), inset 0 0 0 2px var(--fin
 .fin-badge--rejected { background: var(--fin-red-soft); color: var(--fin-red-ink); }
 .fin-clip { display: inline-flex; align-items: center; gap: 2px; color: var(--fin-ink-4); font-size: 12px; font-variant-numeric: tabular-nums; }
 .fin-clip.is-missing { color: #c7c7cc; }
-.fin-row__chev { color: #c7c7cc; font-size: 14px; transition: transform 260ms var(--fin-ease); }
+.fin-row__chev { color: #c7c7cc; font-size: 14px; transition: transform 220ms var(--fin-ease); }
 .fin-row.is-open .fin-row__chev { transform: rotate(180deg); }
 
 /* Раскрытие строки: высота через grid 0fr→1fr, содержимое — лёгкий подъём. */
-.fin-row__more { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 280ms var(--fin-ease); }
+.fin-row__more { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 220ms var(--fin-ease); }
 .fin-row.is-open .fin-row__more { grid-template-rows: 1fr; }
 .fin-row__inner { min-height: 0; overflow: hidden; }
 .fin-row__pad {
   display: flex; flex-direction: column; gap: 14px; padding: 0 16px 16px 68px;
   opacity: 0; transform: translateY(-4px);
-  transition: opacity 180ms ease, transform 280ms var(--fin-ease);
+  transition: opacity 180ms var(--fin-ease), transform 220ms var(--fin-ease);
 }
-.fin-list--flat .fin-row__pad { padding-left: 74px; padding-right: 22px; }
 .fin-row.is-open .fin-row__pad { opacity: 1; transform: none; }
 .fin-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 16px; margin: 0; }
 .fin-facts div { margin: 0; min-width: 0; }
@@ -539,14 +548,16 @@ dialog.fin-sheet {
   box-shadow: -24px 0 60px rgba(0, 0, 0, .16);
   -webkit-backdrop-filter: none; backdrop-filter: none;
   transform: translateX(0);
-  transition: transform 380ms var(--fin-drawer), display 380ms allow-discrete, overlay 380ms allow-discrete;
+  /* Уход — классом .is-closing ДО close(); плавное исчезновение самого окна
+     (display/overlay allow-discrete) не нужно и возвращало лист на экран. */
+  transition: transform 380ms var(--fin-drawer);
 }
 dialog.fin-sheet[open] { display: flex; }
 @starting-style { dialog.fin-sheet[open] { transform: translateX(100%); } }
 dialog.fin-sheet.is-closing { transform: translateX(100%); transition-duration: 260ms; }
 dialog.fin-sheet::backdrop {
   background: rgba(0, 0, 0, .3);
-  transition: opacity 300ms ease, display 300ms allow-discrete, overlay 300ms allow-discrete;
+  transition: opacity 300ms var(--fin-ease);
 }
 @starting-style { dialog.fin-sheet[open]::backdrop { opacity: 0; } }
 dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
@@ -610,7 +621,7 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
 }
 .fin-toggle input:disabled + span { color: var(--fin-ink-4); cursor: default; }
 .fin-toggle input:focus-visible + span { outline: 2px solid var(--fin-blue); outline-offset: 1px; }
-.fin-reveal { transition: opacity 200ms ease, transform 240ms var(--fin-ease); }
+.fin-reveal { transition: opacity 200ms var(--fin-ease), transform 240ms var(--fin-ease); }
 @starting-style { .fin-reveal { opacity: 0; transform: translateY(-4px); } }
 
 /* Кнопки-чипы выбора: вид расхода, способ оплаты. Как кнопки в боте. */
@@ -643,7 +654,7 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
 .fin-item {
   display: flex; flex-direction: column; gap: 12px; padding: 14px;
   border-radius: 16px; background: #fff; box-shadow: inset 0 0 0 1px var(--fin-line);
-  transition: opacity 220ms ease, transform 300ms var(--fin-ease), box-shadow 200ms ease;
+  transition: opacity 220ms var(--fin-ease), transform 300ms var(--fin-ease), box-shadow 200ms ease;
 }
 @starting-style { .fin-item { opacity: 0; transform: translateY(10px) scale(.98); } }
 .fin-item.is-leaving { opacity: 0; transform: scale(.96); }
@@ -680,7 +691,18 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
   color: var(--fin-ink); font-size: 34px; font-weight: 700; letter-spacing: -.02em;
   font-variant-numeric: tabular-nums;
 }
-.fin-sheet .fin-amount input:focus { box-shadow: none; }
+/* ⚠️ Одна обводка — вокруг всего блока суммы (.fin-amount:focus-within).
+   Общее правило кабинета (cabinet.css: input:focus … !important) рисовало
+   вторую, вокруг самого поля, — «синяя в синей» (владелец 24.09.2026).
+   Перебить можно только тоже !important и более точным селектором. */
+.fin-sheet .fin-amount input,
+.fin-sheet .fin-amount input:focus,
+.fin-sheet .fin-amount input:focus-visible {
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none;
+}
 .fin-amount > span[aria-hidden] { color: var(--fin-ink-3); font-size: 26px; font-weight: 600; }
 
 .fin-attach { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -696,7 +718,7 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
 .fin-thumbs:empty { display: none; }
 .fin-thumb {
   position: relative; width: 64px; height: 64px; border-radius: 12px; background: var(--fin-fill);
-  transition: opacity 200ms ease, transform 240ms var(--fin-ease);
+  transition: opacity 200ms var(--fin-ease), transform 240ms var(--fin-ease);
 }
 @starting-style { .fin-thumb { opacity: 0; transform: scale(.9); } }
 .fin-thumb.is-leaving { opacity: 0; transform: scale(.9); }
@@ -757,10 +779,6 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
   .fin-seg { display: flex; align-self: stretch; }
   .fin-seg a { flex: 1; padding: 8px 6px; }
   .fin-card { padding: 16px; }
-  .fin-list--flat { margin: 0 -16px; }
-  .fin-list--flat .fin-row__main { padding-left: 16px; padding-right: 16px; }
-  .fin-list--flat .fin-row + .fin-row::before { left: 68px; }
-  .fin-list--flat .fin-row__pad { padding-left: 16px; padding-right: 16px; }
   .fin-row__pad { padding-left: 16px; }
   .fin-sum { gap: 8px; }
   .fin-sum__item { padding: 10px 12px; border-radius: 14px; }
@@ -795,7 +813,7 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
   .fin-row.is-leaving { transition: opacity 150ms ease !important; transform: none; }
   dialog.fin-sheet, dialog.fin-sheet.is-closing {
     transform: none !important;
-    transition: opacity 200ms ease, display 200ms allow-discrete, overlay 200ms allow-discrete;
+    transition: opacity 200ms ease;
   }
   @starting-style { dialog.fin-sheet[open] { opacity: 0; } }
   dialog.fin-sheet.is-closing { opacity: 0; }

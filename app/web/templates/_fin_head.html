@@ -6,6 +6,10 @@
   <div class="fin-head__row">
     <h1 class="fin-title">Финансы</h1>
     <div class="fin-head__actions">
+      {#- Акты — часть «Финансов» (у /acts подсвечен этот раздел), но ни в меню,
+          ни в новом разделе ссылки на них не было — 24.09.2026 владелец их
+          потерял. -#}
+      <a class="fin-btn fin-btn--ghost" href="/acts" title="Акты выполненных работ и выгрузка"><i class="ph ph-file-text"></i><span>Акты</span></a>
       {% if fin_tab == 'overview' %}
         <a class="fin-btn fin-btn--ghost" href="/finances/export.xlsx?period_from={{ period_from }}&period_to={{ period_to }}"
            title="Скачать доходы, расходы и рейсы за период"><i class="ph ph-download-simple"></i><span>Excel</span></a>

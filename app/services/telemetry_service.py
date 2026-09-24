@@ -706,6 +706,32 @@ def segment_movements(
     return smoothed
 
 
+async def jump_anchor(session, state) -> tuple:
+    """От какой точки судить «скачок»: место И ВРЕМЯ последней достоверной
+    точки. (None, None, None) — судить не от чего.
+
+    ⚠️ Время берём у самой точки (`last_point_id`), а НЕ `state.last_seen_at`.
+    Найдено по логам 23.09.2026: Т772НХ178 17 минут ехал без спутников —
+    трекер раз в минуту слал (0, 0), и `last_seen_at` сдвигался вперёд, а
+    место оставалось старым (Шушары). Спутники вернулись уже в Обухово, в
+    9 км, — и фильтр посчитал «9 км за 50 с», хотя ехал он 17 минут. Хуже:
+    каждую следующую точку он сравнивал с той же старой, с разницей в минуту,
+    и браковал её снова — машина час «стояла» не там, где стоит.
+    С временем точки разрыв больше двух минут — и судить скачок нельзя, как и
+    задумано: машина могла честно уехать.
+    """
+    if state is None or not state.is_valid or state.latitude is None:
+        return None, None, None
+    if not state.last_point_id:
+        return None, None, None
+    from app.models import VehicleTelemetryPoint
+
+    point = await session.get(VehicleTelemetryPoint, state.last_point_id)
+    if point is None or point.observed_at is None:
+        return None, None, None
+    return point.observed_at, state.latitude, state.longitude
+
+
 def gps_jump_reason(prev_at, prev_lat, prev_lon, at, lat, lon) -> str | None:
     """«Скачок GPS»: метка улетела и вернулась. Возвращает причину или None.
 
