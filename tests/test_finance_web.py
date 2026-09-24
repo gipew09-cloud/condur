@@ -219,8 +219,12 @@ def test_overview_shows_money_charts_and_attention():
     async def body(c: Cabinet):
         html = _html(await c.get("/finances"))
         for text in ("Финансы", "Прибыль", "Денежный поток", "Куда уходят деньги",
-                     "Топливо и остальное", "Машины", "Направления", "Последние операции"):
+                     "Топливо и остальное", "Машины", "Направления"):
             assert text in html, text
+        # «Последние операции» убраны по просьбе владельца 24.09.2026.
+        assert "Последние операции" not in html
+        # Акты — в шапке раздела и в раскрывашке меню.
+        assert html.count('href="/acts"') == 2
         # Переключатель разделов и стрелка-раскрывашка в меню.
         assert 'aria-current="page">Обзор' in html
         assert 'popovertarget="navFinance"' in html and 'href="/finances/income"' in html
@@ -423,7 +427,7 @@ def test_decision_from_ledger_moves_money_into_totals():
         assert resp["status"] == 200 and _json(resp)["status"] == "approved"
         after = _html(await c.get("/finances"))
         assert kpi.format("7\u202f640") in after             # 640 + 7 000 одобренных
-        assert "ждёт решения" not in after.split("Последние операции")[0]
+        assert "ждёт решения" not in after
     _run(body)
 
 
@@ -539,4 +543,57 @@ def test_trip_profit_follows_the_ledger():
 
         await c.call("POST", f"/finances/expenses/{new_id}/delete")
         assert await costs() == (Decimal("0.00"), Decimal("0.00"), Decimal("19000.00"))
+    _run(body)
+
+
+def test_income_with_documents_shows_and_deletes_them():
+    """Владелец 24.09.2026: «почему в доходах нельзя прикрепить документ или фото»."""
+    async def body(c: Cabinet):
+        from app.models import IncomeAttachment
+
+        resp = await c.post_multipart("/finances/income", {
+            "amount": "60 000", "entry_date": TODAY.isoformat(), "category": "Оплата по акту",
+        }, files=[
+            ("photos", "платёжка.png", "image/png", PNG),
+            ("files", "акт.pdf", "application/pdf", b"%PDF-1.4 act"),
+        ])
+        assert resp["status"] == 200, resp["body"]
+        entry_id = _json(resp)["id"]
+        async with c.maker() as s:
+            atts = (await s.execute(select(IncomeAttachment).order_by(IncomeAttachment.id))).scalars().all()
+            assert [(a.manual_entry_id, a.kind) for a in atts] == [(entry_id, "photo"), (entry_id, "file")]
+            photo_id, file_id = atts[0].id, atts[1].id
+
+        html = _html(await c.get("/finances/income"))
+        assert f"/finances/income-attachments/{photo_id}" in html
+        assert f"/finances/income-attachments/{file_id}" in html
+        assert 'data-attach-box' in html                        # кнопки в листе поступления
+        pic = await c.get(f"/finances/income-attachments/{photo_id}")
+        assert pic["status"] == 200 and pic["body"] == PNG
+
+        # Удаление поступления уносит и документы.
+        assert (await c.call("POST", f"/finances/delete/{entry_id}"))["status"] == 200
+        async with c.maker() as s:
+            assert (await s.execute(select(IncomeAttachment))).first() is None
+        assert (await c.get(f"/finances/income-attachments/{photo_id}"))["status"] == 404
+
+        too_big = await c.post_form("/finances/income", {"amount": "10000001"})
+        assert too_big["status"] == 400 and "10 000 000" in _json(too_big)["message"]
+    _run(body)
+
+
+def test_svg_attachment_never_opens_inline():
+    """SVG — «картинка» со скриптом внутри: открывать в кабинете нельзя."""
+    async def body(c: Cabinet):
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+        resp = await c.post_multipart("/finances/expenses", {
+            "items": json.dumps([{"category": "fuel", "amount": "10"}]), "link": "company",
+        }, files=[("photos_0", "x.svg", "image/svg+xml", svg)])
+        assert resp["status"] == 200
+        async with c.maker() as s:
+            att_id = (await s.execute(select(ExpenseAttachment.id))).scalar_one()
+        got = await c.get(f"/finances/attachments/{att_id}")
+        assert got["headers"]["content-disposition"].startswith("attachment")
+        assert got["headers"]["content-type"] == "application/octet-stream"
+        assert "sandbox" in got["headers"]["content-security-policy"]
     _run(body)

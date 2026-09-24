@@ -33,7 +33,7 @@ def test_alembic_migrations_are_single_linear_chain():
 
     referenced = {down for down in revisions.values() if down is not None}
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0023_finance_ledger"]
+    assert heads == ["0024_income_attachments"]
 
     walked = []
     current = heads[0]
