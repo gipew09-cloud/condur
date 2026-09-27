@@ -65,7 +65,7 @@ from app.services import (
     act_service, auth_service, background, billing, driver_access_service,
     driver_actions_service,
     driver_photos, expense_flow, expense_service, feed_facts, finance_ledger,
-    geocode_service, rc_service, telemetry_service, trip_service,
+    geocode_service, rc_service, route_order, telemetry_service, trip_service,
 )
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
@@ -75,6 +75,7 @@ from app.services.timeutil import (
     cashflow_buckets,
     fmt_dt,
     month_floor,
+    now_in_tz,
     owner_tz,
     smart_since_label,
     to_owner_tz,
@@ -2710,10 +2711,22 @@ async def finances_export(
 # =========================================================================
 # /acts — акты оказанных услуг по РЦ за период (форма 101 РС, .xlsx)
 # =========================================================================
-def _acts_range(df: date, dt: date) -> tuple[datetime, datetime]:
-    start = datetime(df.year, df.month, df.day, tzinfo=timezone.utc)
-    end = datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc) + timedelta(days=1)
-    return start, end
+def _acts_range(df: date, dt: date, tz_name: str | None) -> tuple[datetime, datetime]:
+    """Период акта — сутки по часам владельца.
+
+    ⚠️ Раньше сутки считались по Гринвичу: у московского владельца период
+    начинался в 03:00, и рейс, закрытый 1-го числа в 01:30, уходил в акт за
+    прошлый месяц с датой «30.09» (разбор 27.09.2026). Ночные рейсы на РЦ —
+    обычное дело."""
+    tz = owner_tz(tz_name)
+    start = datetime(df.year, df.month, df.day, tzinfo=tz)
+    end = datetime(dt.year, dt.month, dt.day, tzinfo=tz) + timedelta(days=1)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def _act_day(moment: datetime | None, tz_name: str | None) -> datetime | None:
+    """Дата рейса в акте — тоже по часам владельца, как в остальном кабинете."""
+    return to_owner_tz(moment, tz_name)
 
 
 def _executor_from_owner(owner: Owner) -> dict:
@@ -2779,7 +2792,7 @@ async def acts_page(
     origin_override: Annotated[str | None, Query()] = None,
 ):
     df, dt = _parse_period(period_from, period_to)
-    start, end = _acts_range(df, dt)
+    start, end = _acts_range(df, dt, owner.timezone)
     # Отдельные рейсы за период — для чек-листа «какие включить в акт».
     rows_res = await session.execute(
         select(
@@ -2801,7 +2814,7 @@ async def acts_page(
     trips = [
         {
             "id": tid,
-            "date": cat,
+            "date": _act_day(cat, owner.timezone),
             "origin": orig,
             "destination": dest,
             "destination_address": rc_service.canonical_rc_address(dest, rc_lookup),
@@ -2830,7 +2843,7 @@ async def acts_page(
             "period_from": df.isoformat(), "period_to": dt.isoformat(),
             "customers": customers,
             "total_amount": total_amount, "total_trips": total_trips,
-            "act_date": act_date or date.today().isoformat(),
+            "act_date": act_date or now_in_tz(owner.timezone).date().isoformat(),
             "act_title": title or "Акт выполненных работ",
             "act_number_val": act_number or "",
             "sel_customer_id": customer_id or "",
@@ -2859,7 +2872,7 @@ async def acts_export(
     с реквизитами Исполнителя/Заказчика, итогом и суммой прописью.
     title — название в шапке; trip_ids — какие рейсы включить (пусто = все)."""
     df, dt = _parse_period(period_from, period_to)
-    start, end = _acts_range(df, dt)
+    start, end = _acts_range(df, dt, owner.timezone)
 
     # Заказчик: явно выбранный или первый активный у владельца.
     # customer_id приходит строкой (пустая, если заказчиков нет) — парсим мягко.
@@ -2905,7 +2918,7 @@ async def acts_export(
     origin_for_act = (origin_override or "").strip()
     rows = [
         {
-            "date": trip.completed_at,
+            "date": _act_day(trip.completed_at, owner.timezone),
             "origin": origin_for_act or trip.origin,
             "destination": trip.destination,
             "destination_address": rc_service.canonical_rc_address(trip.destination, rc_lookup),
@@ -2917,9 +2930,9 @@ async def acts_export(
     ]
 
     try:
-        adate = date.fromisoformat(act_date) if act_date else date.today()
+        adate = date.fromisoformat(act_date) if act_date else now_in_tz(owner.timezone).date()
     except ValueError:
-        adate = date.today()
+        adate = now_in_tz(owner.timezone).date()
     number = (act_number or "").strip() or "б/н"
 
     wb = act_service.build_act_101rs(
@@ -3551,11 +3564,9 @@ async def _route_templates_view(
         )
     ).scalars().all()
 
-    by_origin: dict[str, list] = {}
-    for t in rows:
-        by_origin.setdefault(_origin_key(t.origin), []).append(t)
-    # склады по алфавиту — как было, когда сортировкой занималась база
-    by_origin = dict(sorted(by_origin.items()))
+    # Склады — в порядке владельца (▲▼ у склада), пока не переставлены — по
+    # алфавиту. Тот же порядок у бота и приложения (route_order.grouped).
+    by_origin = route_order.grouped(rows, key=_origin_key)
 
     known = {(c.name or "").strip() for c in centers if (c.name or "").strip()}
     stale = {
@@ -3678,18 +3689,28 @@ async def routes_template_add(
         ),
         None,
     )
+    # Новый маршрут — в конец своего склада (раньше вставал первым), новый
+    # склад — последним.
+    active = [t for t in mine if t.is_active]
     if existing is None:
-        session.add(RouteTemplate(
+        existing = RouteTemplate(
             owner_id=owner.id,
             name=f"{origin} → {destination}"[:100],
             origin=origin, destination=destination,
             default_cargo=_norm(cargo), is_active=True,
-        ))
+            sort_order=route_order.next_place(active, key, key=_origin_key),
+        )
+        session.add(existing)
     else:
+        if not existing.is_active:
+            existing.sort_order = route_order.next_place(active, key, key=_origin_key)
         existing.is_active = True
         existing.default_cargo = _norm(cargo) or existing.default_cargo
     await session.commit()
-    return RedirectResponse("/routes", status_code=303)
+    # ⚠️ Страница длинная (прибыль, справочник РЦ, маршруты): без якоря она
+    # открывалась в самом верху, и добавленный маршрут приходилось искать
+    # прокруткой (владелец 27.09.2026). Якорь — на сам маршрут.
+    return RedirectResponse(f"/routes#rt-{existing.id}", status_code=303)
 
 
 @app.post("/routes/template/{template_id}/delete")
@@ -3701,9 +3722,49 @@ async def routes_template_delete(
     tmpl = await session.get(RouteTemplate, template_id)
     if tmpl is None or tmpl.owner_id != owner.id:
         raise HTTPException(status_code=404)
+    # Куда вернуть взгляд после удаления: сосед по складу, а если склад
+    # опустел — сам список маршрутов (а не верх длинной страницы).
+    folders = await _route_folders(session, owner.id)
+    anchor = "route-templates"
+    for routes in folders:
+        ids = [r.id for r in routes]
+        if tmpl.id in ids:
+            rest = [r for r in routes if r.id != tmpl.id]
+            if rest:
+                at = min(ids.index(tmpl.id), len(rest) - 1)
+                anchor = f"rt-{rest[at].id}"
+            break
     tmpl.is_active = False
     await session.commit()
-    return RedirectResponse("/routes", status_code=303)
+    return RedirectResponse(f"/routes#{anchor}", status_code=303)
+
+
+async def _route_folders(session: AsyncSession, owner_id: int) -> list[list]:
+    """Активные маршруты владельца папками — ровно как на экране."""
+    rows = (await session.execute(
+        select(RouteTemplate)
+        .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
+        .order_by(RouteTemplate.sort_order, RouteTemplate.destination)
+    )).scalars().all()
+    return list(route_order.grouped(rows, key=_origin_key).values())
+
+
+def _moved_answer(request: Request, ok: bool = True):
+    """Ответ на ▲▼. Страница двигает строку сама и ждёт короткое «да»; без
+    скрипта — обратно на список маршрутов (а не в верх страницы)."""
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"ok": ok})
+    return RedirectResponse("/routes#route-templates", status_code=303)
+
+
+def _heal_origins(folders: list[list]) -> None:
+    # Заодно лечим данные: приводим написание склада к ключу. Лишний пробел —
+    # снаружи или внутри названия — и склад двоился на экране.
+    for routes in folders:
+        for item in routes:
+            healed = _origin_key(item.origin)
+            if item.origin and healed != "—" and item.origin != healed:
+                item.origin = healed
 
 
 @app.post("/routes/template/{template_id}/move")
@@ -3716,66 +3777,57 @@ async def routes_template_move(
 ):
     """Поднять/опустить маршрут внутри своего склада.
 
-    Водитель в боте видит маршруты в том же порядке, что здесь. Частые
-    маршруты владелец поднимает наверх — редкие уходят вниз и не мозолят глаза.
-    Меняемся местами с соседом: берём соседний по порядку маршрут ТОГО ЖЕ
-    склада и обмениваемся значениями sort_order.
-    """
-    async def _render_list():
-        """Отдать обновлённый кусок списка (HTMX) или вернуться на страницу."""
-        if not _is_htmx(request):
-            return RedirectResponse("/routes", status_code=303)
-        centers = await _active_distribution_centers(session, owner.id)
-        by_origin, stale = await _route_templates_view(session, owner.id, centers)
-        return templates.TemplateResponse(
-            "_route_templates.html",
-            {
-                "request": request,
-                "templates_by_origin": by_origin,
-                "stale_destinations": stale,
-            },
-        )
+    Водитель в боте и в приложении видит маршруты в том же порядке, что здесь.
+    Частые маршруты владелец поднимает наверх — редкие уходят вниз.
 
+    ⚠️ Раньше ответом был заново нарисованный список, и страница подменяла его
+    целиком. Браузер при этом «держал» старую строку и прокручивал страницу на
+    высоту всего списка — владелец 27.09.2026: «страница обновляется и
+    спавнится вверху». Теперь строку двигает сама страница, сюда приходит
+    только «запиши порядок».
+    """
     tmpl = await session.get(RouteTemplate, template_id)
     if tmpl is None or tmpl.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    up = direction == "up"
+    folders = await _route_folders(session, owner.id)
+    for routes in folders:
+        idx = next((i for i, r in enumerate(routes) if r.id == tmpl.id), None)
+        if idx is None:
+            continue
+        other = idx - 1 if direction == "up" else idx + 1
+        if 0 <= other < len(routes):
+            routes[idx], routes[other] = routes[other], routes[idx]
+            route_order.renumber(folders)
+            _heal_origins(folders)
+            await session.commit()
+        break
+    return _moved_answer(request)
 
-    # Берём ВСЕ маршруты владельца в том же порядке, в каком их видит экран,
-    # и отбираем группу тем же ключом склада — иначе список и перестановка
-    # считают «соседей» по-разному (см. _origin_key).
-    everything = list((
-        await session.execute(
-            select(RouteTemplate)
-            .where(
-                RouteTemplate.owner_id == owner.id,
-                RouteTemplate.is_active.is_(True),
-            )
-            .order_by(RouteTemplate.sort_order, RouteTemplate.destination)
-        )
-    ).scalars().all())
-    key = _origin_key(tmpl.origin)
-    siblings = [t for t in everything if _origin_key(t.origin) == key]
 
-    idx = next((i for i, s in enumerate(siblings) if s.id == tmpl.id), None)
-    if idx is None:
-        return await _render_list()
-    neighbour_idx = idx - 1 if up else idx + 1
-    if not (0 <= neighbour_idx < len(siblings)):
-        return await _render_list()  # уже с краю
-
-    # Пересобираем порядок целиком с шагом 10: надёжнее обмена значениями,
-    # если у части маршрутов sort_order одинаковый (например все нули).
-    siblings[idx], siblings[neighbour_idx] = siblings[neighbour_idx], siblings[idx]
-    for position, item in enumerate(siblings, start=1):
-        item.sort_order = position * 10
-        # Заодно лечим данные: приводим написание склада к ключу. Лишний
-        # пробел — снаружи или внутри названия — и склад двоился на экране.
-        healed = _origin_key(item.origin)
-        if item.origin and healed != "—" and item.origin != healed:
-            item.origin = healed
-    await session.commit()
-    return await _render_list()
+@app.post("/routes/folder/move")
+async def routes_folder_move(
+    request: Request,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    origin: Annotated[str, Form()],
+    direction: Annotated[str, Form()],
+):
+    """Поднять/опустить склад целиком (владелец 27.09.2026). Водитель видит
+    склады в боте и приложении в том же порядке."""
+    folders = await _route_folders(session, owner.id)
+    key = _origin_key(origin)
+    idx = next(
+        (i for i, routes in enumerate(folders) if _origin_key(routes[0].origin) == key),
+        None,
+    )
+    if idx is not None:
+        other = idx - 1 if direction == "up" else idx + 1
+        if 0 <= other < len(folders):
+            folders[idx], folders[other] = folders[other], folders[idx]
+            route_order.renumber(folders)
+            _heal_origins(folders)
+            await session.commit()
+    return _moved_answer(request)
 
 
 @app.post("/routes/rc/add")

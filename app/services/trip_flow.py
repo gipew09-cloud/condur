@@ -18,9 +18,9 @@ from app.bots import keyboards as kb
 from app.bots import messages as msg
 from app.config import settings
 from app.models import Driver, RouteTemplate, Shift, Trip, Vehicle
-from app.services import trip_service
+from app.services import route_order, trip_service
 from app.services.event_service import log_event
-from app.services.textsanitize import clean_user_text, origin_key
+from app.services.textsanitize import clean_user_text
 from app.services.timeutil import owner_tz
 
 
@@ -28,25 +28,25 @@ async def route_catalog(session: AsyncSession, owner_id: int) -> list[dict]:
     """Маршруты владельца папками по складам — для телефона.
 
     ⚠️ Порядок и склейка складов те же, что в боте (`_route_origins`,
-    `_templates_for_origin`): склады по алфавиту ключа, внутри — как
-    расставил владелец на сайте. Закреплено тестом.
+    `_templates_for_origin`) и на сайте: `route_order.grouped` — склады и
+    маршруты как расставил владелец, пока склады не переставлены — по
+    алфавиту ключа. Закреплено тестом.
     """
     templates = (await session.execute(
         select(RouteTemplate)
         .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
         .order_by(RouteTemplate.sort_order, RouteTemplate.destination, RouteTemplate.name)
     )).scalars().all()
-    folders: dict[str, list[dict]] = {}
-    for template in templates:
-        key = origin_key(template.origin)
-        if not key:
-            continue
-        folders.setdefault(key, []).append({
-            "id": template.id,
-            "destination": template.destination,
-            "cargo": template.default_cargo,
-        })
-    return [{"origin": key, "routes": folders[key]} for key in sorted(folders)]
+    return [
+        {
+            "origin": key,
+            "routes": [
+                {"id": t.id, "destination": t.destination, "cargo": t.default_cargo}
+                for t in routes
+            ],
+        }
+        for key, routes in route_order.grouped(templates).items()
+    ]
 
 
 def can_finish(status: str) -> bool:

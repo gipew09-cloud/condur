@@ -30,6 +30,31 @@
     .rc-row { grid-template-columns: 1fr; }
     .rc-row__actions { flex-wrap: wrap; }
   }
+  /* Маршруты для водителя. overflow-anchor: none — браузер не «держит»
+     строку сам и не прокручивает страницу при перестановке: прокрутку ведёт
+     скрипт внизу, чтобы нажатая строка осталась под мышкой. */
+  .rt-list { overflow-anchor: none; scroll-margin-top: 1rem; }
+  .rt-folder { margin-top: .75rem; }
+  /* Стрелки склада — рядом с его названием, а не справа: справа стрелки
+     маршрутов, их легко спутать. */
+  .rt-folder__head { display: flex; align-items: center; gap: 10px;
+    font-weight: 800; margin-bottom: .3rem; min-height: 32px; }
+  .rt-folder__count { color: var(--text-muted); font-weight: 600; }
+  .rt-row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 6px; background: var(--surface); scroll-margin-top: 35vh; }
+  .rt-moves { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  /* Где был, туда и вернулся: после «Добавить» / «Удалить» страница
+     открывается на этой строке и коротко её подсвечивает. */
+  .rt-row:target { animation: rt-found 1.6s cubic-bezier(.23, 1, .32, 1); }
+  .rt-moved { box-shadow: 0 0 0 2px var(--accent-ring, rgba(37, 99, 235, .35)); }
+  @keyframes rt-found {
+    from { box-shadow: 0 0 0 3px var(--accent-ring, rgba(37, 99, 235, .45));
+           background: var(--accent-soft, rgba(37, 99, 235, .08)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rt-row:target { animation: none; box-shadow: 0 0 0 2px var(--accent-ring, rgba(37, 99, 235, .45)); }
+  }
 </style>
 {% endblock %}
 
@@ -231,6 +256,82 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+/* ▲▼ у маршрутов и складов: строка переезжает сразу, порядок уходит на
+   сервер следом. ⚠️ Нажатая строка остаётся под мышкой — страница
+   прокручивается вместе с ней, а сосед плавно уступает место. Так можно
+   жать ▲ подряд и вести маршрут через весь склад, не целясь заново. */
+(function () {
+  var list = document.getElementById('route-templates');
+  if (!list) return;
+  var calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var queue = Promise.resolve();
+
+  function peers(item) {
+    var sel = item.classList.contains('rt-folder') ? '.rt-folder' : '.rt-row';
+    return Array.prototype.filter.call(item.parentNode.children, function (el) {
+      return el.matches(sel);
+    });
+  }
+
+  function refreshEdges(items) {
+    items.forEach(function (el, i) {
+      var own = el.querySelectorAll(':scope > .rt-moves [data-move], :scope > .rt-folder__head [data-move]');
+      own.forEach(function (b) {
+        b.disabled = b.dataset.move === 'up' ? i === 0 : i === items.length - 1;
+      });
+    });
+  }
+
+  function save(url, body) {
+    queue = queue.then(function () {
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+        body: new URLSearchParams(body),
+        credentials: 'same-origin'
+      }).then(function (r) {
+        var json = (r.headers.get('content-type') || '').indexOf('json') !== -1;
+        if (!r.ok || !json) throw new Error('move');
+      });
+    }).catch(function () { location.reload(); });  // показать то, что записано
+  }
+
+  list.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-move]');
+    if (!btn || btn.disabled) return;
+    var folder = btn.dataset.scope === 'folder';
+    var item = btn.closest(folder ? '.rt-folder' : '.rt-row');
+    var up = btn.dataset.move === 'up';
+    var items = peers(item);
+    var other = items[items.indexOf(item) + (up ? -1 : 1)];
+    if (!other) return;
+
+    var itemTop = item.getBoundingClientRect().top;
+    var otherTop = other.getBoundingClientRect().top;
+    if (up) item.parentNode.insertBefore(item, other);
+    else item.parentNode.insertBefore(other, item);
+    window.scrollBy({ top: item.getBoundingClientRect().top - itemTop, behavior: 'instant' });
+    if (!calm) {
+      var dy = otherTop - other.getBoundingClientRect().top;
+      other.animate([{ transform: 'translateY(' + dy + 'px)' }, { transform: 'none' }],
+                    { duration: 200, easing: 'cubic-bezier(.23, 1, .32, 1)' });
+    }
+    item.classList.add('rt-moved');
+    clearTimeout(item._movedTimer);
+    item._movedTimer = setTimeout(function () { item.classList.remove('rt-moved'); }, 600);
+
+    refreshEdges(peers(item));
+    if (btn.disabled) {  // доехал до края — фокус на обратную стрелку
+      var back = btn.parentNode.querySelector('[data-move="' + (up ? 'down' : 'up') + '"]');
+      if (back) back.focus();
+    }
+
+    if (folder) save('/routes/folder/move', { origin: item.dataset.origin, direction: btn.dataset.move });
+    else save('/routes/template/' + item.dataset.id + '/move', { direction: btn.dataset.move });
+  });
+})();
+</script>
 {% if centers and yandex_maps_api_key %}
 <script src="https://api-maps.yandex.ru/2.1/?apikey={{ yandex_maps_api_key }}&lang=ru_RU"></script>
 <script>

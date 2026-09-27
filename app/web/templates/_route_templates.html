@@ -1,13 +1,27 @@
-{# Список маршрутов-шаблонов. Отдельным файлом, потому что HTMX подменяет
-   только его — при перестановке ▲▼ страница НЕ перезагружается и не прыгает
-   к началу. Тот же кусок отдаётся из POST /routes/template/{id}/move. #}
-<div id="route-templates">
+{# Список маршрутов-шаблонов по складам.
+   ▲▼ у склада и у маршрута двигают строку прямо на странице (скрипт внизу
+   routes.html) и тихо записывают порядок на сервер. ⚠️ Раньше сервер
+   присылал весь список заново, и страница прыгала на его высоту — владелец
+   27.09.2026. Водитель в боте и приложении видит тот же порядок. #}
+<div id="route-templates" class="rt-list">
   {% if templates_by_origin %}
   {% for origin, tmpls in templates_by_origin.items() %}
-  <div style="margin-top:.75rem;">
-    <div style="font-weight:800; margin-bottom:.3rem;">🏭 {{ origin }} <span style="color:var(--text-muted); font-weight:600;">({{ tmpls|length }})</span></div>
+  <div class="rt-folder" data-origin="{{ origin }}">
+    <div class="rt-folder__head">
+      <span>🏭 {{ origin }} <span class="rt-folder__count">({{ tmpls|length }})</span></span>
+      {% if templates_by_origin|length > 1 %}
+      <span class="rt-moves">
+        <button type="button" class="row-move" data-move="up" data-scope="folder"
+                title="Склад выше" aria-label="Склад {{ origin }} выше"
+                {% if loop.first %}disabled{% endif %}>▲</button>
+        <button type="button" class="row-move" data-move="down" data-scope="folder"
+                title="Склад ниже" aria-label="Склад {{ origin }} ниже"
+                {% if loop.last %}disabled{% endif %}>▼</button>
+      </span>
+      {% endif %}
+    </div>
     {% for t in tmpls %}
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; background:var(--surface);">
+    <div class="rt-row" id="rt-{{ t.id }}" data-id="{{ t.id }}">
       <span>
         🏬 {{ t.destination }}{% if t.default_cargo %} <span style="color:var(--text-muted);">· {{ t.default_cargo }}</span>{% endif %}
         {% if t.destination in stale_destinations %}
@@ -16,18 +30,13 @@
         <br><span class="stale-hint">⚠️ старое название — в справочнике такого РЦ нет</span>
         {% endif %}
       </span>
-      <span style="display:flex; align-items:center; gap:2px; flex-shrink:0;">
-        {# Порядок: водитель в боте видит маршруты так же, как расставлено здесь #}
-        <button type="button" class="row-move" title="Поднять выше" aria-label="Поднять выше"
-                {% if loop.first %}disabled{% endif %}
-                hx-post="/routes/template/{{ t.id }}/move"
-                hx-vals='{"direction": "up"}'
-                hx-target="#route-templates" hx-swap="outerHTML">▲</button>
-        <button type="button" class="row-move" title="Опустить ниже" aria-label="Опустить ниже"
-                {% if loop.last %}disabled{% endif %}
-                hx-post="/routes/template/{{ t.id }}/move"
-                hx-vals='{"direction": "down"}'
-                hx-target="#route-templates" hx-swap="outerHTML">▼</button>
+      <span class="rt-moves">
+        <button type="button" class="row-move" data-move="up" data-scope="route"
+                title="Поднять выше" aria-label="Поднять выше"
+                {% if loop.first %}disabled{% endif %}>▲</button>
+        <button type="button" class="row-move" data-move="down" data-scope="route"
+                title="Опустить ниже" aria-label="Опустить ниже"
+                {% if loop.last %}disabled{% endif %}>▼</button>
         <form method="post" action="/routes/template/{{ t.id }}/delete" style="margin:0 0 0 6px;"
               data-confirm="Удалить маршрут?"
               data-confirm-detail="{{ origin }} → {{ t.destination }}"

@@ -72,6 +72,7 @@ from app.services import (
     billing,
     expense_service,
     maintenance_service,
+    route_order,
     salary_service,
     telemetry_service,
     timeutil,
@@ -79,7 +80,7 @@ from app.services import (
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
 from app.services.event_service import log_event
-from app.services.textsanitize import clean_user_text
+from app.services.textsanitize import clean_user_text, origin_key
 
 logger = logging.getLogger(__name__)
 owner_router = Router()
@@ -1090,13 +1091,16 @@ async def cb_add_vehicle_skip_tacho(
 # Шаблоны маршрутов
 # =========================================================================
 async def _owner_route_origins(session: AsyncSession, owner_id: int) -> list[str]:
-    """Склады (origin) владельца из активных маршрутов, по алфавиту (детерминированно)."""
-    rows = await session.execute(
-        select(RouteTemplate.origin)
+    """Склады (origin) владельца из активных маршрутов — в порядке, который
+    владелец расставил на сайте (▲▼ у склада), иначе по алфавиту."""
+    rows = (await session.execute(
+        select(RouteTemplate)
         .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
-        .distinct()
-    )
-    return sorted({(o or "").strip() for o in rows.scalars().all() if (o or "").strip()})
+        .order_by(RouteTemplate.sort_order, RouteTemplate.destination, RouteTemplate.name)
+    )).scalars().all()
+    place = {key: i for i, key in enumerate(route_order.grouped(rows))}
+    names = {(t.origin or "").strip() for t in rows if (t.origin or "").strip()}
+    return sorted(names, key=lambda o: (place.get(origin_key(o), len(place)), o))
 
 
 @owner_router.callback_query(F.data == "owner:routes")

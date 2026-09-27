@@ -51,6 +51,7 @@ from app.models import Driver, Expense, Owner, RouteTemplate, Shift, Trip, Vehic
 from app.services import (
     expense_service,
     receipt_ocr,
+    route_order,
     shift_service,
     telemetry_service,
     trip_service,
@@ -859,18 +860,17 @@ async def btn_new_trip(message: Message, state: FSMContext, session: AsyncSessio
 
 
 async def _route_origins(session: AsyncSession, owner_id: int) -> list[str]:
-    """Список складов (origin) владельца из активных маршрутов, по алфавиту.
-    Детерминированный порядок — чтобы индекс кнопки был стабилен."""
+    """Склады владельца в его порядке (▲▼ у склада на сайте), пока не
+    переставлены — по алфавиту. Детерминированно: индекс кнопки стабилен."""
     rows = await session.execute(
-        select(RouteTemplate.origin)
+        select(RouteTemplate)
         .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
-        .distinct()
+        .order_by(RouteTemplate.sort_order, RouteTemplate.destination, RouteTemplate.name)
     )
     # Ключ склада общий с сайтом: два написания одного склада («Соф.60. 24.10»
     # с лишним пробелом внутри) обязаны стать ОДНОЙ папкой, иначе водитель
     # видит два одинаковых пункта, и в каждом — половина маршрутов.
-    origins = sorted({origin_key(o) for o in rows.scalars().all() if origin_key(o)})
-    return origins
+    return list(route_order.grouped(rows.scalars().all()).keys())
 
 
 async def _templates_for_origin(session: AsyncSession, owner_id: int, origin: str):
@@ -2286,9 +2286,14 @@ async def _manual_trip_ask_route(
     templates_res = await session.execute(
         select(RouteTemplate)
         .where(RouteTemplate.owner_id == owner_id, RouteTemplate.is_active.is_(True))
-        .order_by(RouteTemplate.origin, RouteTemplate.sort_order, RouteTemplate.name)
+        .order_by(RouteTemplate.sort_order, RouteTemplate.destination, RouteTemplate.name)
     )
-    templates = list(templates_res.scalars().all())
+    # Склады и маршруты — в порядке владельца, как в «Новом рейсе».
+    templates = [
+        template
+        for folder in route_order.grouped(templates_res.scalars().all()).values()
+        for template in folder
+    ]
     if templates:
         await state.set_state(AddManualTrip.waiting_for_origin)
         await state.update_data(picking_template=True)

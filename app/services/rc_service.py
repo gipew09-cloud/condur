@@ -41,10 +41,24 @@ def canonical_rc_address(destination: str | None, lookup: dict[str, str]) -> str
         return None
     if key in lookup:
         return lookup[key]
-    for alias_key, address in sorted(lookup.items(), key=lambda item: len(item[0]), reverse=True):
-        if len(alias_key) >= 4 and (alias_key in key or key in alias_key):
-            return address
-    return None
+    # ⚠️ Только целыми словами и без угадывания (разбор 27.09.2026). Раньше
+    # «лента» находилась внутри «лентапарк», а короткое «Магнит» получало адрес
+    # первого попавшегося Магнита — в акт для налоговой уходил чужой адрес.
+    # Не уверены — адреса нет, в акте остаётся то, что указал водитель.
+    padded = f" {key} "
+    inside = [  # название из справочника целиком внутри текста водителя
+        (len(alias_key), address) for alias_key, address in lookup.items()
+        if len(alias_key) >= 4 and f" {alias_key} " in padded
+    ]
+    if inside:
+        longest = max(size for size, _ in inside)
+        best = {address for size, address in inside if size == longest}
+        return best.pop() if len(best) == 1 else None
+    around = {  # текст водителя — часть одного названия из справочника
+        address for alias_key, address in lookup.items()
+        if len(key) >= 4 and padded in f" {alias_key} "
+    }
+    return around.pop() if len(around) == 1 else None
 
 
 def match_destination_to_center(destination: str | None, centers: list):
