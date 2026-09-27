@@ -378,7 +378,7 @@ def test_driver_never_waits_for_recognition():
     start = src.index("async def expense_receipt_photo")
     body = src[start:start + 2500]
     finalize = body.index("await _finalize_expense(")
-    background = body.index("asyncio.create_task(_receipt_amount_followup(")
+    background = body.index("background.spawn(_receipt_amount_followup(")
     assert finalize < background, "расход должен сохраняться ДО распознавания"
     assert "await receipt_ocr.recognize(" not in body, "распознавание не должно держать водителя"
 

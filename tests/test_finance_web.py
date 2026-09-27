@@ -243,7 +243,10 @@ def test_overview_shows_money_charts_and_attention():
 def test_expenses_page_lists_filters_and_trip_view():
     async def body(c: Cabinet):
         html = _html(await c.get("/finances/expenses"))
-        assert "Сегодня" in html
+        # Траты заведены «2–3 часа назад»: после полуночи это уже вчера
+        # (тест упал 27.09 в 00:04 — надпись была честная, «Вчера»).
+        spent_day = (NOW - timedelta(hours=2)).astimezone(ZONE).date()
+        assert ("Сегодня" if spent_day == TODAY else "Вчера") in html
         assert "ждёт решения" in html and 'data-decide="approve"' in html
         assert "Платная дорога" in html and "Топливо" in html
         assert 'id="sheet-expense"' in html and 'id="fin-item-tpl"' in html
@@ -596,4 +599,29 @@ def test_svg_attachment_never_opens_inline():
         assert got["headers"]["content-disposition"].startswith("attachment")
         assert got["headers"]["content-type"] == "application/octet-stream"
         assert "sandbox" in got["headers"]["content-security-policy"]
+    _run(body)
+
+
+def test_custom_category_can_be_removed_but_expenses_stay():
+    """Владелец 24.09.2026: «как удалять категорию и удалятся ли сами расходы»."""
+    async def body(c: Cabinet):
+        await c.post_form("/finances/categories", {"name": "Тахограф"})
+        created = await c.post_multipart("/finances/expenses", {
+            "items": json.dumps([{"category": "Тахограф", "amount": "4500"}]), "link": "company",
+        })
+        expense_id = _json(created)["ids"][0]
+        page = _html(await c.get("/finances/expenses?new=1"))
+        assert "data-edit-cats" in page and "data-del-cat" in page
+
+        resp = await c.post_form("/finances/categories/delete", {"name": "Тахограф"})
+        assert _json(resp) == {"ok": True, "kept": 1}
+        # Трата осталась с тем же видом — просто вида больше нет в списке выбора.
+        async with c.maker() as s:
+            assert (await s.get(Expense, expense_id)).category == "Тахограф"
+        sheet = _html(await c.get("/finances/expenses"))
+        assert 'value="Тахограф"' not in sheet.split('id="fin-item-tpl"')[1]
+        assert "Тахограф" in sheet                          # строка траты на месте
+        # Встроенный вид не удаляется.
+        builtin = await c.post_form("/finances/categories/delete", {"name": "fuel"})
+        assert builtin["status"] == 404
     _run(body)

@@ -381,3 +381,180 @@ def test_отклонённое_топливо_не_входит_в_расход
         assert trip.fuel_cost_rub == Decimal("4300.00")
         await session.close()
     _run(scenario)
+
+
+# ------------------------------------------------------------------------
+# 26.09.2026: свой маршрут и рейс задним числом — в боте и в приложении.
+# Владелец: «должна быть кнопка добавлять рейс, если он не добавил его… и
+# раздел, когда он начинает рейс, чтобы он смог сам писать откуда он там что
+# делает».
+
+def _yesterday():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    return (datetime.now(ZoneInfo("Europe/Moscow")) - timedelta(days=1)).date()
+
+
+def test_бот_добавляет_рейс_задним_числом_той_же_логикой():
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db(with_shift=False)
+        bot, message, state = _bot(), _message(), _state()
+        state.get_data.return_value = {
+            "vehicle_id": vehicle.id, "origin": "Агропарк", "destination": "Лента Кудрово",
+        }
+        message.text = "вчера"
+        await driver_bot.manual_trip_date(message, state, session, bot)
+
+        trip = (await session.execute(select(Trip))).scalar_one()
+        assert trip.is_manual is True and trip.status == "completed"
+        assert trip.origin == "Агропарк" and trip.destination == "Лента Кудрово"
+        event = (await _events(session, "trip_added_manual"))[0]
+        assert event.payload["source"] == "bot"
+        text = _texts(bot)[0]
+        assert "добавил рейс вручную" in text and "Т557ОС178" in text
+        assert _yesterday().strftime("%d.%m.%Y") in text
+
+        # Будущий день не принимается: рейса, который не случился, не добавить.
+        message.text = "31.12.2099"
+        await driver_bot.manual_trip_date(message, state, session, bot)
+        assert "ещё не наступила" in message.answer.await_args.args[0]
+        assert len((await session.execute(select(Trip))).scalars().all()) == 1
+        await session.close()
+    _run(scenario)
+
+
+def test_приложение_добавляет_рейс_задним_числом():
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db(with_shift=False)
+        ds = await _phone(session, driver)
+        day = _yesterday().isoformat()
+        payload = {"vehicle_id": vehicle.id, "template_id": routes[0].id, "date": day}
+        added = await _apply(session, ds, driver, "op-manual-0001", "trip.add_manual", payload)
+        body = added.body()
+        assert body["ok"] is True and body["status"] == "accepted"
+        trip = (await session.execute(select(Trip))).scalar_one()
+        assert body["trip_id"] == trip.id
+        assert trip.is_manual is True and trip.status == "completed"
+        assert trip.cargo_name == "Овощи"
+        shift = await session.get(Shift, trip.shift_id)
+        assert shift.is_manual is True and shift.status == "completed"
+        text = actions.owner_message(added, driver=driver, tz_name="Europe/Moscow").text
+        assert "добавил рейс вручную" in text and "Т557ОС178" in text
+        assert (await _events(session, "trip_added_manual"))[0].payload["source"] == "app"
+
+        # Повтор того же нажатия (связь моргнула) — второй рейс не появится.
+        again = await _apply(session, ds, driver, "op-manual-0001", "trip.add_manual", payload)
+        assert again.duplicate is True
+        assert len((await session.execute(select(Trip))).scalars().all()) == 1
+        await session.close()
+    _run(scenario)
+
+
+def test_свой_маршрут_водителя_чистится_и_обрезается():
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db()
+        ds = await _phone(session, driver)
+        created = await _apply(session, ds, driver, "op-own-0001", "trip.create", {
+            "origin": "  Склад <b>Колпино</b>  ",
+            "destination": "Магнит " + "Т" * 300,
+            "cargo": "Картофель",
+        })
+        assert created.body()["status"] == "accepted"
+        trip = (await session.execute(select(Trip))).scalar_one()
+        assert "<" not in trip.origin and ">" not in trip.origin
+        assert trip.origin.startswith("Склад")
+        assert len(trip.destination) == 120
+        assert trip.cargo_name == "Картофель"
+        text = actions.owner_message(created, driver=driver, tz_name=None).text
+        assert "<b>Колпино" not in text
+        await session.close()
+    _run(scenario)
+
+
+def test_рейс_задним_числом_отказы():
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db(with_shift=False)
+        ds = await _phone(session, driver)
+        base = {"vehicle_id": vehicle.id, "template_id": routes[0].id}
+
+        future = await _apply(session, ds, driver, "op-manual-0001", "trip.add_manual",
+                              {**base, "date": "2099-12-31"})
+        assert future.body()["status"] == "rejected"
+        assert "ещё не наступила" in future.body()["message"]
+
+        other = Owner(telegram_id=999, full_name="Чужой", timezone="Europe/Moscow")
+        session.add(other)
+        await session.flush()
+        foreign = Vehicle(owner_id=other.id, license_plate="А001АА78", is_active=True)
+        session.add(foreign)
+        await session.commit()
+        stolen = await _apply(session, ds, driver, "op-manual-0002", "trip.add_manual",
+                              {**base, "vehicle_id": foreign.id, "date": _yesterday().isoformat()})
+        assert stolen.body()["status"] == "rejected"
+
+        # Кривой запрос — ошибка приложения, а не отказ по делу.
+        vehicle_id, day = vehicle.id, _yesterday().isoformat()
+        for bad in (
+            {**base, "date": "вчера"},
+            {"vehicle_id": vehicle_id, "date": day},
+            {**base, "template_id": None, "origin": " ", "destination": "РЦ", "date": day},
+        ):
+            with pytest.raises(actions.BadRequest):
+                await actions.apply(
+                    session, driver_session=ds, driver=driver,
+                    body={"client_op_id": "op-bad-00001", "type": "trip.add_manual",
+                          "payload": bad},
+                )
+        assert (await session.execute(select(Trip))).scalars().all() == []
+        await session.close()
+    _run(scenario)
+
+
+def test_рейсов_задним_числом_не_больше_двадцати_в_сутки():
+    """Каждый такой рейс — уведомление владельцу: без предела телефоном можно
+    было бы засыпать его сообщениями (проверка безопасности 26.09.2026)."""
+    from app.services import trip_flow
+
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db(with_shift=False)
+        ds = await _phone(session, driver)
+        payload = {"vehicle_id": vehicle.id, "template_id": routes[0].id,
+                   "date": _yesterday().isoformat()}
+        for i in range(trip_flow.MANUAL_PER_DAY):
+            done = await _apply(session, ds, driver, f"op-many-{i:04d}",
+                                "trip.add_manual", payload)
+            assert done.body()["status"] == "accepted"
+        extra = await _apply(session, ds, driver, "op-many-9999", "trip.add_manual", payload)
+        assert extra.body()["status"] == "rejected"
+        assert "владелец на сайте" in extra.body()["message"]
+        await session.close()
+    _run(scenario)
+
+
+def test_повторный_sos_в_течение_минуты_не_шлёт_вторую_тревогу():
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db()
+        ds = await _phone(session, driver)
+        first = await _apply(session, ds, driver, "op-sos-00001", "sos.send", {})
+        assert first.body()["status"] == "accepted"
+        again = await _apply(session, ds, driver, "op-sos-00002", "sos.send", {})
+        # Не «не принято» (это пугает водителя в беде), а «принято, уже у
+        # владельца» — и без второй тревоги (разбор 26.09.2026).
+        assert again.body()["status"] == "accepted"
+        assert actions.owner_message(again, driver=driver, tz_name=None) is None
+        assert len(await _events(session, "sos")) == 1
+        await session.close()
+    _run(scenario)
+
+
+def test_маршрут_водителя_в_sos_не_ломает_разметку_telegram():
+    async def scenario():
+        session, owner, vehicle, driver, routes = await _db()
+        ds = await _phone(session, driver)
+        await _apply(session, ds, driver, "op-own-00001", "trip.create",
+                     {"origin": "Склад А&Б", "destination": "РЦ &lt;b&gt;"})
+        sos = await _apply(session, ds, driver, "op-sos-00003", "sos.send", {})
+        text = actions.owner_message(sos, driver=driver, tz_name=None).text
+        assert "А&amp;Б" in text and "&lt;b&gt;" not in text.replace("&amp;lt;b&amp;gt;", "")
+        await session.close()
+    _run(scenario)

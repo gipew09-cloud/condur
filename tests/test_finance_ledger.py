@@ -289,6 +289,30 @@ def test_сумма_принимает_человеческий_ввод():
     assert fl.parse_amount("") is None
 
 
+def test_сумма_не_роняет_страницу_на_хитром_вводе():
+    """«nan» и «Infinity» Decimal принимает, а дальше сравнение и округление
+    бросали исключение — страница падала с ошибкой 500 (разбор 26.09.2026)."""
+    for text in ("nan", "NaN", "Infinity", "-Infinity", "1e5", "1e400", "45.00.00", "3,5,0"):
+        assert fl.parse_amount(text) is None, text
+    assert fl.parse_amount(".5") == Decimal("0.50")
+
+
+def test_числа_из_форм_сайта_только_настоящие():
+    from decimal import InvalidOperation
+
+    from app.web import router as R
+
+    assert R._form_number("3 500,50", R._MAX_RUB_10) == Decimal("3500.50")
+    assert R._form_number("0", R._MAX_RUB_10) == Decimal("0.00")
+    for text in ("nan", "Infinity", "1e5", "-5", "", "45.00.00", "1000"):
+        # 1000 л/100 км не влезает в норму расхода (Numeric(5, 2)).
+        with pytest.raises(InvalidOperation):
+            R._form_number(text, R._MAX_FUEL_NORM)
+    with pytest.raises(InvalidOperation):
+        R._form_number("100000000", R._MAX_RUB_10)
+    assert R._form_number("100000000", R._MAX_RUB_12) == Decimal("100000000.00")
+
+
 def test_денежный_поток_раскладывается_по_шагу_периода():
     inc = [fl.LedgerRow("trip", 1, datetime(2026, 9, 3, 9, tzinfo=timezone.utc),
                         Decimal("100"), "income")]
@@ -299,3 +323,18 @@ def test_денежный_поток_раскладывается_по_шагу_
     assert flow["income"][2] == 100 and flow["expense"][2] == 40
     долгий = fl.cashflow([], [], date(2026, 1, 1), date(2026, 9, 30), "Europe/Moscow")
     assert долгий["step"] == "month" and len(долгий["labels"]) == 9
+
+
+def test_процент_зарплаты_больше_ста_не_сохраняется():
+    """«Процент» — это 30 за 30 %. 150 % — опечатка, водителю начислили бы
+    больше выручки рейса (разбор 26.09.2026). Проверка стоит раньше базы."""
+    from fastapi import HTTPException
+
+    from app.web import router as R
+
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(R.create_driver(
+            owner=None, session=None, full_name="Иван Петров",
+            salary_type="percent", salary_rate="150", per_diem_rub="0",
+        ))
+    assert err.value.status_code == 400

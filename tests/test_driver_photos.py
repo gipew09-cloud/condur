@@ -415,6 +415,9 @@ def test_расход_с_чеком_и_sos_через_адреса_прилож�
         ctx = await web.current_driver(_request(app, method="GET", cookie=cookie), session)
         me = await web.api_driver_me(ctx, session)
         assert me["sos"] is True
+        # С 26.09.2026 сервер сообщает, что умеет свой маршрут и рейс задним
+        # числом: старый сервер ключей не отдаёт, и телефон кнопки прячет.
+        assert me["custom_route"] is True and me["manual_trip"] is True
         # Цвет кузова — для той же машинки, что у владельца; не выбран — чёрная.
         assert me["shift"]["color"] == "black"
         assert me["vehicles"][0]["color"] == "black"
@@ -706,3 +709,53 @@ def test_тип_документа_по_содержимому():
     assert web._sniff_document(b"<svg onload=alert(1)>") == "application/octet-stream"
     assert re.search("attachment", web._document_response(b"MZ...", "a.exe").headers[
         "content-disposition"])
+
+
+def test_две_страницы_ттн_не_затирают_друг_друга(monkeypatch):
+    """Владелец 26.09.2026: «что будет, если второй раз отправить фото ТТН?»
+    Раньше второе фото затирало первое, и все строки журнала показывали
+    последнее. Теперь у каждой строки своя страница, на странице рейса — все,
+    а удалённая смена забирает с собой и свои «Фото ТТН»."""
+    monkeypatch.setattr(settings, "feature_odometer_photo", False)
+    from app.services import trip_service
+
+    async def scenario():
+        app = _App()
+        session, owner, vehicle, driver, _ = await _db()
+        cookie, ctx = await _signed_in(app, session, owner, driver)
+        await _action(app, session, ctx, cookie, "op-start-001", "shift.start",
+                      {"vehicle_id": vehicle.id})
+        route = (await session.execute(select(RouteTemplate))).scalar_one()
+        await _action(app, session, ctx, cookie, "op-trip-0001", "trip.create",
+                      {"template_id": route.id})
+        first = _json(await _upload(app, session, ctx, cookie, client_id="photo-0101",
+                                    kind="waybill"))["photo"]
+        await _action(app, session, ctx, cookie, "op-ttn-0101", "trip.waybill", {"photo": first})
+        second = _json(await _upload(app, session, ctx, cookie, client_id="photo-0102",
+                                     kind="waybill"))["photo"]
+        await _action(app, session, ctx, cookie, "op-ttn-0102", "trip.waybill", {"photo": second})
+
+        trip = (await session.execute(select(Trip))).scalar_one()
+        assert await trip_service.waybill_pages(session, trip) == [first, second]
+        feed = [e for e in (await web.api_events(owner, session))["events"]
+                if e["type"] == "waybill_uploaded"]
+        assert sorted(e["photo"] for e in feed) == sorted([first, second])
+        assert all(e["photos"][0]["ref"] == e["photo"] for e in feed)
+
+        # Удалить первую страницу — вторая остаётся и в рейсе, и в журнале.
+        from urllib.parse import urlencode
+        request = _request(app, method="POST", raw=urlencode({"ref": first}).encode(),
+                           content_type="application/x-www-form-urlencoded")
+        await web.delete_trip_waybill(request, trip.id, owner, session)
+        await session.refresh(trip)
+        assert await trip_service.waybill_pages(session, trip) == [second]
+        assert trip.waybill_photo_url == second
+
+        # Удалили смену на сайте — «Фото ТТН» без рейса в журнале не висит.
+        shift = (await session.execute(select(Shift))).scalar_one()
+        await web.shift_delete(shift.id, owner, session)
+        left = [e for e in (await web.api_events(owner, session))["events"]
+                if e["type"] == "waybill_uploaded"]
+        assert left == []
+        await session.close()
+    _run(scenario)

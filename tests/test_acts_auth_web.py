@@ -386,7 +386,7 @@ def test_session_token_hash_and_device_label():
     assert AU.device_label_from_user_agent(ua_mac) == "Chrome · macOS"
     ua_iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605 Version/17.5 Safari/604.1"
     assert AU.device_label_from_user_agent(ua_iphone) == "Safari · iPhone"
-    assert AU.device_label_from_user_agent(None) == "Браузер · ?"
+    assert AU.device_label_from_user_agent(None) == "Браузер · устройство не определено"
 
     # Приложение на телефоне — не браузер. Владелец не должен гадать, что за
     # «Браузер · Android» стоит в списке: это приложение или Chrome на том же

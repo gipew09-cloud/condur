@@ -85,8 +85,18 @@ async def _db():
 def test_служебный_шум_в_ленту_не_попадает():
     async def scenario():
         session, owner, vehicle, driver = await _db()
+        # ⚠️ «Фото ТТН» — только у живого рейса (с 26.09.2026 строка без рейса
+        # считается мусором удалённого рейса).
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=3))
+        session.add(shift)
+        await session.flush()
+        trip = Trip(owner_id=owner.id, shift_id=shift.id, driver_id=driver.id,
+                    vehicle_id=vehicle.id, status="in_transit")
+        session.add(trip)
+        await session.flush()
         session.add_all([
-            Event(owner_id=owner.id, driver_id=driver.id,
+            Event(owner_id=owner.id, driver_id=driver.id, trip_id=trip.id,
                   event_type="waybill_uploaded", created_at=NOW - timedelta(hours=1)),
             # напоминания и опросы — не события, а рассылки
             Event(owner_id=owner.id, driver_id=driver.id,
@@ -639,8 +649,10 @@ def test_удаление_смены_убирает_и_записи_её_рей�
 
         types = [e["type"] for e in (await api_events(owner, session))["events"]]
         assert "trip_in_transit" not in types
-        # Фото ТТН — снимок, он остаётся в журнале и без рейса.
-        assert "waybill_uploaded" in types
+        # С 26.09.2026 «Фото ТТН» уходит вместе с рейсом: снимок хранился в
+        # рейсе и пропадал, а пустая строка оставалась — владелец: «я же
+        # удалил рейс и смену на сайте, странно» (PROBLEMS №58).
+        assert "waybill_uploaded" not in types
         await session.close()
     _run(scenario)
 
@@ -780,5 +792,137 @@ def test_смена_без_фото_в_журнале_без_фото():
         row = (await api_events(owner, session))["events"][0]
         assert row["photo"] is None
         assert row["plate"] == "Т557ОС178"
+        await session.close()
+    _run(scenario)
+
+
+def test_карточка_закрытой_смены_как_в_telegram():
+    """Владелец 26.09.2026 про «Смена закрыта»: «некрасиво, непонятно ничего»
+    — одометр, пробег и GPS шли одной строкой через точки, а рейсов, выручки,
+    расходов, зарплаты и двигателя, которые есть в Telegram, не было вовсе."""
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(
+            owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+            started_at=NOW - timedelta(hours=9), ended_at=NOW - timedelta(hours=1),
+            status="completed", odometer_start=959373, odometer_end=959409,
+            odometer_start_photo_url="AgAC-утро", odometer_end_photo_url="app-7",
+        )
+        session.add(shift)
+        await session.flush()
+        session.add_all([
+            Trip(owner_id=owner.id, shift_id=shift.id, driver_id=driver.id,
+                 vehicle_id=vehicle.id, status="completed", revenue_rub=Decimal("19000")),
+            Trip(owner_id=owner.id, shift_id=shift.id, driver_id=driver.id,
+                 vehicle_id=vehicle.id, status="completed"),
+            Expense(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                    category="fuel", amount_rub=Decimal("4500"), status="approved"),
+            Expense(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                    category="other", amount_rub=Decimal("900"), status="rejected"),
+            Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                  event_type="shift_completed", created_at=NOW - timedelta(hours=1),
+                  payload={"distance_km": 36, "gps_km": 22, "trips": 2,
+                           "salary": "360", "engine_on": False,
+                           "engine_since": (NOW - timedelta(hours=1, minutes=4)).isoformat()}),
+        ])
+        await session.commit()
+
+        card = (await api_events(owner, session))["events"][0]
+        assert card["hero"]["value"].startswith("36")
+        facts = {f["label"]: f for f in card["facts"]}
+        assert "959" in facts["Одометр"]["value"] and "409" in facts["Одометр"]["value"]
+        # 36 против 22 — больше 10 %: подсвечено и объяснено словами.
+        assert facts["По GPS"]["tone"] == "warn"
+        assert "14 км меньше" in facts["По GPS"]["hint"]
+        assert facts["Рейсов"]["value"] == "2"
+        assert "19" in facts["Выручка"]["value"]
+        assert facts["Без выручки"]["value"] == "1 из 2"
+        assert "4" in facts["Расходы"]["value"] and "900" not in facts["Расходы"]["value"]
+        assert "360" in facts["Зарплата"]["value"]
+        assert facts["Двигатель"]["value"].startswith("заглушен")
+        assert "–" in facts["Смена"]["value"]
+        # Оба одометра рядом — начало и конец.
+        assert [p["ref"] for p in card["photos"]] == ["AgAC-утро", "app-7"]
+        assert [p["caption"] for p in card["photos"]] == ["Начало смены", "Конец смены"]
+        # Старая строка осталась — для списка и старых приложений.
+        assert "36" in card["detail"]
+        await session.close()
+    _run(scenario)
+
+
+def test_карточка_без_данных_не_выдумывает_строк():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        shift = Shift(owner_id=owner.id, driver_id=driver.id, vehicle_id=vehicle.id,
+                      started_at=NOW - timedelta(hours=5), status="completed",
+                      ended_at=NOW - timedelta(hours=1))
+        session.add(shift)
+        await session.flush()
+        session.add(Event(owner_id=owner.id, driver_id=driver.id, shift_id=shift.id,
+                          event_type="shift_completed", created_at=NOW - timedelta(hours=1),
+                          payload={"trips": 0}))
+        await session.commit()
+        card = (await api_events(owner, session))["events"][0]
+        labels = [f["label"] for f in card["facts"]]
+        assert card["hero"] is None
+        assert "Одометр" not in labels and "По GPS" not in labels
+        assert "Выручка" not in labels and "Зарплата" not in labels
+        assert card["photos"] == []
+        await session.close()
+    _run(scenario)
+
+
+def test_карточка_расхода_сумма_крупно_комментарий_решение():
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        expense = await _expense(session, owner, driver, amount="4500")
+        expense.description = "Заправка на Лукойле"
+        expense.receipt_photo_url = "AgAC-чек"
+        session.add(Event(owner_id=owner.id, driver_id=driver.id,
+                          event_type="expense_submitted", created_at=NOW - timedelta(minutes=5),
+                          payload={"expense_id": expense.id, "category": "fuel",
+                                   "amount": "4500"}))
+        await session.commit()
+        card = (await api_events(owner, session))["events"][0]
+        assert card["hero"]["value"].startswith("4")
+        assert card["hero"]["caption"] == "Топливо"
+        facts = {f["label"]: f for f in card["facts"]}
+        assert facts["Комментарий"]["value"] == "Заправка на Лукойле"
+        assert facts["Решение"]["tone"] == "warn"
+        assert card["photos"][0]["caption"] == "Чек"
+        await session.close()
+    _run(scenario)
+
+
+def test_истёкший_документ_напоминается_один_раз():
+    """Владелец 26.09.2026: «одного раза достаточно». Раньше «ОСАГО истёк
+    N дн. назад» приходило каждое утро в 9:00."""
+    from datetime import date
+    from unittest.mock import AsyncMock
+
+    from app.services import scheduler_jobs
+
+    async def scenario():
+        session, owner, vehicle, driver = await _db()
+        owner.notifications_enabled = True
+        field = next(iter(scheduler_jobs.DOC_LABELS))
+        setattr(vehicle, field, date(2026, 8, 1))
+        await session.commit()
+        bot = AsyncMock()
+        bot.send_message.return_value = SimpleNamespace(message_id=1)
+        today = date(2026, 9, 26)
+        for _ in range(3):          # три утра подряд
+            await scheduler_jobs._check_owner_docs(session, bot, owner, today)
+        assert bot.send_message.await_count == 1
+        # Продлили, и новый срок тоже истёк — напоминаем снова.
+        setattr(vehicle, field, date(2026, 9, 20))
+        await session.commit()
+        await scheduler_jobs._check_owner_docs(session, bot, owner, today)
+        assert bot.send_message.await_count == 2
+        # И видно в журнале приложения.
+        rows = [e for e in (await api_events(owner, session, hours=24 * 30))["events"]
+                if e["type"] == "doc_expired_alert"]
+        assert rows and rows[0]["plate"] == "Т557ОС178"
+        assert any(f["label"] == "Истёк" for f in rows[0]["facts"])
         await session.close()
     _run(scenario)

@@ -452,7 +452,10 @@ def test_чек_из_приложения_уходит_на_распознава
                            {"category": "fuel", "amount": "4500", "photo": saved.ref})
         started = []
         monkeypatch.setattr(receipt_ocr, "is_enabled", lambda: True)
-        monkeypatch.setattr(web.asyncio, "create_task", lambda coro: started.append(coro))
+        # С 26.09.2026 фоновое дело запускается через app.services.background
+        # (держит задачу до конца и пишет её ошибку в журнал).
+        monkeypatch.setattr(web.background, "spawn",
+                            lambda coro, name: started.append(coro))
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(owner_bot=_bot())))
         ctx = SimpleNamespace(owner=db.owner, driver=db.driver)
         web._schedule_receipt_check(request, ctx, out)
@@ -467,3 +470,23 @@ def test_чек_из_приложения_уходит_на_распознава
         assert len(started) == 1
         await db.session.close()
     _run(scenario)
+
+
+def test_сумма_с_узким_пробелом_iphone_читается():
+    """iPhone ставит в числах узкий неразрывный пробел (U+202F): «4 500» с
+    любым пробелом — это 4500 (разбор 26.09.2026)."""
+    from app.services import expense_flow
+
+    for text in ("4500", "4 500", "4 500", "4 500", " 4 500,50 "):
+        assert expense_flow.parse_amount(text) is not None, text
+    assert expense_flow.parse_amount("4 500") == Decimal("4500")
+
+
+def test_сумма_расхода_без_экспоненты_и_nan():
+    from app.services import expense_flow
+
+    for text in ("nan", "Infinity", "1e5", "1E+5", "45.00.00"):
+        assert expense_flow.parse_amount(text) is None, text
+    # Минус и ноль разбираются — отказ с понятной фразой дальше, как раньше.
+    assert expense_flow.parse_amount("-5") == Decimal("-5")
+    assert expense_flow.parse_amount("0") == Decimal("0")
