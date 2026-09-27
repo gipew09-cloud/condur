@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import re
 import time
@@ -61,9 +62,10 @@ from app.models import (
 )
 from app.config import settings
 from app.services import (
-    act_service, auth_service, billing, driver_access_service, driver_actions_service,
-    driver_photos, expense_flow, expense_service, finance_ledger, geocode_service,
-    rc_service, telemetry_service, trip_service,
+    act_service, auth_service, background, billing, driver_access_service,
+    driver_actions_service,
+    driver_photos, expense_flow, expense_service, feed_facts, finance_ledger,
+    geocode_service, rc_service, telemetry_service, trip_service,
 )
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
@@ -254,6 +256,7 @@ app = FastAPI(
 # Процесс один (см. run.py), словарь переживает запросы, чистится лениво.
 # Не защита от распределённой атаки (для этого нужен слой перед приложением),
 # а барьер против перебора кода входа с одного адреса.
+import ipaddress
 import time as _time
 from collections import deque as _deque
 
@@ -288,16 +291,79 @@ def _redeem_rate_ok(ip: str) -> bool:
     return True
 
 
+def _trusted_client_ip(request: Request) -> str | None:
+    """Настоящий адрес телефона или компьютера — для счётчика попыток входа.
+
+    ⚠️ За прокси Railway у ВСЕХ запросов один адрес — самого прокси
+    (PROBLEMS №40). Счётчик по нему был общим: 15 неверных кодов с любого
+    телефона закрывали вход водителей всем на 5 минут — это можно было делать
+    нарочно.
+
+    Настоящий адрес — ПЕРВЫЙ в X-Forwarded-For. Railway (ответ их сотрудника,
+    09.03.2026): «адрес клиента всегда самый левый: наш прокси ведёт этот
+    заголовок сам и дописывает цепочку»; значения, присланные клиентом, он не
+    пропускает. Caddy на своём сервере по умолчанию тоже заменяет чужой
+    заголовок адресом клиента.
+
+    Заголовку верим, только если запрос пришёл изнутри (от прокси): напрямую
+    из интернета X-Forwarded-For подделает кто угодно, и тогда считаем по
+    адресу соединения.
+    """
+    peer = request.client.host if request.client else None
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    if forwarded and peer:
+        try:
+            internal = not ipaddress.ip_address(peer).is_global
+        except ValueError:
+            internal = False
+        if internal:
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first
+    return peer
+
+
+# Действия и фото одного телефона водителя (проверка безопасности 26.09.2026).
+# Рабочий день — это десятки действий; после долгого «без связи» очередь
+# уходит пачкой, поэтому запас большой. Сверх предела — 429: телефон считает
+# это «попробую позже» и ничего не теряет. Без предела телефон (или скрипт с
+# его входом) мог бы засыпать сервер и владельца уведомлениями.
+_DRIVER_WINDOW_SEC = 600
+_DRIVER_ACTIONS_MAX = 120
+_DRIVER_PHOTOS_MAX = 60
+_DRIVER_ACTION_HITS: dict[int, _deque] = {}
+_DRIVER_PHOTO_HITS: dict[int, _deque] = {}
+
+
+def _driver_rate_ok(store: dict, key: int, limit: int) -> bool:
+    now = _time.monotonic()
+    dq = store.setdefault(key, _deque())
+    while dq and now - dq[0] > _DRIVER_WINDOW_SEC:
+        dq.popleft()
+    if len(dq) >= limit:
+        return False
+    dq.append(now)
+    return True
+
+
+def _driver_slow_down() -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "status": "slow_down",
+         "message": "Слишком много отправок подряд. Подождите пару минут."},
+        status_code=429,
+    )
+
+
 @app.middleware("http")
 async def _security_middleware(request: Request, call_next):
     # Троттлинг только на POST /login (перебор кода). Остальное не трогаем.
     if request.method == "POST" and request.url.path == "/login":
-        ip = (request.client.host if request.client else "?") or "?"
+        ip = _trusted_client_ip(request) or "?"
         if not _login_rate_ok(ip):
             return Response("Слишком много попыток входа. Подождите 5 минут.", status_code=429)
     # Вход водителя по коду — отдельный счётчик: код можно было бы подбирать.
     if request.method == "POST" and request.url.path == "/api/driver/redeem":
-        ip = (request.client.host if request.client else "?") or "?"
+        ip = _trusted_client_ip(request) or "?"
         if not _redeem_rate_ok(ip):
             return JSONResponse(
                 {"ok": False, "message": "Слишком много попыток. Подождите 5 минут."},
@@ -361,6 +427,11 @@ async def _session_from_request(
     last_seen = ws.last_seen_at
     if last_seen is not None and last_seen.tzinfo is None:
         last_seen = last_seen.replace(tzinfo=timezone.utc)
+    if last_seen is not None and now - last_seen > timedelta(days=auth_service.SESSION_IDLE_DAYS):
+        # Три месяца без входа — вход гаснет (см. SESSION_IDLE_DAYS).
+        ws.revoked_at = now
+        await session.commit()
+        return None
     if last_seen is None or (now - last_seen).total_seconds() > 300:
         ws.last_seen_at = now
         await session.commit()
@@ -557,9 +628,7 @@ async def login_submit(
     # Постоянная сессия: живёт, пока не завершат («Выйти» на устройстве или
     # владелец на «Реквизиты → Устройства»). В cookie — токен, в БД — его hash.
     raw_token = auth_service.new_session_token()
-    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
-        request.client.host if request.client else None
-    )
+    ip = _trusted_client_ip(request)
     web_session = WebSession(
         owner_id=owner_id,
         telegram_id=tg_id,
@@ -1292,6 +1361,33 @@ async def _drivers_stats(session: AsyncSession, owner_id: int) -> list[dict]:
 
 _SHIFT_TIME_RE_WEB = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
+_FORM_NUMBER_RE = re.compile(r"\d+(\.\d+)?|\.\d+")
+
+# Предельные значения — по размеру колонок в базе (models.py): больше не
+# влезет, и вместо понятного «неверное число» была бы ошибка 500.
+_MAX_RUB_10 = Decimal("99999999.99")        # Numeric(10, 2)
+_MAX_RUB_12 = Decimal("9999999999.99")      # Numeric(12, 2)
+_MAX_FUEL_NORM = Decimal("999.99")          # Numeric(5, 2)
+
+
+def _form_number(raw: str | None, limit: Decimal) -> Decimal:
+    """Число из поля формы сайта: «3 500,50» → 3500.50.
+
+    ⚠️ Только цифры и одна точка/запятая. Decimal сам принимает «nan»,
+    «Infinity» и «1e5»: «nan» пролезал в норму расхода машины, «Infinity» и
+    огромные числа роняли сохранение с ошибкой 500 (разбор 26.09.2026).
+    Минуса тут нет: отрицательных денег и норм в формах не бывает.
+    Мусор — InvalidOperation, как и раньше, — ловят те же обработчики."""
+    text = re.sub(r"\s+", "", raw or "").replace(",", ".")
+    if not _FORM_NUMBER_RE.fullmatch(text):
+        raise InvalidOperation(raw)
+    value = Decimal(text).quantize(Decimal("0.01"))
+    if value > limit:
+        raise InvalidOperation(raw)
+    return value
+
+
+
 
 @app.post("/drivers")
 async def create_driver(
@@ -1311,9 +1407,12 @@ async def create_driver(
     if len(full_name.strip()) < 2:
         raise HTTPException(status_code=400, detail="Bad name")
     try:
-        rate = Decimal((salary_rate or "0").replace(",", "."))
-        per_diem = Decimal((per_diem_rub or "0").replace(",", "."))
+        rate = _form_number(salary_rate or "0", _MAX_RUB_10)
+        per_diem = _form_number(per_diem_rub or "0", _MAX_RUB_10)
         if rate < 0 or per_diem < 0:
+            raise InvalidOperation
+        # «Процент» — это 30 за 30 %, больше ста не бывает (разбор 26.09.2026).
+        if salary_type == "percent" and rate > 100:
             raise InvalidOperation
     except InvalidOperation:
         raise HTTPException(status_code=400, detail="Bad numeric values")
@@ -1360,9 +1459,12 @@ async def update_driver(
     if len(full_name.strip()) < 2:
         raise HTTPException(status_code=400, detail="Bad name")
     try:
-        rate = Decimal(salary_rate.replace(",", "."))
-        per_diem = Decimal(per_diem_rub.replace(",", "."))
+        rate = _form_number(salary_rate, _MAX_RUB_10)
+        per_diem = _form_number(per_diem_rub, _MAX_RUB_10)
         if rate < 0 or per_diem < 0:
+            raise InvalidOperation
+        # «Процент» — это 30 за 30 %, больше ста не бывает (разбор 26.09.2026).
+        if salary_type == "percent" and rate > 100:
             raise InvalidOperation
     except InvalidOperation:
         raise HTTPException(status_code=400, detail="Bad numeric values")
@@ -1488,9 +1590,9 @@ async def driver_cancel_edit(
 
 
 def _client_ip(request: Request) -> str | None:
-    return (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
-        request.client.host if request.client else None
-    )
+    # Тот же адрес, что у счётчика попыток: первый элемент X-Forwarded-For
+    # пишет сам клиент, и в «Устройствах» стоял бы выдуманный адрес.
+    return _trusted_client_ip(request)
 
 
 def _public_base(request: Request) -> str:
@@ -1772,10 +1874,29 @@ async def current_driver(
     return DriverContext(driver, ds, owner)
 
 
+# Предел тела JSON-запроса приложения. Самое большое действие водителя —
+# расход с описанием — это сотни байт; фото идут отдельным адресом.
+_JSON_BODY_MAX = 64 * 1024
+
+
 async def _json_body(request: Request) -> dict:
+    """Тело запроса приложения как словарь.
+
+    ⚠️ Читаем не больше 64 КБ. Раньше тело читалось целиком: адрес входа
+    водителя открыт без пароля, и запрос в гигабайты мог положить сервер
+    нехваткой памяти (проверка безопасности 26.09.2026).
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > _JSON_BODY_MAX:
+        raise HTTPException(status_code=413, detail="too_large")
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > _JSON_BODY_MAX:
+            raise HTTPException(status_code=413, detail="too_large")
     try:
-        body = await request.json()
-    except Exception:
+        body = json.loads(bytes(raw) or b"null")
+    except ValueError:
         raise HTTPException(status_code=400, detail="bad_json")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="bad_json")
@@ -1840,12 +1961,12 @@ def _schedule_odometer_check(request: Request, ctx, outcome) -> None:
     bot = getattr(request.app.state, "owner_bot", None)
     if bot is None:
         return
-    asyncio.create_task(odometer_check.followup(
+    background.spawn(odometer_check.followup(
         owner_bot=bot, shift_id=shift.id, owner_id=ctx.owner.id,
         driver_name=ctx.driver.full_name,
         plate=vehicle.license_plate if vehicle is not None else "—",
         closing=closing, image_bytes=image, same_photo_as_start=same,
-    ))
+    ), name="одометр из приложения")
 
 
 def _schedule_receipt_check(request: Request, ctx, outcome) -> None:
@@ -1862,10 +1983,10 @@ def _schedule_receipt_check(request: Request, ctx, outcome) -> None:
     bot = getattr(request.app.state, "owner_bot", None)
     if bot is None:
         return
-    asyncio.create_task(expense_flow.receipt_followup(
+    background.spawn(expense_flow.receipt_followup(
         owner_bot=bot, owner_id=ctx.owner.id, driver_name=ctx.driver.full_name,
         typed=after["submitted"].amount, image_bytes=photo.data,
-    ))
+    ), name="чек из приложения")
 
 
 @app.post("/api/driver/redeem")
@@ -1992,6 +2113,11 @@ async def api_driver_me(
         # момент и SOS. Список категорий — тот же, что в боте.
         "expense_categories": expense_flow.categories(),
         "sos": True,
+        # С 26.09.2026: свой маршрут вместо выбора из списка и рейс задним
+        # числом. Старый сервер этих ключей не отдаёт — телефон тогда кнопок
+        # не показывает, а не шлёт действие, которого сервер не знает.
+        "custom_route": True,
+        "manual_trip": True,
         "default_vehicle_id": driver.default_vehicle_id,
         "vehicles": [
             {
@@ -2012,6 +2138,8 @@ async def api_driver_photo_upload(
 ):
     """Фото с телефона: одометр, ТТН, чек. Повтор с тем же номером фото —
     прежний ответ. Действие со ссылкой на фото приходит отдельно."""
+    if not _driver_rate_ok(_DRIVER_PHOTO_HITS, ctx.session.id, _DRIVER_PHOTOS_MAX):
+        return _driver_slow_down()
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > driver_photos.MAX_BYTES + 64_000:
         return JSONResponse(
@@ -2079,8 +2207,11 @@ async def api_driver_actions(
     """Действие водителя из очереди телефона. Повтор — прежний ответ.
 
     Ответ 200 — окончательный (принято или отказ с причиной): телефон больше
-    не повторяет. 400 — запрос собран неверно. 401 — вход отозван.
+    не повторяет. 400 — запрос собран неверно. 401 — вход отозван. 429 —
+    слишком часто, телефон повторит позже.
     """
+    if not _driver_rate_ok(_DRIVER_ACTION_HITS, ctx.session.id, _DRIVER_ACTIONS_MAX):
+        return _driver_slow_down()
     body = await _json_body(request)
     # ⚠️ Всё нужное берём ДО коммита: если соседний запрос успел записать тот
     # же номер, наша транзакция откатится, и объекты сессии «протухнут» —
@@ -2333,7 +2464,7 @@ async def create_vehicle(
     norm: Decimal | None = None
     if fuel_norm_per_100km.strip():
         try:
-            norm = Decimal(fuel_norm_per_100km.replace(",", "."))
+            norm = _form_number(fuel_norm_per_100km, _MAX_FUEL_NORM)
             if norm < 0:
                 raise InvalidOperation
         except InvalidOperation:
@@ -2484,7 +2615,7 @@ async def vehicle_update(
     vehicle.stavtrack_object_id = stavtrack_id
     if fuel_norm_per_100km.strip():
         try:
-            vehicle.fuel_norm_per_100km = Decimal(fuel_norm_per_100km.replace(",", "."))
+            vehicle.fuel_norm_per_100km = _form_number(fuel_norm_per_100km, _MAX_FUEL_NORM)
         except InvalidOperation:
             raise HTTPException(status_code=400, detail="Bad fuel_norm")
     else:
@@ -4976,8 +5107,11 @@ async def api_geocode_reverse(
             lat, lon, yandex_key=settings.yandex_geocoder_api_key
         )
         _GEOCODE_LAST_CALL = time.monotonic()
-        if len(_GEOCODE_CACHE) > 500:
-            _GEOCODE_CACHE.clear()
+        # Переполнился — выбрасываем самые старые, а не всё разом: иначе после
+        # очистки карта заново спрашивала бы адрес у каждой машины подряд
+        # (разбор 26.09.2026). Словарь помнит порядок добавления.
+        while len(_GEOCODE_CACHE) >= 500:
+            _GEOCODE_CACHE.pop(next(iter(_GEOCODE_CACHE)))
         _GEOCODE_CACHE[key] = (time.monotonic(), address)
     return {"address": address, "cached": False}
 
@@ -5665,6 +5799,8 @@ _FEED_EVENT_LABELS = {
     # приложение видны в журнале. Выдача и отключение доступа — действия
     # самого владельца, в ленту их не кладём.
     "driver_app_login": ("Вошёл в приложение", "shift"),
+    # Истёк документ машины — один раз на истечение (26.09.2026).
+    "doc_expired_alert": ("Истёк документ машины", "alarm"),
 }
 
 # Потолок ленты. Больше двухсот строк за раз телефон не покажет, а тянуть их
@@ -5863,6 +5999,13 @@ def _feed_detail(
             f"пробег {distance}" if distance else None,
             f"по GPS {gps}" if gps else None,
         ]
+    elif event_type == "doc_expired_alert":
+        expires = p.get("expires")
+        try:
+            when = date_cls.fromisoformat(expires).strftime("%d.%m.%Y") if expires else None
+        except ValueError:
+            when = None
+        parts = [p.get("label"), f"истёк {when}" if when else None]
     elif event_type == "downtime":
         parts = [p.get("label")]
     elif event_type == "sos":
@@ -5885,7 +6028,7 @@ def _feed_detail(
     return detail or None
 
 
-def _feed_photo(event_type: str, expense, trip, shift=None) -> str | None:
+def _feed_photo(event_type: str, expense, trip, shift=None, payload=None) -> str | None:
     """Снимок к событию — тот же, что владелец получил в Telegram.
 
     Показывает такое фото `/api/photo/{file_id}` — там же и проверка, что оно
@@ -5896,8 +6039,12 @@ def _feed_photo(event_type: str, expense, trip, shift=None) -> str | None:
     фотографии, которые присылаются в Telegram». Одометр в начале и в конце
     смены раньше в журнал не попадал.
     """
-    if event_type == "waybill_uploaded" and trip is not None:
-        return trip.waybill_photo_url
+    if event_type == "waybill_uploaded":
+        # Своя страница у каждой записи (с 26.09.2026); у старых — из рейса.
+        ref = (payload or {}).get("photo") if payload else None
+        if isinstance(ref, str) and ref:
+            return ref
+        return trip.waybill_photo_url if trip is not None else None
     if event_type in (
         "expense_submitted", "expense_approved", "expense_rejected",
         "expense_amount_edited",
@@ -5976,14 +6123,16 @@ async def api_events(
             # пробег» — числа берём из самой смены, чтобы строка появилась и
             # у старых событий, и после того, как владелец впишет одометр.
             Shift.odometer_start, Shift.odometer_end, Shift.distance_km,
+            Shift.started_at, Shift.ended_at,
         ).where(Shift.id.in_(shift_ids or {0}), Shift.owner_id == owner.id)
     )).all()}
     shift_vehicle = {sid: row.vehicle_id for sid, row in shifts.items()}
     trips = {row.id: row for row in (await session.execute(
         select(
             Trip.id, Trip.vehicle_id, Trip.origin, Trip.destination,
-            Trip.waybill_photo_url,
-        ).where(Trip.id.in_(trip_ids or {0}))
+            Trip.waybill_photo_url, Trip.cargo_name, Trip.revenue_rub,
+            Trip.created_at, Trip.completed_at,
+        ).where(Trip.id.in_(trip_ids or {0}), Trip.owner_id == owner.id)
     )).all()}
     plates = dict((await session.execute(
         select(Vehicle.id, Vehicle.license_plate).where(Vehicle.owner_id == owner.id)
@@ -5996,9 +6145,31 @@ async def api_events(
     expenses = {row.id: row for row in (await session.execute(
         select(
             Expense.id, Expense.amount_rub, Expense.category, Expense.status,
-            Expense.receipt_photo_url,
+            Expense.receipt_photo_url, Expense.description, Expense.payment_method,
         ).where(Expense.id.in_(expense_ids or {0}), Expense.owner_id == owner.id)
     )).all()}
+    # Итоги закрытых смен — как в Telegram: рейсы, выручка, расходы (26.09.2026).
+    closed_ids = {e.shift_id for e in rows if e.event_type == "shift_completed" and e.shift_id}
+    totals: dict[int, feed_facts.ShiftTotals] = {sid: feed_facts.ShiftTotals() for sid in closed_ids}
+    if closed_ids:
+        for row in (await session.execute(
+            select(Trip.shift_id, Trip.revenue_rub, Trip.driver_revenue_pending_rub).where(
+                Trip.shift_id.in_(closed_ids), Trip.owner_id == owner.id,
+            )
+        )).all():
+            total = totals[row.shift_id]
+            total.trips += 1
+            total.revenue += row.revenue_rub or Decimal(0)
+            total.pending_revenue += row.driver_revenue_pending_rub or Decimal(0)
+            if row.revenue_rub is None and row.driver_revenue_pending_rub is None:
+                total.trips_without_revenue += 1
+        for row in (await session.execute(
+            select(Expense.shift_id, func.coalesce(func.sum(Expense.amount_rub), 0)).where(
+                Expense.shift_id.in_(closed_ids), Expense.owner_id == owner.id,
+                Expense.status == "approved",
+            ).group_by(Expense.shift_id)
+        )).all():
+            totals[row[0]].expenses = Decimal(str(row[1] or 0))
     zones = {row.id: row for row in (await session.execute(
         select(
             DistributionCenter.id, DistributionCenter.name,
@@ -6015,6 +6186,7 @@ async def api_events(
             expenses.get(_feed_int((event.payload or {}).get("expense_id"))),
             trips.get(event.trip_id),
             shifts.get(event.shift_id),
+            event.payload,
         )
         for event in rows
     }
@@ -6079,12 +6251,33 @@ async def api_events(
             "expense_id": expense.id if expense is not None else None,
             "trip_id": event.trip_id,
             "shift_id": event.shift_id,
+            # Карточка события: главное число, строки «подпись — значение» и
+            # фото с подписями — то же, что приходит в Telegram (26.09.2026).
+            **feed_facts.build(
+                event.event_type, payload, tz_name=owner.timezone,
+                expense=expense, trip=trip, zone=zone,
+                shift=shifts.get(event.shift_id),
+                totals=totals.get(event.shift_id)
+                if event.event_type == "shift_completed" else None,
+                plates=plates,
+            ),
             "place": zone.name if zone is not None else None,
             "lat": float(zone.latitude)
             if zone is not None and zone.latitude is not None else None,
             "lon": float(zone.longitude)
             if zone is not None and zone.longitude is not None else None,
         })
+    # Откуда каждое фото карточки: камера или галерея — и у второго снимка
+    # одометра тоже (у закрытой смены их теперь два).
+    card_refs = {
+        photo["ref"] for e in events for photo in e["photos"]
+        if photo["ref"] not in origin_of
+    }
+    if card_refs:
+        origin_of.update(await driver_photos.origins(session, owner.id, list(card_refs)))
+    for e in events:
+        for photo in e["photos"]:
+            photo["source"] = origin_of.get(photo["ref"])
     # ⚠️ Пересортировка обязательна: у приезда на РЦ показанное время раньше
     # записи в базу, и без этого строка встала бы в ленте не на своё место.
     events.sort(key=lambda e: e["at"], reverse=True)
@@ -6125,7 +6318,7 @@ async def api_expense_decision(
     # поправил, а не то, что прислал водитель.
     if amount_rub.strip() and was_pending:
         try:
-            amount = Decimal(amount_rub.replace(",", ".").replace(" ", ""))
+            amount = _form_number(amount_rub, _MAX_RUB_10)
         except InvalidOperation:
             raise HTTPException(status_code=400, detail="Bad amount")
         if amount <= 0:
@@ -6498,6 +6691,17 @@ async def _owner_owns_photo(session: AsyncSession, owner_id: int, file_id: str) 
     )
     if (in_trips.scalar_one() or 0) > 0:
         return True
+    # Прежние страницы ТТН: в рейсе лежит только последняя, остальные — в
+    # записях журнала этого владельца (26.09.2026).
+    in_waybills = await session.execute(
+        select(func.count(Event.id)).where(
+            Event.owner_id == owner_id,
+            Event.event_type == "waybill_uploaded",
+            Event.payload["photo"].as_string() == file_id,
+        )
+    )
+    if (in_waybills.scalar_one() or 0) > 0:
+        return True
     in_expenses = await session.execute(
         select(func.count(Expense.id)).where(
             Expense.owner_id == owner_id, Expense.receipt_photo_url == file_id
@@ -6586,7 +6790,7 @@ async def create_trip_manual(
     revenue = None
     if revenue_rub.strip():
         try:
-            revenue = Decimal(revenue_rub.replace(",", ".").replace(" ", ""))
+            revenue = _form_number(revenue_rub, _MAX_RUB_12)
             if revenue < 0:
                 raise InvalidOperation
         except InvalidOperation:
@@ -6624,7 +6828,7 @@ async def update_trip_revenue(
     if trip is None or trip.owner_id != owner.id:
         raise HTTPException(status_code=404)
     try:
-        rev = Decimal(revenue_rub.replace(",", ".").replace(" ", ""))
+        rev = _form_number(revenue_rub, _MAX_RUB_12)
         if rev < 0:
             raise InvalidOperation
     except InvalidOperation:
@@ -6734,15 +6938,34 @@ async def delete_trip_document(
 
 @app.post("/trips/{trip_id}/waybill/delete")
 async def delete_trip_waybill(
+    request: Request,
     trip_id: int,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    """Удалить фото ТТН, присланное водителем (Telegram file_id обнуляем)."""
+    """Удалить страницу ТТН. `ref` — какую; без него — последнюю (как было).
+
+    Страница — это запись журнала «Фото ТТН» с этим снимком: она уходит, а в
+    рейсе остаётся последняя из оставшихся страниц."""
     trip = await session.get(Trip, trip_id)
     if trip is None or trip.owner_id != owner.id:
         raise HTTPException(status_code=404)
-    trip.waybill_photo_url = None
+    form = await request.form()
+    ref = str(form.get("ref") or "").strip() or trip.waybill_photo_url
+    if ref:
+        for event in (await session.execute(
+            select(Event).where(
+                Event.owner_id == owner.id, Event.trip_id == trip.id,
+                Event.event_type == "waybill_uploaded",
+            )
+        )).scalars().all():
+            if (event.payload or {}).get("photo") == ref:
+                await session.delete(event)
+        await session.flush()
+        if trip.waybill_photo_url == ref:
+            trip.waybill_photo_url = None
+            left = await trip_service.waybill_pages(session, trip)
+            trip.waybill_photo_url = left[-1] if left else None
     await session.commit()
     return RedirectResponse(f"/trips/{trip_id}", status_code=303)
 
@@ -7216,9 +7439,10 @@ async def trip_detail(
         _minutes_between(trip.created_at, trip.completed_at or datetime.now(timezone.utc))
     )
     all_drivers, all_vehicles = await _reassign_options(session, owner.id)
+    waybill_pages = await trip_service.waybill_pages(session, trip)
     photo_origins = await driver_photos.origins(
         session, owner.id,
-        [trip.waybill_photo_url, *(e.receipt_photo_url for e in expenses)],
+        [*waybill_pages, *(e.receipt_photo_url for e in expenses)],
     )
     return templates.TemplateResponse(
         "trip_detail.html",
@@ -7228,6 +7452,7 @@ async def trip_detail(
             "expenses": expenses,
             "photo_origins": photo_origins,
             "waybill_uploaded_at": waybill_uploaded_at,
+            "waybill_pages": waybill_pages,
             "documents": documents,
             "travel": travel, "travel_label": travel_label,
             "vehicle_now": vehicle_now,
@@ -7588,6 +7813,9 @@ _TRIP_OWN_EVENTS = (
     "trip_created", "trip_in_transit", "trip_unloading", "trip_completed",
     "trip_added_manual", "trip_reassigned", "trip_route_edited",
     "trip_rc_confirmed", "trip_rc_mismatch",
+    # ⚠️ ТТН — тоже часть рейса: удалили рейс — снимок ушёл вместе с ним, и
+    # строка «Фото ТТН» без фото оставалась мусором (владелец 26.09.2026).
+    "waybill_uploaded",
 )
 
 
@@ -7959,7 +8187,7 @@ async def expense_edit_save(
     if status not in ("pending", "approved", "rejected"):
         raise HTTPException(status_code=400, detail="Bad status")
     try:
-        amt = Decimal(amount_rub.replace(",", ".").replace(" ", ""))
+        amt = _form_number(amount_rub, _MAX_RUB_10)
         if amt < 0:
             raise InvalidOperation
     except InvalidOperation:

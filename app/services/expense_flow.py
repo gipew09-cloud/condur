@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +26,7 @@ from app.models import Driver, Expense, Owner, Shift, Trip, Vehicle
 from app.services import expense_service, receipt_ocr, shift_service, trip_service
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text
+from app.services.trip_flow import _h
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +53,14 @@ def parse_amount(value) -> Decimal | None:
     """«4 500,50» → 4500.50. Ничего не угадываем: не число — None."""
     if value is None or isinstance(value, bool):
         return None
-    text = str(value).strip().replace(",", ".").replace(" ", "").replace(" ", "")
-    try:
-        amount = Decimal(text)
-    except InvalidOperation:
+    # Любые пробелы — обычный, неразрывный, узкий неразрывный (его ставит
+    # iPhone в числах): «4 500» с любым из них — это 4500 (разбор 26.09.2026).
+    text = re.sub(r"\s+", "", str(value)).replace(",", ".")
+    # Только цифры, одна точка и знак: «1e5», «nan», «Infinity» Decimal
+    # принял бы, а водитель такого не пишет — это опечатка или подделка.
+    if not re.fullmatch(r"[-+]?(\d+(\.\d+)?|\.\d+)", text):
         return None
-    if not amount.is_finite():
-        return None
-    return amount
+    return Decimal(text)
 
 
 async def ensure_can_submit(session: AsyncSession, driver: Driver) -> None:
@@ -222,11 +224,13 @@ class SosSent:
     trip: Trip | None
 
     def owner_text(self, driver: Driver) -> str:
+        # ⚠️ В state — маршрут рейса, а его с 26.09.2026 водитель может
+        # написать сам. Разметку Telegram экранируем (trip_flow._h).
         return msg.NOTIFY_SOS.format(
-            driver=driver.full_name,
-            plate=self.plate or "—",
-            phone=driver.phone or "—",
-            state=self.state,
+            driver=_h(driver.full_name),
+            plate=_h(self.plate),
+            phone=_h(driver.phone),
+            state=_h(self.state),
         )
 
 

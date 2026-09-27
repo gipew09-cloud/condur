@@ -75,6 +75,55 @@ async def _send_message_with_retry(
             return await bot.send_message(chat_id, text, reply_markup=reply_markup)
 
 
+# Telegram не принимает сообщение длиннее 4096 знаков: отвечает «message is
+# too long», и сводка по большому парку просто не доходила (разбор 27.09.2026).
+TELEGRAM_TEXT_MAX = 4096
+_CHUNK = 4000  # с запасом
+
+
+def split_long(text: str, limit: int = _CHUNK) -> list[str]:
+    """Длинное сообщение → несколько, по границам абзацев, потом строк.
+
+    ⚠️ Режем только между строками: теги HTML у нас не переходят через
+    перенос строки, поэтому ни один кусок не получит «незакрытый <b>».
+    Строка длиннее предела (не бывает в наших текстах) режется как есть."""
+    if len(text) <= TELEGRAM_TEXT_MAX:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return [c for c in chunks if c.strip()] or [text[:limit]]
+
+
+async def _send_text(
+    bot: Bot, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None
+):
+    """Отправить, разбив длинное на части. Кнопки — у последней части; её же
+    и возвращаем (по ней потом правят сообщение)."""
+    parts = split_long(text)
+    sent = None
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        sent = await _send_message_with_retry(
+            bot, chat_id, part, reply_markup if last else None
+        )
+    return sent
+
+
 async def _disable(session: AsyncSession, owner_id: int) -> None:
     await session.execute(
         update(Owner).where(Owner.id == owner_id).values(notifications_enabled=False)
@@ -109,9 +158,11 @@ async def _copy_to_admins(
         if chat_id == owner.telegram_id:
             continue  # владелец сам добавлен админом — не дублируем ему же
         try:
-            await _send_message_with_retry(bot, chat_id, text, reply_markup)
+            await _send_text(bot, chat_id, text, reply_markup)
         except Exception as exc:
-            logger.info("Admin %s notification skipped: %s", chat_id, exc)
+            # warning, а не info: второй телефон владельца остался без
+            # уведомления — это видно в логах сразу (разбор 27.09.2026).
+            logger.warning("Admin %s notification skipped: %s", chat_id, exc)
 
 
 async def notify_owner(
@@ -127,9 +178,7 @@ async def notify_owner(
         return None
     message_id: int | None = None
     try:
-        sent = await _send_message_with_retry(
-            bot, owner.telegram_id, text, reply_markup
-        )
+        sent = await _send_text(bot, owner.telegram_id, text, reply_markup)
         message_id = sent.message_id
     except TelegramForbiddenError:
         logger.warning("Owner %s blocked the bot, disabling notifications", owner.id)
@@ -284,12 +333,20 @@ async def notify_driver(
     driver_telegram_id: int | None,
     text: str,
 ) -> bool:
-    """Сообщение водителю. На ошибке просто логируем."""
+    """Сообщение водителю. На ошибке просто логируем.
+
+    ⚠️ Как у владельца: три попытки на сбой сети. Раньше сбой сети не
+    ловился вовсе — одобрение расхода на сайте отвечало ошибкой 500 (хотя
+    уже сохранилось), а утреннее напоминание обрывало рассылку остальным
+    водителям (разбор 27.09.2026)."""
     if driver_telegram_id is None:
         return False
     try:
-        await bot.send_message(driver_telegram_id, text)
+        await _send_text(bot, driver_telegram_id, text, None)
         return True
     except (TelegramForbiddenError, TelegramBadRequest) as exc:
         logger.warning("Failed to notify driver %s: %s", driver_telegram_id, exc)
+        return False
+    except (RetryError, *_RETRYABLE_TELEGRAM_ERRORS) as exc:
+        logger.error("Failed to notify driver %s after retries: %s", driver_telegram_id, exc)
         return False

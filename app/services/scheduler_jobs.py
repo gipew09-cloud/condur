@@ -227,20 +227,42 @@ async def _check_owner_docs(
     res = await session.execute(
         select(Vehicle).where(Vehicle.owner_id == owner.id, Vehicle.is_active.is_(True))
     )
+    # Истёкший документ — ОДИН раз на каждое истечение (владелец 26.09.2026:
+    # «одного раза достаточно»). Раньше «ОСАГО истёк 45 дн. назад» приходило
+    # каждое утро. Продлили, и новый срок тоже истёк — напомним снова: в
+    # отметке есть сама дата.
+    told = {
+        (p.get("vehicle_id"), p.get("field"), p.get("expires"))
+        for (p,) in (await session.execute(
+            select(Event.payload).where(
+                Event.owner_id == owner.id, Event.event_type == "doc_expired_alert",
+            )
+        )).all()
+        if isinstance(p, dict)
+    }
+    logged = False
     for vehicle in res.scalars().all():
         for field, label in DOC_LABELS.items():
             expires = getattr(vehicle, field)
             if expires is None:
                 continue
             if expires < today:
-                days_text = "истёк"
+                key = (vehicle.id, field, expires.isoformat())
+                if key in told:
+                    continue
                 days = (today - expires).days
-                date_label = expires.strftime("%d.%m.%Y") + f" ({days} дн. назад)"
                 await notify_owner(
                     owner_bot, session, owner,
                     f"🔴 У машины <b>{vehicle.license_plate}</b> {label} истёк "
                     f"{expires.strftime('%d.%m.%Y')} ({days} дн. назад).",
                 )
+                await log_event(
+                    session, owner_id=owner.id, event_type="doc_expired_alert",
+                    payload={"vehicle_id": vehicle.id, "field": field, "label": label,
+                             "expires": expires.isoformat()},
+                )
+                told.add(key)
+                logged = True
                 continue
             if expires <= cutoff:
                 days = (expires - today).days
@@ -251,6 +273,8 @@ async def _check_owner_docs(
                         date_label=expires.strftime("%d.%m.%Y"), days=days,
                     ),
                 )
+    if logged:
+        await session.commit()
 
 
 # =========================================================================
@@ -349,7 +373,11 @@ async def silence_detector_job(owner_bot: Bot) -> None:
             .select_from(Shift)
             .join(Driver, Driver.id == Shift.driver_id)
             .outerjoin(Event, Event.driver_id == Driver.id)
-            .where(Shift.status == "started")
+            # ⚠️ Удалённый водитель («отключить» в кабинете) — не тревога:
+            # его смена могла остаться открытой, и владелец раз в несколько
+            # часов получал бы «не выходит на связь» про человека, которого
+            # сам убрал (разбор 26.09.2026).
+            .where(Shift.status == "started", Driver.is_active.is_(True))
             .group_by(
                 Driver.id, Driver.full_name, Driver.owner_id,
                 Driver.telegram_id, Shift.id, Shift.started_at,

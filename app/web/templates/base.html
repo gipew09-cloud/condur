@@ -222,6 +222,26 @@
     pendingBtn = null;
   });
 })();
+(function () {
+  // Двойное нажатие «Добавить водителя» / «Сохранить» отправляло форму
+  // дважды — два водителя, два расхода (разбор 26.09.2026). Держим форму
+  // пять секунд после отправки. Слушаем на window: сюда событие доходит
+  // последним, и формы, которые шлёт htmx или свой скрипт (они сами
+  // отменяют обычную отправку), не трогаем. Отборы (GET) не держим.
+  window.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (e.defaultPrevented || (form.method || '').toLowerCase() !== 'post') return;
+    if (form.dataset.sending === '1') { e.preventDefault(); return; }
+    form.dataset.sending = '1';
+    setTimeout(function () { delete form.dataset.sending; }, 5000);
+  });
+  // Вернулись кнопкой «Назад» — страница из кэша, формы снова свободны.
+  window.addEventListener('pageshow', function () {
+    document.querySelectorAll('form[data-sending]').forEach(function (f) {
+      delete f.dataset.sending;
+    });
+  });
+})();
 </script>
 
 {% block scripts %}{% endblock %}

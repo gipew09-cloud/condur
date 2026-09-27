@@ -645,6 +645,22 @@ dialog.fin-sheet.is-closing::backdrop { opacity: 0; }
   box-shadow: none; color: var(--fin-blue-ink); font: inherit; font-size: 14px; font-weight: 600;
 }
 .fin-cat.is-fresh span { animation: fin-pop 320ms var(--fin-ease) both; }
+/* Свои виды: «Изменить» → у каждого появляется красный «−», как в iOS. */
+.fin-sheet .fin-cat--edit {
+  width: auto; margin: 0; border: 0; background: transparent; box-shadow: none;
+  color: var(--fin-blue-ink); font: inherit; font-size: 14px; font-weight: 600;
+}
+.fin-sheet .fin-cat__del {
+  position: absolute; top: -7px; right: -7px; display: none; place-items: center;
+  width: 22px; height: 22px; margin: 0; padding: 0; border: 2px solid #fff; border-radius: 50%;
+  background: var(--fin-red); box-shadow: none; color: #fff; font-size: 12px; cursor: pointer;
+  transition: transform 160ms var(--fin-ease);
+}
+.fin-sheet .fin-cat__del:active { transform: scale(.9); }
+.fin-cats.is-editing .fin-cat__del { display: grid; }
+@starting-style { .fin-cats.is-editing .fin-cat__del { transform: scale(.6); } }
+.fin-sheet .fin-cat.is-busy { opacity: .5; pointer-events: none; }
+.fin-sheet .fin-cat.is-leaving { opacity: 0; transform: scale(.9); transition: opacity 180ms var(--fin-ease), transform 200ms var(--fin-ease); }
 @keyframes fin-pop { from { opacity: 0; transform: scale(.92); } }
 .fin-newcat { display: flex; gap: 8px; }
 .fin-newcat input { flex: 1; min-width: 0; }

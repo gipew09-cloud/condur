@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -29,7 +29,8 @@ from app.bots import keyboards as kb
 from app.bots import messages as msg
 from app.config import settings
 from app.models import (
-    Driver, DriverAction, DriverPhoto, DriverSession, RouteTemplate, Shift, Vehicle,
+    Driver, DriverAction, DriverPhoto, DriverSession, Event, Owner, RouteTemplate, Shift,
+    Vehicle,
 )
 from app.services import (
     driver_photos, expense_flow, shift_flow, shift_service, telemetry_service, trip_flow,
@@ -276,27 +277,95 @@ def _trip_result(trip) -> dict:
     return {"trip_id": trip.id, "trip_status": trip.status}
 
 
-async def _trip_create(session, driver: Driver, payload: dict, moment: datetime):
+def _route_wanted(payload: dict) -> int | None:
+    """Номер маршрута из списка — или None, если водитель написал свой.
+    Ни того, ни другого — ошибка запроса."""
     template_id = _int_or_none(payload.get("template_id"), field_name="template_id")
-    if template_id is None:
-        raise BadRequest("template_id обязателен")
+    if template_id is not None:
+        return template_id
+    if not trip_flow.clean_place(payload.get("origin")) or not trip_flow.clean_place(
+        payload.get("destination")
+    ):
+        raise BadRequest("нужен template_id или origin и destination")
+    return None
+
+
+async def _route_of(
+    session, driver: Driver, payload: dict, template_id: int | None,
+) -> tuple[str, str, str | None]:
+    """Откуда, куда и груз: из маршрута владельца или написанные водителем.
+
+    Свой маршрут — как в боте «введите свой» (владелец 26.09.2026: «чтобы он
+    смог сам писать откуда он там что делает»). Текст чистится от HTML и
+    обрезается до 120 знаков: он уходит владельцу в Telegram и в кабинет.
+    """
+    if template_id is not None:
+        template = await session.get(RouteTemplate, template_id)
+        if template is None or template.owner_id != driver.owner_id or not template.is_active:
+            raise ActionRejected(
+                "route_unknown",
+                "Этого маршрута больше нет. Потяните экран вниз — список обновится.",
+            )
+        return template.origin, template.destination, template.default_cargo
+    return (
+        trip_flow.clean_place(payload.get("origin")),
+        trip_flow.clean_place(payload.get("destination")),
+        trip_flow.clean_place(payload.get("cargo")) or None,
+    )
+
+
+async def _trip_create(session, driver: Driver, payload: dict, moment: datetime):
+    template_id = _route_wanted(payload)
     shift = await _open_shift(session, driver)
     # Замок на смену: два «Новый рейс» разом не создадут два рейса.
     await session.get(Shift, shift.id, with_for_update=True)
     if await trip_service.get_active_trip(session, shift.id) is not None:
         raise ActionRejected("trip_already_open", msg.TRIP_ALREADY_OPEN)
-    template = await session.get(RouteTemplate, template_id)
-    if template is None or template.owner_id != driver.owner_id or not template.is_active:
-        raise ActionRejected(
-            "route_unknown",
-            "Этого маршрута больше нет. Потяните экран вниз — список обновится.",
-        )
+    origin, destination, cargo = await _route_of(session, driver, payload, template_id)
     trip = await trip_flow.create_trip(
         session, driver=driver, shift=shift,
-        origin=template.origin, destination=template.destination,
-        cargo=template.default_cargo, source="app", now=moment,
+        origin=origin, destination=destination,
+        cargo=cargo, source="app", now=moment,
     )
     return _trip_result(trip), {"kind": "trip_created", "trip": trip}
+
+
+async def _trip_add_manual(session, driver: Driver, payload: dict, moment: datetime):
+    """Рейс задним числом — водитель забыл его отметить (как «➕ Добавить
+    рейс» в боте; владелец 26.09.2026)."""
+    template_id = _route_wanted(payload)
+    vehicle_id = _int_or_none(payload.get("vehicle_id"), field_name="vehicle_id")
+    if vehicle_id is None:
+        raise BadRequest("vehicle_id обязателен")
+    raw_day = payload.get("date")
+    try:
+        day = date.fromisoformat(raw_day) if isinstance(raw_day, str) else None
+    except ValueError:
+        day = None
+    if day is None:
+        raise BadRequest("date: ГГГГ-ММ-ДД")
+    vehicle = await session.get(Vehicle, vehicle_id)
+    if vehicle is None or vehicle.owner_id != driver.owner_id or not vehicle.is_active:
+        raise ActionRejected(
+            "vehicle_unknown",
+            "Этой машины больше нет. Потяните экран вниз — список обновится.",
+        )
+    owner = await session.get(Owner, driver.owner_id)
+    tz_name = owner.timezone if owner is not None else None
+    when = trip_flow.manual_moment(day, tz_name)
+    if when is None:
+        raise ActionRejected("date_in_future", "Эта дата ещё не наступила — выберите прошедшую.")
+    if await trip_flow.manual_limit_reached(session, driver.id):
+        raise ActionRejected("manual_limit", trip_flow.MANUAL_TOO_MANY)
+    origin, destination, cargo = await _route_of(session, driver, payload, template_id)
+    trip = await trip_flow.add_manual_trip(
+        session, driver=driver, vehicle=vehicle, origin=origin,
+        destination=destination, cargo=cargo, when=when, source="app",
+    )
+    return (
+        {"trip_id": trip.id, "date": day.isoformat()},
+        {"kind": "trip_added_manual", "trip": trip, "vehicle": vehicle},
+    )
 
 
 async def _trip_depart(session, driver: Driver, payload: dict, moment: datetime):
@@ -341,13 +410,14 @@ async def _trip_waybill(session, driver: Driver, payload: dict, moment: datetime
     photo = await _photo(session, driver, payload)
     if photo is None:
         raise BadRequest("photo обязателен")
-    await trip_service.attach_waybill(
-        session, trip=trip, photo_file_id=driver_photos.ref_of(photo),
-    )
+    ref = driver_photos.ref_of(photo)
+    await trip_service.attach_waybill(session, trip=trip, photo_file_id=ref)
+    # Снимок — в самой записи: у ТТН бывает несколько страниц, и каждая строка
+    # журнала показывает свою, а не последнюю (владелец 26.09.2026).
     await log_event(
         session, owner_id=driver.owner_id, driver_id=driver.id,
         shift_id=shift.id, trip_id=trip.id, event_type="waybill_uploaded",
-        payload={"source": "app"},
+        payload={"source": "app", "photo": ref},
     )
     return _trip_result(trip), {"kind": "trip_waybill", "trip": trip, "photo": photo}
 
@@ -384,8 +454,27 @@ async def _expense_create(session, driver: Driver, payload: dict, moment: dateti
     }
 
 
+# Повторный SOS раньше этого срока — не новое сообщение владельцу, а «уже
+# отправлено». Иначе удержание кнопки подряд (или сбой) слало бы владельцу
+# десятки тревог (проверка безопасности 26.09.2026).
+SOS_REPEAT_SECONDS = 60
+
+
 async def _sos_send(session, driver: Driver, payload: dict, moment: datetime):
     """SOS — как «🆘 SOS» в боте: событие и сообщение владельцу."""
+    since = datetime.now(timezone.utc) - timedelta(seconds=SOS_REPEAT_SECONDS)
+    recent = (await session.execute(
+        select(Event.id).where(
+            Event.driver_id == driver.id, Event.event_type == "sos",
+            Event.created_at >= since,
+        ).limit(1)
+    )).scalar_one_or_none()
+    if recent is not None:
+        # ⚠️ Не отказ, а «принято»: водитель в беде жмёт SOS ещё раз, потому
+        # что не уверен, дошло ли. Красное «не принято» напугало бы его
+        # сильнее (разбор 26.09.2026). Вторую тревогу владельцу не шлём —
+        # первая пришла меньше минуты назад.
+        return {"repeat": True, "message": "SOS уже у владельца."}, {}
     sent = await expense_flow.send_sos(session, driver=driver, source="app")
     return {}, {"kind": "sos", "sos": sent}
 
@@ -398,6 +487,7 @@ HANDLERS = {
     "trip.unloading": _trip_unloading,
     "trip.finish": _trip_finish,
     "trip.waybill": _trip_waybill,
+    "trip.add_manual": _trip_add_manual,
     "expense.create": _expense_create,
     "sos.send": _sos_send,
 }
@@ -560,6 +650,10 @@ def _owner_message(outcome: Outcome, *, driver: Driver, tz_name: str | None) -> 
     if kind == "sos":
         return OwnerNotice(after["sos"].owner_text(driver))
     trip = after.get("trip")
+    if kind == "trip_added_manual":
+        return OwnerNotice(trip_flow.manual_owner_text(
+            trip, driver=driver, plate=after["vehicle"].license_plate, tz_name=tz_name,
+        ))
     if kind == "trip_created":
         return OwnerNotice(trip_flow.created_owner_text(trip, driver=driver))
     if kind == "trip_departed":
@@ -574,8 +668,8 @@ def _owner_message(outcome: Outcome, *, driver: Driver, tz_name: str | None) -> 
     if kind == "trip_waybill":
         return OwnerNotice(
             msg.NOTIFY_WAYBILL.format(
-                driver=driver.full_name,
-                origin=trip.origin or "—", destination=trip.destination or "—",
+                driver=trip_flow._h(driver.full_name),
+                origin=trip_flow._h(trip.origin), destination=trip_flow._h(trip.destination),
             ),
             None,
             photo_bytes,
@@ -610,3 +704,9 @@ async def commit_or_replay(
         if existing is None:
             raise
         return Outcome(action=existing, duplicate=True)
+    except Exception:
+        # Любая другая ошибка записи (оборвалась связь с базой) — откатить
+        # сразу, чтобы сессия не осталась в полузаписанном виде (разбор
+        # 26.09.2026). Телефон получит ошибку и повторит с тем же номером.
+        await session.rollback()
+        raise

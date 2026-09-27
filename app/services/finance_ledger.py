@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -113,16 +114,23 @@ def parse_amount(raw) -> Decimal | None:
     """«3 500,50» → Decimal('3500.50'). Мусор, ноль и минус — None."""
     if raw is None:
         return None
-    text = str(raw).replace(" ", "").replace(" ", "").replace(" ", "").replace(",", ".")
-    if not text:
+    text = re.sub(r"\s+", "", str(raw)).replace(",", ".")
+    # ⚠️ Только цифры и одна точка. Decimal сам по себе принимает «nan»,
+    # «Infinity» и «1e400» — первые два роняли страницу с ошибкой 500 (сравнение
+    # с NaN и округление бесконечности бросают исключение), а «1e400» не
+    # округляется вовсе (разбор 26.09.2026).
+    if not _AMOUNT_RE.fullmatch(text):
+        return None
+    value = Decimal(text)
+    if value <= 0:
         return None
     try:
-        value = Decimal(text)
-    except InvalidOperation:
+        return value.quantize(Decimal("0.01"))
+    except InvalidOperation:  # больше, чем влезает в точность Decimal
         return None
-    if value <= 0 or value.is_nan():
-        return None
-    return value.quantize(Decimal("0.01"))
+
+
+_AMOUNT_RE = re.compile(r"\d+(\.\d+)?|\.\d+")
 
 
 # ── чтение ───────────────────────────────────────────────────────────────────
@@ -357,12 +365,12 @@ def by_category(rows: list[LedgerRow]) -> list[dict]:
 
 
 def by_vehicle(rows: list[LedgerRow]) -> list[dict]:
-    """Расходы по машинам. Всё без машины — одной строкой «Компания»."""
+    """Расходы по машинам. Всё без машины — одной строкой «Общие»."""
     buckets: dict[str, Decimal] = {}
     for r in rows:
         if r.status != "approved":
             continue
-        key = r.vehicle or "Компания"
+        key = r.vehicle or "Общие"
         buckets[key] = buckets.get(key, Decimal(0)) + r.amount
     out = [{"label": k, "amount": float(v)} for k, v in buckets.items()]
     out.sort(key=lambda x: x["amount"], reverse=True)
@@ -554,6 +562,31 @@ async def add_category(session: AsyncSession, owner_id: int, name: str) -> str:
     session.add(ExpenseCategory(owner_id=owner_id, name=clean))
     await session.flush()
     return clean
+
+
+async def delete_category(session: AsyncSession, owner_id: int, name: str) -> int | None:
+    """Убрать свой вид из списка. None — такого своего вида нет.
+
+    ⚠️ Траты с этим видом НЕ удаляются: вид хранится в трате названием, и она
+    остаётся в книге с тем же названием. Возвращаем, сколько таких трат —
+    чтобы сказать владельцу «траты остались». Встроенные виды не удаляются.
+    """
+    clean = " ".join((name or "").split())
+    row = (await session.execute(
+        select(ExpenseCategory).where(
+            ExpenseCategory.owner_id == owner_id, ExpenseCategory.name == clean,
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        return None
+    kept = (await session.execute(
+        select(func.count(Expense.id)).where(
+            Expense.owner_id == owner_id, Expense.category == clean,
+        )
+    )).scalar_one() or 0
+    await session.delete(row)
+    await session.flush()
+    return int(kept)
 
 
 # ── запись ───────────────────────────────────────────────────────────────────

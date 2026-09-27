@@ -56,7 +56,9 @@ from app.services import (
     trip_service,
 )
 from app.services.cash_pending import PENDING as CASH_PENDING
-from app.services import driver_photos, expense_flow, odometer_check, shift_flow, trip_flow
+from app.services import (
+    background, driver_photos, expense_flow, odometer_check, shift_flow, trip_flow,
+)
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
 from app.services.timeutil import fmt_time, owner_tz
@@ -582,11 +584,11 @@ async def shift_start_odometer_photo(
 
     shift = await shift_service.get_active_shift(session, driver.id)
     if _odometer_ocr_on() and file_id is not None and shift is not None:
-        asyncio.create_task(_odometer_followup(
+        background.spawn(_odometer_followup(
             bot=bot, owner_bot=owner_bot, file_id=file_id, shift_id=shift.id,
             owner_id=owner_id, driver_name=driver_name, plate=plate,
             closing=False,
-        ))
+        ), name="одометр из бота")
 
 
 @driver_router.message(StartShift.waiting_for_odometer_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
@@ -659,11 +661,11 @@ async def shift_end_odometer_photo(
     # ⚠️ Проверяем всегда, а не только при включённом распознавании: одно и
     # то же фото в начале и в конце видно и без него (случай 17.09).
     if file_id is not None:
-        asyncio.create_task(_odometer_followup(
+        background.spawn(_odometer_followup(
             bot=bot, owner_bot=owner_bot, file_id=file_id, shift_id=shift_id,
             owner_id=owner_id, driver_name=driver_name, plate=plate,
             closing=True,
-        ))
+        ), name="одометр из бота (конец смены)")
 
 
 @driver_router.message(EndShift.waiting_for_odometer_photo, ~F.text.in_(kb.ALL_DRIVER_BUTTONS))
@@ -1362,9 +1364,11 @@ async def upload_waybill_photo(
         return
 
     await trip_service.attach_waybill(session, trip=trip, photo_file_id=file_id)
+    # Снимок — в самой записи: страниц ТТН бывает несколько (26.09.2026).
     await log_event(
         session, owner_id=driver.owner_id, driver_id=driver.id,
         shift_id=shift.id, trip_id=trip.id, event_type="waybill_uploaded",
+        payload={"photo": file_id},
     )
     await session.commit()
     await state.clear()
@@ -1875,10 +1879,10 @@ async def expense_receipt_photo(
     # экран и не понимал, отправилось ли. Расход уже сохранён и уведомление
     # владельцу ушло — распознанная сумма догонит отдельным сообщением.
     if receipt_ocr.is_enabled() and file_id is not None:
-        asyncio.create_task(_receipt_amount_followup(
+        background.spawn(_receipt_amount_followup(
             bot=bot, owner_bot=owner_bot, file_id=file_id,
             owner_id=owner_id, driver_name=driver_name, typed=typed_amount,
-        ))
+        ), name="чек из бота")
 
 
 @driver_router.callback_query(NewExpense.waiting_for_receipt, F.data == "exp_receipt:skip")
@@ -2172,7 +2176,8 @@ def _parse_manual_date(text: str | None, tz_name: str | None) -> datetime | None
             d = date(year, month, day)
         except ValueError:
             return None
-    return datetime(d.year, d.month, d.day, 12, 0, tzinfo=tz).astimezone(timezone.utc)
+    # Полдень по часам владельца; будущий день — None (рейс ещё не случился).
+    return trip_flow.manual_moment(d, tz_name)
 
 
 def _date_label(dt: datetime, tz_name: str | None) -> str:
@@ -2413,24 +2418,14 @@ async def manual_trip_date(
         await _refresh_ui(message, session, driver, msg.SOMETHING_WRONG)
         return
 
-    # Ручной рейс живёт в ручной (завершённой) смене — чтобы FK shift_id был валиден.
-    shift = Shift(
-        owner_id=driver.owner_id, driver_id=driver.id, vehicle_id=vehicle.id,
-        status="completed", started_at=dt, ended_at=dt, is_manual=True,
-    )
-    session.add(shift)
-    await session.flush()
-    trip = await trip_service.create_trip(
-        session, shift=shift, origin=origin, destination=destination, cargo_name=None,
-    )
-    await session.flush()
-    trip.status = "completed"
-    trip.completed_at = dt
-    trip.is_manual = True
-    await log_event(
-        session, owner_id=driver.owner_id, driver_id=driver.id,
-        shift_id=shift.id, trip_id=trip.id, event_type="trip_added_manual",
-        payload={"origin": origin, "destination": destination, "date": dt.isoformat()},
+    if await trip_flow.manual_limit_reached(session, driver.id):
+        await state.clear()
+        await _refresh_ui(message, session, driver, trip_flow.MANUAL_TOO_MANY)
+        return
+    # Одна логика с приложением — trip_flow.add_manual_trip.
+    trip = await trip_flow.add_manual_trip(
+        session, driver=driver, vehicle=vehicle, origin=origin,
+        destination=destination, cargo=None, when=dt, source="bot",
     )
     await session.commit()
     await state.clear()
@@ -2438,14 +2433,15 @@ async def manual_trip_date(
     label = _date_label(dt, tz_name)
     await _refresh_ui(
         message, session, driver,
-        msg.MANUAL_TRIP_DONE.format(date=label, origin=origin, destination=destination),
+        msg.MANUAL_TRIP_DONE.format(
+            date=label, origin=trip_flow._h(origin), destination=trip_flow._h(destination),
+        ),
     )
     if owner is not None:
         await notify_owner(
             owner_bot, session, owner,
-            msg.NOTIFY_MANUAL_TRIP.format(
-                driver=driver.full_name, date=label, origin=origin,
-                destination=destination, plate=vehicle.license_plate,
+            trip_flow.manual_owner_text(
+                trip, driver=driver, plate=vehicle.license_plate, tz_name=tz_name,
             ),
         )
 

@@ -25,8 +25,10 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str = ""  # необязателен пока используем MemoryStorage
 
-    # секрет для подписи JWT в веб-кабинете. На Railway задайте через Variables.
-    jwt_secret: str = "change-me-in-production"
+    # ⚠️ jwt_secret убран 26.09.2026: JWT-вход удалён ещё при аудите 13.08,
+    # а поле с дефолтом «change-me-in-production» оставалось ловушкой —
+    # новый код мог бы снова на него опереться. Переменная JWT_SECRET на
+    # Railway больше ни на что не влияет (extra="ignore" — не мешает).
     # HTTP-порт для FastAPI. Railway пробрасывает свой через переменную PORT.
     port: int = 8000
     # дефолтная таймзона: подставляется новым владельцам при регистрации

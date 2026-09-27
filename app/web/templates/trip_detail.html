@@ -529,24 +529,30 @@
     </aside>
   </section>
 
-  {% if trip.waybill_photo_url %}
+  {% if waybill_pages %}
   <section class="trip-card">
     <div class="trip-card__head">
-      <h3>ТТН</h3>
-      <div style="display:flex; gap:10px; align-items:center;">
-        {% if waybill_uploaded_at %}<small>загружено {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>{% endif %}
-        {{ photo_origin(photo_origins, trip.waybill_photo_url) }}
-        <form action="/trips/{{ trip.id }}/waybill/delete" method="post" style="margin:0;"
-              data-confirm="Удалить фото ТТН?" >
-          <button type="submit" title="Удалить" style="width:auto; display:inline; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; margin:0; font:inherit; font-size:.82rem;">🗑 Удалить</button>
-        </form>
-      </div>
+      <h3>ТТН{% if waybill_pages|length > 1 %} · {{ waybill_pages|length }} стр.{% endif %}</h3>
+      {% if waybill_uploaded_at %}<small>последняя загружена {{ waybill_uploaded_at | localdt(owner.timezone, '%d.%m.%Y %H:%M') }}</small>{% endif %}
     </div>
-    <div class="trip-card__body">
-      <a href="/api/photo/{{ trip.waybill_photo_url }}" target="_blank">
-        <img src="/api/photo/{{ trip.waybill_photo_url }}"
-             style="max-width: 100%; max-height: 600px; border-radius: 10px; border: 1px solid #e2e8f0;">
-      </a>
+    {# Все страницы ТТН: второе фото раньше затирало первое (26.09.2026). #}
+    <div class="trip-card__body" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px;">
+      {% for ref in waybill_pages %}
+      <figure style="margin:0;">
+        <a href="/api/photo/{{ ref }}" target="_blank">
+          <img src="/api/photo/{{ ref }}" alt="ТТН, страница {{ loop.index }}"
+               style="width:100%; max-height:420px; object-fit:contain; border-radius:10px; border:1px solid #e2e8f0; background:#f8fafc;">
+        </a>
+        <figcaption style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:6px; font-size:.82rem;">
+          <span>стр. {{ loop.index }} {{ photo_origin(photo_origins, ref) }}</span>
+          <form action="/trips/{{ trip.id }}/waybill/delete" method="post" style="margin:0;"
+                data-confirm="Удалить эту страницу ТТН?">
+            <input type="hidden" name="ref" value="{{ ref }}">
+            <button type="submit" title="Удалить" style="width:auto; display:inline; background:none; border:none; box-shadow:none; color:#c5362b; cursor:pointer; padding:0; margin:0; font:inherit;">🗑 Удалить</button>
+          </form>
+        </figcaption>
+      </figure>
+      {% endfor %}
     </div>
   </section>
   {% endif %}

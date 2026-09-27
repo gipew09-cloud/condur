@@ -244,16 +244,16 @@ async def finance_overview(
 
     # Прибыль по машинам: доход рейсов машины минус её одобренные траты.
     per_vehicle: dict[str, dict] = {}
-    # «Компания» — всё, что не на машине: и доход, и расход (одна строка,
-    # а не «Без машины» и «За компанию» про одно и то же).
+    # «Общие» — всё, что не на машине: и доход, и расход (одна строка).
+    # Не «Компания»: владелец 24.09.2026 — «это может быть не компания».
     for r in incomes:
-        key = r.vehicle or "Компания"
+        key = r.vehicle or "Общие"
         per_vehicle.setdefault(key, {"label": key, "income": 0.0, "expense": 0.0})
         per_vehicle[key]["income"] += float(r.amount)
     for r in expenses:
         if r.status != "approved":
             continue
-        key = r.vehicle or "Компания"
+        key = r.vehicle or "Общие"
         per_vehicle.setdefault(key, {"label": key, "income": 0.0, "expense": 0.0})
         per_vehicle[key]["expense"] += float(r.amount)
     vehicles = sorted(per_vehicle.values(), key=lambda v: v["income"] - v["expense"], reverse=True)
@@ -582,6 +582,20 @@ async def finance_category_add(
         return JSONResponse({"ok": False, "message": str(error)}, status_code=400)
     await session.commit()
     return JSONResponse({"ok": True, "code": code, "label": fl.category_label(code)})
+
+
+@app.post("/finances/categories/delete")
+async def finance_category_delete(
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    name: Annotated[str, Form()] = "",
+):
+    """Убрать свой вид расхода из списка. Траты с ним остаются."""
+    kept = await fl.delete_category(session, owner.id, name)
+    if kept is None:
+        return JSONResponse({"ok": False, "message": "Такого своего вида нет."}, status_code=404)
+    await session.commit()
+    return JSONResponse({"ok": True, "kept": kept})
 
 
 # ── Доходы ───────────────────────────────────────────────────────────────────

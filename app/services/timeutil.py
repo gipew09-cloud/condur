@@ -9,10 +9,13 @@ Python 3.9+ имеет zoneinfo в стандартной библиотеке, 
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 RU_MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн",
                    "июл", "авг", "сен", "окт", "ноя", "дек"]
@@ -22,7 +25,17 @@ def owner_tz(timezone_name: str | None) -> ZoneInfo:
     try:
         return ZoneInfo(timezone_name or settings.default_timezone)
     except Exception:
+        # Непонятный пояс — Москва, но не молча: иначе сводки «среди ночи»
+        # не с чем связать (разбор 27.09.2026). Один раз на каждое имя.
+        if timezone_name not in _BAD_TZ_LOGGED:
+            _BAD_TZ_LOGGED.add(timezone_name)
+            logger.warning(
+                "Unknown timezone %r, using %s", timezone_name, settings.default_timezone
+            )
         return ZoneInfo(settings.default_timezone)
+
+
+_BAD_TZ_LOGGED: set[str | None] = set()
 
 
 def to_owner_tz(dt: datetime | None, timezone_name: str | None) -> datetime | None:

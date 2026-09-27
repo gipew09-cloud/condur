@@ -19,17 +19,17 @@
       {% endif %}
 
       <div class="fin-field" role="group" aria-labelledby="ef-link">
-        <div class="fin-label" id="ef-link">За что</div>
+        <div class="fin-label" id="ef-link">Куда отнести</div>
         <div class="fin-toggle">
-          <label><input type="radio" name="link" value="company"{% if not (prefill and prefill.vehicle_id) %} checked{% endif %}><span>Компания</span></label>
-          <label><input type="radio" name="link" value="vehicle"{% if prefill and prefill.vehicle_id %} checked{% endif %}{% if not vehicles %} disabled{% endif %}><span>Машина</span></label>
+          <label><input type="radio" name="link" value="company"{% if not (prefill and prefill.vehicle_id) %} checked{% endif %}><span>Общий расход</span></label>
+          <label><input type="radio" name="link" value="vehicle"{% if prefill and prefill.vehicle_id %} checked{% endif %}{% if not vehicles %} disabled{% endif %}><span>На машину</span></label>
         </div>
         <div class="fin-reveal" data-reveal="vehicle"{% if not (prefill and prefill.vehicle_id) %} hidden{% endif %}>
           <select name="vehicle_id" aria-label="Машина">
             {% for v in vehicles %}<option value="{{ v.id }}"{% if prefill and prefill.vehicle_id == v.id %} selected{% endif %}>{{ v.license_plate }}</option>{% endfor %}
           </select>
         </div>
-        {% if not vehicles %}<small class="fin-hint">Машин в парке нет — расход пойдёт на компанию.</small>{% endif %}
+        {% if not vehicles %}<small class="fin-hint">Машин в парке нет — расход будет общим.</small>{% endif %}
       </div>
 
       <div class="fin-field">
@@ -78,9 +78,11 @@
       </header>
       <div class="fin-cats" role="radiogroup" aria-label="Вид расхода">
         {% for c in categories %}
-        <label class="fin-cat"><input type="radio" value="{{ c.code }}"><span><i class="ph ph-{{ fin_icon(c.code) }}" style="--c:{{ category_colors.get(c.code, '#636366') }}" aria-hidden="true"></i>{{ c.label }}</span></label>
+        <label class="fin-cat"{% if c.custom %} data-custom{% endif %}><input type="radio" value="{{ c.code }}"><span><i class="ph ph-{{ fin_icon(c.code) }}" style="--c:{{ category_colors.get(c.code, '#636366') }}" aria-hidden="true"></i>{{ c.label }}</span>{% if c.custom %}<button type="button" class="fin-cat__del" data-del-cat aria-label="Убрать вид «{{ c.label }}»"><i class="ph ph-minus"></i></button>{% endif %}</label>
         {% endfor %}
         <button type="button" class="fin-cat fin-cat--add" data-new-cat><i class="ph ph-plus"></i>Свой вид</button>
+        {#- Свои виды можно убрать (владелец 24.09.2026). Встроенные — нельзя. -#}
+        <button type="button" class="fin-cat fin-cat--edit" data-edit-cats{% if not (categories | selectattr('custom') | list) %} hidden{% endif %}>Изменить</button>
       </div>
       <div class="fin-newcat" hidden>
         <input type="text" maxlength="60" placeholder="Например, Тахограф" aria-label="Название своего вида расхода">

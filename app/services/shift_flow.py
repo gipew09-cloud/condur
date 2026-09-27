@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bots import messages as msg
-from app.models import Driver, Expense, Shift, Trip, Vehicle
+from app.models import Driver, Expense, Owner, Shift, Trip, Vehicle
 from app.services import odometer_check, salary_service, shift_service, telemetry_service
 from app.services.event_service import log_event
 
@@ -151,7 +151,10 @@ async def close_shift(
         select(Expense).where(Expense.shift_id == shift.id, Expense.status == "approved")
     )).scalars().all())
     expenses_total = sum((e.amount_rub or Decimal(0)) for e in approved) or Decimal(0)
-    salary = salary_service.calculate_salary(driver, shift, trips)
+    owner = await session.get(Owner, shift.owner_id)
+    salary = salary_service.calculate_salary(
+        driver, shift, trips, owner.timezone if owner is not None else None
+    )
     gps_km = await telemetry_service.gps_mileage_for_period(
         session, vehicle_id=shift.vehicle_id, start=shift.started_at, end=ended_at,
     ) if shift.started_at is not None else None

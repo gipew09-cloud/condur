@@ -1871,7 +1871,10 @@ async def odo_value(
         driver = await session.get(Driver, shift.driver_id)
         trips_res = await session.execute(select(Trip).where(Trip.shift_id == shift.id))
         trips = list(trips_res.scalars().all())
-        salary = salary_service.calculate_salary(driver, shift, trips) if driver else 0
+        salary = (
+            salary_service.calculate_salary(driver, shift, trips, owner.timezone)
+            if driver else 0
+        )
         text = msg.ODOMETER_OWNER_DONE_END.format(
             km=value,
             distance=shift.distance_km if shift.distance_km is not None else "—",

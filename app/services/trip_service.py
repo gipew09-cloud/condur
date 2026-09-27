@@ -74,8 +74,31 @@ async def set_trip_status(
 async def attach_waybill(
     session: AsyncSession, *, trip: Trip, photo_file_id: str
 ) -> Trip:
+    # ⚠️ В рейсе — последняя страница ТТН (для старых мест, где ждут одну).
+    # Все страницы — в записях журнала «waybill_uploaded» (payload.photo):
+    # второе фото раньше затирало первое (владелец 26.09.2026).
     trip.waybill_photo_url = photo_file_id
     return trip
+
+
+async def waybill_pages(session: AsyncSession, trip: Trip) -> list[str]:
+    """Все страницы ТТН рейса по порядку. Старые записи без фото в журнале —
+    тогда единственная страница из самого рейса."""
+    from app.models import Event  # ленивый импорт: модели тянут весь пакет
+
+    rows = (await session.execute(
+        select(Event.payload).where(
+            Event.trip_id == trip.id, Event.event_type == "waybill_uploaded",
+        ).order_by(Event.created_at, Event.id)
+    )).scalars().all()
+    pages: list[str] = []
+    for payload in rows:
+        ref = (payload or {}).get("photo")
+        if isinstance(ref, str) and ref and ref not in pages:
+            pages.append(ref)
+    if trip.waybill_photo_url and trip.waybill_photo_url not in pages:
+        pages.append(trip.waybill_photo_url)
+    return pages
 
 
 async def complete_trip(

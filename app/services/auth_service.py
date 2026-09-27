@@ -46,6 +46,11 @@ _login_codes: dict[int, CodeEntry] = {}
 
 def issue_code(telegram_id: int) -> str:
     """Сгенерировать (или перевыпустить) 6-значный код для владельца."""
+    # Заодно выбросить просроченные коды: иначе словарь в памяти только рос
+    # (разбор 26.09.2026). Кодов единицы, проход по ним ничего не стоит.
+    now = datetime.now(timezone.utc)
+    for tg_id in [k for k, v in _login_codes.items() if v.expires_at < now]:
+        _login_codes.pop(tg_id, None)
     code = f"{secrets.randbelow(1_000_000):06d}"
     _login_codes[telegram_id] = CodeEntry(
         code=code, expires_at=datetime.now(timezone.utc) + CODE_TTL
@@ -87,6 +92,12 @@ def consume_code(telegram_id: int, code: str) -> bool:
 # =====================================================================
 SESSION_COOKIE = "session"
 SESSION_COOKIE_MAX_AGE = 10 * 365 * 24 * 3600  # «навсегда» (10 лет)
+
+# Вход, которым не пользовались столько дней, гаснет сам (проверка
+# безопасности 26.09.2026). Иначе забытый старый телефон или чужой компьютер
+# годами оставался открытой дверью в кабинет. Кто заходит хоть раз в три
+# месяца — ничего не заметит.
+SESSION_IDLE_DAYS = 90
 
 
 def set_session_cookie(response, raw_token: str) -> None:
@@ -144,7 +155,7 @@ def device_label_from_user_agent(user_agent: str | None) -> str:
         # У «ios» нет знакомого браузерам следа, поэтому разбираем отдельно —
         # общую проверку трогать нельзя, там «ios» встретится в чужих строках.
         system = _os_from_user_agent(ua)
-        if system == "?" and "ios" in ua:
+        if system == _UNKNOWN_OS and "ios" in ua:
             system = "iPhone"
         return f"Приложение Condur · {system}"
     if "edg/" in ua or "edge" in ua:
@@ -178,4 +189,9 @@ def _os_from_user_agent(ua: str) -> str:
         return "Windows"
     if "linux" in ua:
         return "Linux"
-    return "?"
+    return _UNKNOWN_OS
+
+
+# Не «?»: в «Устройствах» владелец видел «Браузер · ?» и не понимал, что это
+# (разбор 26.09.2026).
+_UNKNOWN_OS = "устройство не определено"

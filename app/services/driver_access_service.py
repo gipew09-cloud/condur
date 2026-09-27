@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import auth_service
 from app.models import Driver, DriverAccessGrant, DriverSession
 
 GRANT_TTL = timedelta(minutes=30)
@@ -269,6 +270,11 @@ async def session_by_token(
         return None
     now = now or datetime.now(timezone.utc)
     last = _utc(ds.last_seen_at)
+    if last is not None and now - last > timedelta(days=auth_service.SESSION_IDLE_DAYS):
+        # Телефоном не пользовались три месяца — вход гаснет, как у
+        # владельца. Водителю нужен новый код (проверка 26.09.2026).
+        ds.revoked_at = now
+        return None
     if last is None or (now - last).total_seconds() > 300:
         ds.last_seen_at = now
     return ds

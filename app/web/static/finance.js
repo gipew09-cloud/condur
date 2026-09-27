@@ -591,8 +591,15 @@
     }
 
     function addCategoryChip(code, label) {
-      var html = '<label class="fin-cat is-fresh"><input type="radio" value="' + esc(code) + '">' +
-                 '<span><i class="ph ph-tag" aria-hidden="true"></i>' + esc(label) + '</span></label>';
+      var html = '<label class="fin-cat is-fresh" data-custom><input type="radio" value="' + esc(code) + '">' +
+                 '<span><i class="ph ph-tag" aria-hidden="true"></i>' + esc(label) + '</span>' +
+                 '<button type="button" class="fin-cat__del" data-del-cat aria-label="Убрать вид «' + esc(label) + '»">' +
+                 '<i class="ph ph-minus"></i></button></label>';
+      // Появился свой вид — кнопка «Изменить» нужна везде.
+      [tpl.content].concat(items()).forEach(function (root) {
+        var edit = root.querySelector('[data-edit-cats]');
+        if (edit) edit.hidden = false;
+      });
       // В шаблон — чтобы и следующие траты знали новый вид.
       var tplAdd = tpl.content.querySelector('[data-new-cat]');
       if (!tpl.content.querySelector('.fin-cat input[value="' + CSS.escape(code) + '"]')) {
@@ -604,6 +611,44 @@
         var input = node.querySelector('.fin-cat input[value="' + CSS.escape(code) + '"]');
         input.name = node.querySelector('.fin-cat input').name;
       });
+    }
+
+    // Убрать свой вид (владелец 24.09.2026: «как удалять категорию и удалятся
+    // ли сами расходы»). Траты с этим видом остаются — сервер говорит, сколько.
+    function deleteCategory(chip) {
+      var code = chip.querySelector('input').value;
+      var body = new FormData();
+      body.append('name', code);
+      chip.classList.add('is-busy');
+      fetch('/finances/categories/delete', { method: 'POST', body: body, credentials: 'same-origin' })
+        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+        .then(function (r) {
+          chip.classList.remove('is-busy');
+          if (!r.ok || !r.data.ok) { toast((r.data && r.data.message) || 'Не получилось убрать вид.', true); return; }
+          var sel = '.fin-cat input[value="' + CSS.escape(code) + '"]';
+          var gone = tpl.content.querySelector(sel);
+          if (gone) gone.closest('.fin-cat').remove();
+          items().forEach(function (node) {
+            var input = node.querySelector(sel);
+            if (!input) return;
+            var label = input.closest('.fin-cat');
+            label.classList.add('is-leaving');
+            setTimeout(function () { label.remove(); }, reduce.matches ? 0 : 200);
+          });
+          var left = tpl.content.querySelector('.fin-cat[data-custom]');
+          if (!left) {
+            [tpl.content].concat(items()).forEach(function (root) {
+              var edit = root.querySelector('[data-edit-cats]');
+              if (edit) { edit.hidden = true; edit.textContent = 'Изменить'; }
+              var cats = root.querySelector('.fin-cats');
+              if (cats) cats.classList.remove('is-editing');
+            });
+          }
+          var kept = r.data.kept || 0;
+          toast(kept ? 'Вид «' + code + '» убран. Траты с ним остались: ' + kept
+                     : 'Вид «' + code + '» убран');
+        })
+        .catch(function () { chip.classList.remove('is-busy'); toast('Нет связи. Попробуйте ещё раз.', true); });
     }
 
     function saveCategory(node) {
@@ -653,6 +698,16 @@
       if (t.closest('[data-add-item]')) { addItem(true); return; }
       var rm = t.closest('[data-remove-item]');
       if (rm) { removeItem(rm.closest('.fin-item')); return; }
+      var ed = t.closest('[data-edit-cats]');
+      if (ed) {
+        var cats = ed.closest('.fin-cats');
+        var editing = !cats.classList.contains('is-editing');
+        cats.classList.toggle('is-editing', editing);
+        ed.textContent = editing ? 'Готово' : 'Изменить';
+        return;
+      }
+      var del = t.closest('[data-del-cat]');
+      if (del) { e.preventDefault(); deleteCategory(del.closest('.fin-cat')); return; }
       var nc = t.closest('[data-new-cat]');
       if (nc) {
         var wrap = nc.closest('.fin-item').querySelector('.fin-newcat');

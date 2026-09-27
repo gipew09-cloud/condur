@@ -9,8 +9,8 @@
   fixed_per_month : помесячный оклад — за смену НЕ начисляется (0), платится
                     отдельно раз в месяц; ставка хранится как сумма оклада.
 
-per_diem — суточные × число календарных дней, на которые пришлась смена.
-Например, смена 30 мая 22:00 → 31 мая 06:00 — это 2 дня.
+per_diem — суточные × число календарных дней, на которые пришлась смена,
+по часам владельца. Например, смена 30 мая 22:00 → 31 мая 06:00 — это 2 дня.
 
 Важно: считаем в Decimal, а не float. На больших суммах float даёт
 накопленные ошибки округления (классическая бухгалтерская беда),
@@ -19,12 +19,20 @@ per_diem — суточные × число календарных дней, н�
 from decimal import Decimal
 
 from app.models import Driver, Shift, Trip
+from app.services.timeutil import to_owner_tz
 
 
-def _count_days(shift: Shift) -> int:
+def _count_days(shift: Shift, timezone_name: str | None = None) -> int:
+    """Календарные дни смены — по часам владельца, не по UTC.
+
+    ⚠️ Раньше считали по UTC: у московского владельца смена 01:00–10:00
+    давала двое суточных (по UTC она начиналась ещё вчера), а смена
+    20:00–02:00 — одни (разбор 27.09.2026)."""
     if shift.started_at is None or shift.ended_at is None:
         return 1
-    days = (shift.ended_at.date() - shift.started_at.date()).days + 1
+    start = to_owner_tz(shift.started_at, timezone_name)
+    end = to_owner_tz(shift.ended_at, timezone_name)
+    days = (end.date() - start.date()).days + 1
     return max(1, days)
 
 
@@ -66,7 +74,12 @@ def estimate_trip_salary(
     return (rate / Decimal(trips_in_shift)).quantize(Decimal("0.01"))
 
 
-def calculate_salary(driver: Driver, shift: Shift, trips: list[Trip]) -> Decimal:
+def calculate_salary(
+    driver: Driver,
+    shift: Shift,
+    trips: list[Trip],
+    timezone_name: str | None = None,
+) -> Decimal:
     rate = driver.salary_rate or Decimal(0)
     completed = _completed_trips(trips)
 
@@ -84,6 +97,8 @@ def calculate_salary(driver: Driver, shift: Shift, trips: list[Trip]) -> Decimal
     else:  # fixed_per_shift
         base = rate
 
-    per_diem = (driver.per_diem_rub or Decimal(0)) * Decimal(_count_days(shift))
+    per_diem = (driver.per_diem_rub or Decimal(0)) * Decimal(
+        _count_days(shift, timezone_name)
+    )
     total = base + per_diem
     return total.quantize(Decimal("0.01"))
