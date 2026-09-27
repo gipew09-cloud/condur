@@ -54,22 +54,25 @@ def test_no_browser_confirm_left_in_templates():
         assert "return confirm(" not in text, f"{path.name}: остался браузерный confirm()"
 
 
-def test_move_returns_partial_not_redirect():
-    """Перестановка ▲▼ обновляет только список (HTMX), без перезагрузки страницы."""
+def test_move_answers_short_not_whole_list():
+    """▲▼ двигают строку на странице; сервер отвечает коротким «да».
+
+    ⚠️ Раньше ответом был заново нарисованный список: страница подменяла его
+    целиком, и браузер прокручивал её на высоту списка (владелец 27.09.2026:
+    «страница обновляется и спавнится вверху»)."""
     src = _source("app/web/router.py")
     start = src.index("async def routes_template_move")
     end = src.index('@app.post("/routes/rc/add")')
     body = src[start:end]
-    assert "_route_templates.html" in body, "должен отдаваться кусок списка"
-    assert "_is_htmx" in body
-    # прямых редиректов на /routes в теле остаться не должно
-    assert 'RedirectResponse("/routes", status_code=303)' in body, "фоллбэк без htmx нужен"
-    assert body.count("RedirectResponse") == 1, "остальные ответы — партиал"
+    assert "_route_templates.html" not in body, "список целиком больше не отдаём"
+    assert "_moved_answer(request)" in body
 
 
-def test_partial_uses_htmx_and_marks_stale():
+def test_list_moves_in_place_and_marks_stale():
     tpl = _source("app/web/templates/_route_templates.html")
     assert 'id="route-templates"' in tpl
-    assert 'hx-target="#route-templates"' in tpl
+    assert "hx-target" not in tpl, "список не подменяется целиком"
+    assert 'data-scope="folder"' in tpl and 'data-scope="route"' in tpl
     assert "stale_destinations" in tpl, "устаревшие названия РЦ должны подсвечиваться"
-
+    page = _source("app/web/templates/routes.html")
+    assert "overflow-anchor: none" in page, "браузер не должен сам прокручивать при перестановке"

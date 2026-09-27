@@ -1198,3 +1198,33 @@ def test_owner_day_group_by_uses_single_bind_param():
     import app.web.router as router_mod
     src = inspect.getsource(router_mod)
     assert ".group_by(_owner_day(" not in src
+
+
+def test_rc_address_only_by_whole_words_and_never_guessed():
+    """Адрес РЦ в акте — только уверенно (разбор 27.09.2026): «Лента» не
+    прячется внутри «Лентапарк», короткое «Магнит» при двух Магнитах не
+    получает чужой адрес, а самое точное название по-прежнему побеждает."""
+    lookup = RC.distribution_center_lookup([
+        NS(name="Лента", address="Адрес Ленты", aliases=""),
+        NS(name="Лента Кудрово", address="Адрес Ленты Кудрово", aliases=""),
+        NS(name="Магнит Шушары 179", address="Адрес Шушар", aliases=""),
+        NS(name="Магнит Колпино", address="Адрес Колпина", aliases=""),
+    ])
+    assert RC.canonical_rc_address("Лентапарк", lookup) is None
+    assert RC.canonical_rc_address("Лента Кудрово ворота 2", lookup) == "Адрес Ленты Кудрово"
+    assert RC.canonical_rc_address("РЦ Лента", lookup) == "Адрес Ленты"
+    assert RC.canonical_rc_address("Магнит", lookup) is None
+    assert RC.canonical_rc_address("Колпино", lookup) == "Адрес Колпина"
+
+
+def test_act_period_and_trip_date_by_owners_clock():
+    """Период акта и дата рейса — по часам владельца (разбор 27.09.2026):
+    рейс, закрытый 1 октября в 01:30 по Москве, — октябрьский, «01.10»."""
+    from app.web import router as R
+
+    start, end = R._acts_range(date(2026, 10, 1), date(2026, 10, 31), "Europe/Moscow")
+    assert start == datetime(2026, 9, 30, 21, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 10, 31, 21, 0, tzinfo=timezone.utc)
+    night = datetime(2026, 9, 30, 22, 30, tzinfo=timezone.utc)  # 01:30 МСК 1 октября
+    assert start <= night < end
+    assert R._act_day(night, "Europe/Moscow").strftime("%d.%m.%Y") == "01.10.2026"

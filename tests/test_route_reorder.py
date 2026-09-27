@@ -31,7 +31,9 @@ from app.models import Base, Owner, RouteTemplate  # noqa: E402
 from app.web.router import (  # noqa: E402
     _origin_key,
     _route_templates_view,
+    routes_folder_move,
     routes_template_add,
+    routes_template_delete,
     routes_template_move,
 )
 
@@ -200,5 +202,87 @@ def test_adding_the_same_route_twice_does_not_duplicate_it():
 
         by_origin, _ = await _route_templates_view(session, owner.id, [])
         assert [t.destination for t in by_origin["Соф.60. 24.10"]] == ["Верный"]
+        await session.close()
+    _run(scenario)
+
+
+class _FetchRequest:
+    """Запрос скрипта страницы: ждёт короткое «да» в JSON."""
+    headers = {"accept": "application/json"}
+
+
+async def _folders(session, owner_id):
+    by_origin, _ = await _route_templates_view(session, owner_id, [])
+    return list(by_origin)
+
+
+def test_warehouses_move_and_keep_their_routes_order():
+    """Склады тоже переставляются (владелец 27.09.2026), и порядок маршрутов
+    внутри них при этом не сбивается."""
+    async def scenario():
+        session, owner = await _db_with([
+            ("А", "а1"), ("А", "а2"), ("Б", "б1"), ("В", "в1"), ("В", "в2"),
+        ])
+        await _press(session, owner, "а2", "up")
+        assert await _folders(session, owner.id) == ["А", "Б", "В"]  # пока по алфавиту
+
+        answer = await routes_folder_move(_FetchRequest(), owner, session, "В", "up")
+        assert answer.body == b'{"ok":true}'
+        await routes_folder_move(_FetchRequest(), owner, session, "В", "up")
+        assert await _folders(session, owner.id) == ["В", "А", "Б"]
+        assert await _order(session, owner.id, "А") == ["а2", "а1"]
+        assert await _order(session, owner.id, "В") == ["в1", "в2"]
+
+        # С края дальше не едет и ничего не ломает.
+        await routes_folder_move(_FetchRequest(), owner, session, "В", "up")
+        assert await _folders(session, owner.id) == ["В", "А", "Б"]
+        await session.close()
+    _run(scenario)
+
+
+def test_driver_sees_warehouses_in_owners_order_in_bot_and_app():
+    """Тот же порядок складов у бота водителя и в приложении."""
+    from app.bots.driver_bot import _route_origins
+    from app.services import trip_flow
+
+    async def scenario():
+        session, owner = await _db_with([("А", "а1"), ("Б", "б1"), ("Б", "б2")])
+        await routes_folder_move(_FetchRequest(), owner, session, "Б", "up")
+        await _press(session, owner, "б2", "up")
+        assert await _route_origins(session, owner.id) == ["Б", "А"]
+        catalog = await trip_flow.route_catalog(session, owner.id)
+        assert [f["origin"] for f in catalog] == ["Б", "А"]
+        assert [r["destination"] for r in catalog[0]["routes"]] == ["б2", "б1"]
+        await session.close()
+    _run(scenario)
+
+
+def test_new_route_goes_last_and_page_opens_on_it():
+    """Новый маршрут — в конце своего склада (раньше вставал первым), новый
+    склад — последним; страница открывается на добавленной строке, а не в
+    самом верху длинной страницы."""
+    async def scenario():
+        session, owner = await _db_with([("А", "а1"), ("А", "а2"), ("Я", "я1")])
+        await routes_folder_move(_FetchRequest(), owner, session, "Я", "up")
+        answer = await routes_template_add(owner, session, "А", "а0")
+        assert await _order(session, owner.id, "А") == ["а1", "а2", "а0"]
+        new_id = (await _route_templates_view(session, owner.id, []))[0]["А"][-1].id
+        assert answer.headers["location"] == f"/routes#rt-{new_id}"
+
+        await routes_template_add(owner, session, "Новый склад", "н1")
+        assert await _folders(session, owner.id) == ["Я", "А", "Новый склад"]
+        await session.close()
+    _run(scenario)
+
+
+def test_after_delete_page_opens_on_the_neighbour():
+    async def scenario():
+        session, owner = await _db_with([("А", "а1"), ("А", "а2"), ("Б", "б1")])
+        by_origin, _ = await _route_templates_view(session, owner.id, [])
+        a1, a2 = by_origin["А"]
+        answer = await routes_template_delete(a1.id, owner, session)
+        assert answer.headers["location"] == f"/routes#rt-{a2.id}"
+        answer = await routes_template_delete(by_origin["Б"][0].id, owner, session)
+        assert answer.headers["location"] == "/routes#route-templates"
         await session.close()
     _run(scenario)
