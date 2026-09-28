@@ -65,7 +65,8 @@ from app.services import (
     act_service, auth_service, background, billing, driver_access_service,
     driver_actions_service,
     driver_photos, expense_flow, expense_service, feed_facts, finance_ledger,
-    geocode_service, rc_service, route_order, telemetry_service, trip_service,
+    geocode_service, rc_service, revenue_flow, route_order, telemetry_service,
+    trip_service,
 )
 from app.services.event_service import log_event
 from app.services.textsanitize import clean_user_text, origin_key
@@ -6184,6 +6185,8 @@ async def api_events(
             Trip.id, Trip.vehicle_id, Trip.origin, Trip.destination,
             Trip.waybill_photo_url, Trip.cargo_name, Trip.revenue_rub,
             Trip.created_at, Trip.completed_at,
+            # для кнопки «Указать выручку / Утвердить» (revenue_flow.action_for)
+            Trip.status, Trip.driver_revenue_pending_rub,
         ).where(Trip.id.in_(trip_ids or {0}), Trip.owner_id == owner.id)
     )).all()}
     plates = dict((await session.execute(
@@ -6301,6 +6304,8 @@ async def api_events(
                 and event.event_type == "expense_submitted"
             ),
             "expense_id": expense.id if expense is not None else None,
+            # «Указать выручку» / «Утвердить» прямо из журнала (28.09.2026).
+            "revenue_action": revenue_flow.action_for(event.event_type, trip),
             "trip_id": event.trip_id,
             "shift_id": event.shift_id,
             # Карточка события: главное число, строки «подпись — значение» и
@@ -6868,6 +6873,7 @@ async def create_trip_manual(
 
 @app.post("/trips/{trip_id}/revenue")
 async def update_trip_revenue(
+    request: Request,
     trip_id: int,
     owner: Annotated[Owner, Depends(current_owner)],
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -6885,10 +6891,67 @@ async def update_trip_revenue(
             raise InvalidOperation
     except InvalidOperation:
         raise HTTPException(status_code=400, detail="Bad revenue")
-    trip.revenue_rub = rev.quantize(Decimal("0.01"))
-    trip.driver_revenue_pending_rub = None
-    await session.commit()
+    # ⚠️ Та же логика, что у приложения и бота (28.09.2026): раньше сайт молча
+    # менял сумму — в журнале правки не было, а в Telegram у водителя и
+    # владельца висели кнопки «Указать выручку» / «Одобрить» со старой суммой.
+    await revenue_flow.owner_sets(
+        session, owner=owner, trip=trip, revenue=rev,
+        driver_bot=getattr(request.app.state, "driver_bot", None),
+        owner_bot=getattr(request.app.state, "owner_bot", None),
+    )
     return RedirectResponse(f"/trips/{trip_id}", status_code=303)
+
+
+async def _owner_trip_for_revenue(session: AsyncSession, owner: Owner, trip_id: int) -> Trip:
+    trip = await session.get(Trip, trip_id)
+    if trip is None or trip.owner_id != owner.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    return trip
+
+
+@app.post("/api/trips/{trip_id}/revenue")
+async def api_trip_revenue_set(
+    request: Request,
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    revenue_rub: Annotated[str, Form()],
+):
+    """«Указать выручку» из журнала приложения (владелец 28.09.2026: «кнопки
+    указать выручку нету»). Та же логика, что в боте и на сайте."""
+    trip = await _owner_trip_for_revenue(session, owner, trip_id)
+    try:
+        rev = _form_number(revenue_rub, _MAX_RUB_12)
+    except InvalidOperation:
+        return JSONResponse(
+            {"ok": False, "error": "Впишите сумму цифрами, например 45000."}, status_code=400
+        )
+    await revenue_flow.owner_sets(
+        session, owner=owner, trip=trip, revenue=rev,
+        driver_bot=getattr(request.app.state, "driver_bot", None),
+        owner_bot=getattr(request.app.state, "owner_bot", None),
+    )
+    return {"ok": True, "trip_id": trip.id, "revenue": float(trip.revenue_rub)}
+
+
+@app.post("/api/trips/{trip_id}/revenue/approve")
+async def api_trip_revenue_approve(
+    request: Request,
+    trip_id: int,
+    owner: Annotated[Owner, Depends(current_owner)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Утвердить сумму, которую назвал водитель. Повтор нажатия (связь
+    рвалась) или решение уже принято в Telegram — отвечаем тем, что есть."""
+    trip = await _owner_trip_for_revenue(session, owner, trip_id)
+    approved = await revenue_flow.owner_approves(
+        session, owner=owner, trip=trip,
+        driver_bot=getattr(request.app.state, "driver_bot", None),
+        owner_bot=getattr(request.app.state, "owner_bot", None),
+    )
+    if not approved and trip.revenue_rub is None:
+        return JSONResponse({"ok": False, "error": "Утверждать нечего: суммы от водителя нет."}, status_code=409)
+    return {"ok": True, "trip_id": trip.id, "revenue": float(trip.revenue_rub)}
 
 
 _MAX_DOC_BYTES = 6 * 1024 * 1024  # 6 МБ на документ

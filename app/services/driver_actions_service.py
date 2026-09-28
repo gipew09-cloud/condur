@@ -105,6 +105,10 @@ def _int_or_none(value, *, field_name: str) -> int | None:
         return None
     if isinstance(value, bool):
         raise BadRequest(f"{field_name}: ожидалось число")
+    if isinstance(value, str):
+        # «154 820» с любым пробелом (клавиатура телефона ставит и узкий
+        # неразрывный) — это 154820, а не ошибка (разбор 28.09.2026).
+        value = "".join(value.split())
     try:
         number = int(value)
     except (TypeError, ValueError):

@@ -608,8 +608,12 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
      (350 + 16). При центрировании по карте на экране 1100 он залезал на
      левую панель — померено в браузере. `left` + `right` + `margin: auto`
      держат его ровно посередине промежутка на любой ширине. */
+  /* ⚠️ Справа между плеером и панелью стоит колонка кнопок карты (.mon-ctl:
+     right 382 + ширина 36 + зазор 10 = 428). С `right: 382px` плеер считал
+     её место свободным и упирался в кнопки — владелец 27.09.2026:
+     «перекрывает справа». */
   position: absolute; z-index: 6;
-  top: 12px; left: 388px; right: 382px; margin: 0 auto;
+  top: 12px; left: 388px; right: 428px; margin: 0 auto;
   width: auto; max-width: 420px; min-width: 260px;
   padding: 12px 14px 11px; box-sizing: border-box;
   background: var(--mon-surface); border: 1px solid var(--mon-border);
@@ -647,6 +651,30 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   display: block; height: 100%; width: 0; border-radius: 999px;
   background: linear-gradient(90deg, #2563eb, #93c5fd);
 }
+/* Шкалу тянут мышкой и пальцем (27.09.2026): полоса 4 px, а ловим её в
+   полосе 20 px — невидимым полем вокруг. Бегунок — где сейчас просмотр. */
+.mon-play__bar { position: relative; touch-action: none; }
+.mon-play__bar::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
+.mon-play__bar b {
+  position: absolute; top: 50%; left: 0; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  border-radius: 50%; background: #1d4ed8; box-shadow: 0 0 0 3px var(--mon-surface);
+  pointer-events: none; transition: transform 140ms cubic-bezier(.23, 1, .32, 1);
+}
+.mon[data-mode="dark"] .mon-play__bar b { background: #9dc0ff; }
+.mon-play__bar.is-dragging b, .mon-play__bar:focus-visible b { transform: scale(1.35); }
+.mon-play__row2 { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.mon-play__follow {
+  height: 26px; padding: 0 9px !important; border: 0; cursor: pointer; font: inherit;
+  font-size: 11.5px; font-weight: 700; border-radius: 7px;
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--mon-fill); color: var(--mon-text-3);
+  transition: background-color 160ms ease, color 160ms ease,
+              transform 140ms cubic-bezier(.23, 1, .32, 1);
+}
+.mon-play__follow i { font-size: 13px; line-height: 1; }
+.mon-play__follow.is-on { background: rgba(37, 99, 235, .18); color: #1d4ed8; }
+.mon[data-mode="dark"] .mon-play__follow.is-on { color: #9dc0ff; }
+.mon-play__follow:active { transform: scale(.97); }
 .mon-play__row { display: flex; align-items: center; gap: 8px; }
 .mon-play__go {
   width: 32px; height: 32px; border: 0; border-radius: 10px; cursor: pointer;
@@ -656,7 +684,9 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
 }
 /* Значок ▶ у шрифта иконок сидит на базовой линии и съезжал вниз-вправо. */
 .mon-play__go svg { display: block; }
-.mon-play__speeds { display: flex; gap: 4px; flex: 1; }
+/* Шесть скоростей (добавлена ×300, 27.09.2026): на телефоне переносятся
+   на вторую строку, а не вылезают за край панели. */
+.mon-play__speeds { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
 .mon-play__speeds button {
   /* Отступы по бокам возвращаем: сброс выше обнулил их всем кнопкам панели,
      и «×15» переставало помещаться (кнопка схлопывалась до 14 px). */
@@ -1130,7 +1160,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
      Тем, кого укачивает, это выключаем; цвет и состояния остаются. */
   .mon-pin__ring, .mon-tick, .mon-pin__dir b, .mon-play { animation: none !important; }
   .mon-play__filters button, .mon-play__speeds button,
-  .mon-play__step, .mon-play__go, .mon-whole button { transition: none; }
+  .mon-play__step, .mon-play__go, .mon-whole button,
+  .mon-play__follow, .mon-play__bar b { transition: none; }
 }
 
 /* ---------- телефон: список превращается в нижнюю шторку ---------- */
@@ -1161,6 +1192,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
   .mon-track__legend { display: none; }
   /* правый край оставлен колонке кнопок карты (.mon-ctl) */
   .mon-track { left: 8px; right: 54px; top: 8px; transform: none; width: auto; }
+  .mon-play { right: 54px; }
   .mon-ctl { right: 8px; top: 8px; }
   /* Полный экран на телефоне не нужен: карта и так во весь экран, а Safari
      на iPhone разворачивать произвольный блок вообще не умеет. Заодно
@@ -1344,22 +1376,27 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     </div>
     <div class="mon-play__bar" id="mon-play-bar" role="slider" tabindex="0"
          aria-label="Положение на треке" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-      <i id="mon-play-fill"></i>
+      <i id="mon-play-fill"></i><b id="mon-play-thumb"></b>
     </div>
     <div class="mon-play__row">
       <button type="button" class="mon-play__step" id="mon-play-prev" title="Предыдущая точка" aria-label="Предыдущая точка"></button>
       <button type="button" class="mon-play__go" id="mon-play-toggle" aria-label="Пауза"></button>
       <button type="button" class="mon-play__step" id="mon-play-next" title="Следующая точка" aria-label="Следующая точка"></button>
-      <div class="mon-play__speeds" id="mon-play-speeds">
+      <div class="mon-play__speeds" id="mon-play-speeds" title="×1 — как в жизни. «‹ ›» — шаг на одну точку GPS.">
         <button type="button" data-speed="1" class="is-on">×1</button>
         <button type="button" data-speed="2">×2</button>
         <button type="button" data-speed="5">×5</button>
         <button type="button" data-speed="15">×15</button>
         <button type="button" data-speed="60">×60</button>
+        <button type="button" data-speed="300">×300</button>
       </div>
+    </div>
+    <div class="mon-play__row2">
+      <button type="button" class="mon-play__follow is-on" id="mon-play-follow" aria-pressed="true"
+              title="Камера едет за машиной. Потащите карту — слежение выключится.">
+        <i class="ph ph-crosshair"></i>Следить</button>
       <span class="mon-play__km" id="mon-play-km">0 км</span>
     </div>
-    <div class="mon-play__hint">×1 — как в жизни. «‹ ›» — шаг на одну точку GPS.</div>
   </div>
 
   <div class="mon-track" id="mon-track" hidden>
@@ -2243,6 +2280,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     ['mousedown', 'touchstart', 'wheel'].forEach(function (evt) {
       mapRoot.addEventListener(evt, function () {
         if (follow !== null) setFollow(null);
+        // В просмотре трека — то же правило: жест и есть отмена слежения.
+        if (playingId !== null && play.follow) setPlayFollow(false);
       }, { passive: true });
     });
 
@@ -2619,11 +2658,21 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       track.objects = [];
     }
 
+    // Открыта ли вкладка «Треки». Отдельной переменной нет — смотрим на кнопку.
+    function onTracksTab() {
+      var b = document.querySelector('.mon-tab[data-tab="tracks"]');
+      return !!(b && b.classList.contains('is-on'));
+    }
+
     function hideTrack() {
       clearTrackObjects();
       track.vehicleId = null;
       trackEl.hidden = true;
-      cardEl.classList.remove('mon-sheet-hide');
+      // ⚠️ Во вкладке «Треки» карточка живой машины спрятана. Раньше здесь
+      // она показывалась безусловно, а просмотр трека зовёт hideTrack() при
+      // старте — и карточка вылезала из-под показаний точки справа
+      // (владелец 27.09.2026: «перекрывает справа»).
+      cardEl.classList.toggle('mon-sheet-hide', onTracksTab());
       applyMargin();
       // Полный трек убрали — короткий хвост возвращается.
       syncTail();
@@ -2993,7 +3042,11 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       lastTick: 0,
       clock: 0,         // время трека, которое «прошло» с начала просмотра
       standing: null,   // подпись «стоит …» — чтобы не перерисовывать зря
-      drawn: -1         // какой кадр уже нарисован
+      drawn: -1,        // какой кадр уже нарисован
+      // ⚠️ Камера едет за машиной, пока владелец сам не потащил карту
+      // (27.09.2026). Раньше камера ставилась на машину КАЖДЫЙ кадр, и
+      // отодвинуть карту во время просмотра было нельзя вовсе.
+      follow: true
     };
 
     var playEl = document.getElementById('mon-play');
@@ -3002,6 +3055,8 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
     var playFill = document.getElementById('mon-play-fill');
     var playBar = document.getElementById('mon-play-bar');
     var playKm = document.getElementById('mon-play-km');
+    var playThumb = document.getElementById('mon-play-thumb');
+    var playFollowBtn = document.getElementById('mon-play-follow');
     var playToggle = document.getElementById('mon-play-toggle');
     // Показания точки живут в правой панели — там их видно, а не в плеере,
     // где они были мелкими плашками.
@@ -3419,10 +3474,42 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.eventMarks = [];
     }
 
+    // Превышение — дольше порога и быстрее 90 км/ч по прибору; тот же порог,
+    // что у значка «превышение» с сервера (router._road_events).
+    var SPEEDING_KMH = 90;
+
+    // ⚠️ Превышение красим ПРЯМО ПО ЛИНИИ трека, а не только значком
+    // (27.09.2026): видно, какой участок дороги водитель ехал быстро. Та же
+    // кнопка «Скорость», что у значков, — выключено по умолчанию, как всё.
+    // Разрыв связи не красим: как машина ехала между точками, мы не знаем.
+    function speedingRuns() {
+      var runs = [], cur = null, f = play.frames;
+      for (var i = 1; i < f.length; i++) {
+        var fast = !f[i].afterGap && f[i].speed > SPEEDING_KMH && f[i - 1].speed > SPEEDING_KMH;
+        if (fast) {
+          if (!cur) { cur = [[f[i - 1].lat, f[i - 1].lon]]; runs.push(cur); }
+          cur.push([f[i].lat, f[i].lon]);
+        } else {
+          cur = null;
+        }
+      }
+      return runs;
+    }
+
     function placeEvents(events) {
       clearEventMarks();
       play.eventsNoPlace = [];
       if (!play.frames.length) return;
+      if (eventFilter.speed) {
+        speedingRuns().forEach(function (run) {
+          var line = new YMapFeature({
+            geometry: { type: 'LineString', coordinates: LLline(run) },
+            style: { stroke: [{ color: '#dc2626', width: 5, opacity: 0.95 }], zIndex: 47, interactive: false }
+          });
+          ymap.addChild(line);
+          play.eventMarks.push(line);   // уходит вместе со значками
+        });
+      }
 
       play.events = events;
       // ⚠️ Два РАЗНЫХ вида событий в одном списке значков:
@@ -3705,6 +3792,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.shift = row;
       playingId = selected;
       setFollow(null);      // камера теперь у плеера, живой слой её не трогает
+      setPlayFollow(true);
       paintPins();
       var span = clipToPeriod(row);
       playTitle.textContent = row.whole
@@ -3834,11 +3922,48 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       setRunning(false);
       seekTo(play.at + 1);
     });
-    playBar.addEventListener('click', function (e) {
-      if (!play.frames.length) return;
-      var box = playBar.getBoundingClientRect();
-      var share = Math.min(1, Math.max(0, (e.clientX - box.left) / box.width));
-      seekTo(Math.round(share * (play.frames.length - 1)));
+    // Шкала как у видео: нажать в любое место или тянуть бегунок (27.09.2026).
+    // На время перетаскивания просмотр стоит, отпустили — идёт дальше.
+    var barDrag = null;
+    function timeAtX(clientX) {
+      var f = play.frames, box = playBar.getBoundingClientRect();
+      var share = Math.min(1, Math.max(0, (clientX - box.left) / (box.width || 1)));
+      return f[0].t + share * (f[f.length - 1].t - f[0].t);
+    }
+    playBar.addEventListener('pointerdown', function (e) {
+      if (play.frames.length < 2) return;
+      playBar.setPointerCapture(e.pointerId);
+      barDrag = { wasRunning: play.running };
+      playBar.classList.add('is-dragging');
+      setRunning(false);
+      seekTime(timeAtX(e.clientX));
+    });
+    playBar.addEventListener('pointermove', function (e) {
+      if (barDrag) seekTime(timeAtX(e.clientX));
+    });
+    function endBarDrag() {
+      if (!barDrag) return;
+      var resume = barDrag.wasRunning;
+      barDrag = null;
+      playBar.classList.remove('is-dragging');
+      if (resume) setRunning(true);
+    }
+    playBar.addEventListener('pointerup', endBarDrag);
+    playBar.addEventListener('pointercancel', endBarDrag);
+    playBar.addEventListener('keydown', function (e) {
+      var f = play.frames;
+      if (f.length < 2) return;
+      var step = (e.shiftKey ? 10 : 1) * 60000;
+      if (e.key === 'ArrowRight') seekTime(play.clock + step);
+      else if (e.key === 'ArrowLeft') seekTime(play.clock - step);
+      else if (e.key === 'Home') seekTime(f[0].t);
+      else if (e.key === 'End') seekTime(f[f.length - 1].t);
+      else return;
+      e.preventDefault();
+    });
+    if (playFollowBtn) playFollowBtn.addEventListener('click', function () {
+      setPlayFollow(!play.follow);
+      if (play.follow && play.frames.length) glideTo(play.clock);
     });
 
     function step(now) {
@@ -3865,6 +3990,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // между двумя известными точками; это не выдумывание пути — линия трека
       // остаётся ровно той же, двигается только сама метка по ней.
       glideTo(play.clock);
+      paintBar(play.clock);
       // Время идёт всегда, даже когда точек нет: машина стоит на выгрузке.
       paintClock(play.clock);
 
@@ -3960,7 +4086,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
           }
         });
       }
-      ymap.setLocation({ center: followCenter(lat, lon) });
+      if (play.follow) ymap.setLocation({ center: followCenter(lat, lon) });
     }
 
     function seekTo(index, keepClock) {
@@ -3994,7 +4120,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       play.marker.update({ coordinates: LL(frame.lat, frame.lon) });
       // Камера едет за машиной БЕЗ анимации: своя анимация на каждый кадр
       // догоняла бы предыдущую, и карта дёргалась.
-      ymap.setLocation({ center: followCenter(frame.lat, frame.lon) });
+      if (play.follow) ymap.setLocation({ center: followCenter(frame.lat, frame.lon) });
 
       // Стрелка смотрит на следующую точку трека.
       var next = play.frames[play.at + 1];
@@ -4011,9 +4137,7 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
         }
       }
 
-      var share = play.at / (play.frames.length - 1);
-      playFill.style.width = (share * 100).toFixed(1) + '%';
-      playBar.setAttribute('aria-valuenow', Math.round(share * 100));
+      paintBar(keepClock ? play.clock : frame.t);
       playKm.textContent = frame.km.toFixed(1) + ' км по GPS';
       if (trackKmEl) trackKmEl.textContent = frame.km.toFixed(1) + ' км по GPS';
       paintGauges(frame);
@@ -4022,6 +4146,45 @@ body.page-mon nav.topbar { margin-bottom: .7rem; }
       // пишем и дату — ночной рейс иначе читается как дневной.
       play.standing = null;               // чип «стоит» перерисован ниже
       paintClock(keepClock ? play.clock : frame.t);
+    }
+
+    // ⚠️ Полоса идёт по ВРЕМЕНИ трека, а не по номеру точки (27.09.2026).
+    // По номеру она на часовой стоянке (одна точка) стояла, а потом прыгала;
+    // и двигалась только на смене точки — раз в 40 секунд трека.
+    function paintBar(clock) {
+      var f = play.frames;
+      if (f.length < 2) return;
+      var span = f[f.length - 1].t - f[0].t || 1;
+      var share = Math.min(1, Math.max(0, (clock - f[0].t) / span));
+      playFill.style.width = (share * 100).toFixed(2) + '%';
+      if (playThumb) playThumb.style.left = (share * 100).toFixed(2) + '%';
+      playBar.setAttribute('aria-valuenow', Math.round(share * 100));
+      playBar.setAttribute('aria-valuetext', hhmm(new Date(clock).toISOString()));
+    }
+
+    // Перемотка на МОМЕНТ времени: кадр — последняя точка не позже момента,
+    // метку ведём между точками тем же glideTo, что и при просмотре.
+    function seekTime(ms) {
+      var f = play.frames;
+      if (f.length < 2) return;
+      ms = Math.min(f[f.length - 1].t, Math.max(f[0].t, ms));
+      var lo = 0, hi = f.length - 1;
+      while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (f[mid].t <= ms) lo = mid; else hi = mid; }
+      var i = f[hi].t <= ms ? hi : lo;
+      play.clock = ms;
+      seekTo(i, true);
+      glideTo(ms);
+      paintBar(ms);
+      play.standing = null;
+      paintClock(ms);
+    }
+
+    function setPlayFollow(on) {
+      play.follow = on;
+      if (playFollowBtn) {
+        playFollowBtn.classList.toggle('is-on', on);
+        playFollowBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
     }
 
     function dayTime(d) {
