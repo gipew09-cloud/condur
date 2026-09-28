@@ -325,7 +325,7 @@ def test_tracks_tab_has_a_player_like_the_design():
 
     # плеер: пауза, скорости, полоса прогресса, часы по треку
     assert 'id="mon-play-toggle"' in src
-    for speed in ("1", "2", "5", "15", "60"):
+    for speed in ("1", "2", "5", "15", "60", "300"):
         assert 'data-speed="%s"' % speed in src
     # шаг по одной точке — для разбора спорной минуты
     assert 'id="mon-play-prev"' in src and 'id="mon-play-next"' in src
@@ -1451,7 +1451,7 @@ def test_player_is_centred_between_panels_not_over_them():
     посередине промежутка на любой ширине.
     """
     src = open("app/web/templates/map.html", encoding="utf-8").read()
-    assert "top: 12px; left: 388px; right: 382px; margin: 0 auto;" in src
+    assert "top: 12px; left: 388px; right: 428px; margin: 0 auto;" in src
     assert "max-width: 420px; min-width: 260px;" in src
 
 
@@ -1679,3 +1679,32 @@ def test_легенда_свёрнута_в_одну_строку():
     assert '<details class="mon-foot" data-pane="objects">' in src
     assert '<summary class="mon-foot__sum">Легенда и подсказки</summary>' in src
     assert "</details>\n  </aside>" in src
+
+
+def test_player_scale_by_time_drag_and_follow():
+    """Плеер 27.09.2026: шкала идёт по ВРЕМЕНИ и тянется мышкой, камеру можно
+    отпустить, превышение красится по линии. Проверено на копии кабинета с
+    заглушкой карты: середина шкалы = середина времени, перетаскивание,
+    слежение выключается жестом по карте и включается кнопкой."""
+    src = open("app/web/templates/map.html", encoding="utf-8").read()
+    # по времени, а не по номеру точки (на стоянке шкала стояла и прыгала)
+    assert "var share = play.at / (play.frames.length - 1);" not in src
+    assert "function paintBar(clock)" in src and "paintBar(play.clock);" in src
+    # перетаскивание и клавиатура
+    assert "playBar.addEventListener('pointerdown'" in src
+    assert "playBar.addEventListener('pointermove'" in src
+    assert "playBar.addEventListener('keydown'" in src
+    assert 'id="mon-play-thumb"' in src
+    # слежение: камера только при play.follow, жест по карте — отмена
+    assert src.count("if (play.follow) ymap.setLocation(") == 2
+    assert "if (playingId !== null && play.follow) setPlayFollow(false);" in src
+    assert 'id="mon-play-follow"' in src and "setPlayFollow(true);" in src
+    # превышение по линии — та же кнопка «Ехал быстро», выключено по умолчанию
+    assert "var SPEEDING_KMH = 90;" in src
+    assert "if (eventFilter.speed) {" in src and "speedingRuns()" in src
+    assert "!f[i].afterGap && f[i].speed > SPEEDING_KMH" in src   # разрыв связи не красим
+    # «перекрывает справа» (27.09.2026): плеер не заходит на колонку кнопок,
+    # а старт просмотра не вытаскивает карточку живой машины во вкладке треков
+    assert "cardEl.classList.toggle('mon-sheet-hide', onTracksTab());" in src
+    assert "cardEl.classList.remove('mon-sheet-hide');" not in src
+    assert ".mon-play { right: 54px; }" in src
